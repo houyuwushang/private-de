@@ -1,0 +1,80 @@
+run:
+  dataset_name: adult
+  input_csv: /home/qianqiu/rerun-experiment/dataset/adult.csv
+  output_dir: outputs/adult_qdte
+  seed: 0
+  device: gpu
+
+preprocess:
+  numerical_bins: 32
+  missing_token: __MISSING__
+  label_column: "14"
+  numerical_columns: ["0", "2", "4", "10", "11", "12"]
+  categorical_columns: ["1", "3", "5", "6", "7", "8", "9", "13", "14"]
+  auto_numeric_min_unique: 10
+
+workload:
+  include_oneway: true
+  include_2way_cat: true
+  include_prefix: true
+  include_range: true
+  include_mixed: true
+  include_halfspace: false
+  max_queries: 10000
+  max_terms: 4
+  range_intervals_per_num_attr: 64
+  mixed_queries_per_pair: 64
+  max_2way_cells: 5000
+  random_seed: 0
+
+privacy:
+  mode: dp
+  rho_total: 1.0
+  delta: 1.0e-9
+  measurement_mode: static_all
+  measurement_allocation:
+    oneway: 0.25
+    twoway: 0.25
+    prefix: 0.15
+    range: 0.15
+    mixed: 0.20
+
+projection:
+  project_partitions: true
+  clip_nonpartition: true
+  prefix_monotonicity: false
+
+init:
+  N_syn: same_as_real
+  method: independent_oneway
+
+qdte:
+  score_backend: dense_gpu
+  transport_mode: microbatch_greedy
+  max_iters: 5000
+  num_active_targets: 64
+  candidates_per_target: 64
+  total_candidates_per_iter: 4096
+  accepted_per_iter: 64
+  kappa_noise: 1.0
+  lambda_cost: 0.01
+  numerical_distance_gamma: 0.1
+  random_candidate_fraction: 0.05
+  source_over_sample_factor: 32
+  full_recompute_every: 50
+  stop_patience: 50
+  min_advantage: 1.0e-6
+  log_every: 100
+  eval_every: 100
+
+runtime:
+  use_pmap: true
+  scoring_chunk_size: 4096
+  answer_batch_size: 8192
+  xla_preallocate: true
+  log_measurement_groups: false
+
+evaluation:
+  compute_true_query_error: true
+  downstream_ml: false
+  save_synthetic_csv: true

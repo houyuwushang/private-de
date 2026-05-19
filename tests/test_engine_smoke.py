@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import orjson
+
+from qdte.evolution.engine import run_qdte
+
+
+def test_engine_smoke_outputs(tmp_path: Path) -> None:
+    rng = np.random.default_rng(0)
+    n = 120
+    df = pd.DataFrame(
+        {
+            "a": rng.integers(0, 3, size=n),
+            "b": rng.integers(0, 4, size=n),
+            "c": rng.integers(0, 6, size=n),
+            "label": rng.integers(0, 2, size=n),
+        }
+    )
+    data_path = tmp_path / "smoke.csv"
+    out_dir = tmp_path / "out"
+    df.to_csv(data_path, index=False)
+    config = {
+        "run": {"dataset_name": "smoke", "input_csv": str(data_path), "output_dir": str(out_dir), "seed": 0},
+        "preprocess": {
+            "numerical_bins": 6,
+            "label_column": "label",
+            "numerical_columns": ["c"],
+            "categorical_columns": ["a", "b", "label"],
+        },
+        "workload": {
+            "include_oneway": True,
+            "include_2way_cat": True,
+            "include_prefix": True,
+            "include_range": True,
+            "include_mixed": True,
+            "max_queries": 120,
+            "max_terms": 4,
+            "range_intervals_per_num_attr": 4,
+            "mixed_queries_per_pair": 4,
+            "max_2way_cells": 50,
+            "random_seed": 0,
+        },
+        "privacy": {
+            "mode": "dp",
+            "rho_total": 1.0,
+            "delta": 1e-9,
+            "measurement_allocation": {"oneway": 0.3, "twoway": 0.3, "prefix": 0.15, "range": 0.1, "mixed": 0.15},
+        },
+        "projection": {"project_partitions": True, "clip_nonpartition": True},
+        "init": {"N_syn": "same_as_real"},
+        "qdte": {
+            "max_iters": 3,
+            "num_active_targets": 4,
+            "candidates_per_target": 4,
+            "total_candidates_per_iter": 32,
+            "accepted_per_iter": 2,
+            "kappa_noise": 0.0,
+            "lambda_cost": 0.0,
+            "random_candidate_fraction": 0.1,
+            "full_recompute_every": 2,
+            "stop_patience": 3,
+            "min_advantage": 1e-6,
+            "log_every": 1,
+        },
+        "debug": {"recompute_after_batch": True, "assert_batch_loss_decrease": True},
+        "runtime": {"use_pmap": False, "scoring_chunk_size": 32, "answer_batch_size": 64, "xla_preallocate": False},
+        "evaluation": {"compute_true_query_error": True, "save_synthetic_csv": True},
+    }
+    metrics = run_qdte(config)
+    assert metrics["num_queries"] > 0
+    assert (out_dir / "synthetic_decoded.csv").exists()
+    assert (out_dir / "metrics_final.json").exists()
+    assert (out_dir / "metrics_timeseries.csv").exists()
+    assert (out_dir / "runtime.json").exists()
+    assert metrics["final_incremental_answer_drift"] == 0.0
+    measurement_json = orjson.loads((out_dir / "measurements.json").read_bytes())
+    assert "true_answers_debug" not in measurement_json
+    runtime_json = orjson.loads((out_dir / "runtime.json").read_bytes())
+    assert runtime_json["num_candidates_requested"] >= runtime_json["num_candidates_scored"]
