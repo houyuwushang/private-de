@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 from qdte.evolution.candidates import CandidateBatch
+from qdte.queries.eval_jax import eval_records_queries_arrays
+from qdte.queries.types import QueryCatalogue
 
 
 @dataclass
@@ -127,6 +131,98 @@ def choose_transport_batch(
         accepted_indices=idx.astype(np.int32),
         delta_sum=delta_sum.astype(np.float32),
         batch_advantage=float(best_adv),
+        mean_advantage=float(advantages[idx].mean()),
+    )
+
+
+@jax.jit
+def _choose_transport_prefix_jit(
+    old_rows: jax.Array,
+    new_rows: jax.Array,
+    residual: jax.Array,
+    inv_variance: jax.Array,
+    edit_cost: jax.Array,
+    attrs: jax.Array,
+    ops: jax.Array,
+    values: jax.Array,
+    lows: jax.Array,
+    highs: jax.Array,
+    lambda_cost: jax.Array,
+    strategy_code: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    phi_old = eval_records_queries_arrays(old_rows, attrs, ops, values, lows, highs)
+    phi_new = eval_records_queries_arrays(new_rows, attrs, ops, values, lows, highs)
+    delta = phi_new.astype(jnp.float32) - phi_old.astype(jnp.float32)
+    delta_prefix = jnp.cumsum(delta, axis=0)
+    cost_prefix = jnp.cumsum(edit_cost.astype(jnp.float32))
+    weights = residual.astype(jnp.float32) * inv_variance.astype(jnp.float32)
+    prefix_advantages = (
+        delta_prefix @ weights
+        - 0.5 * ((delta_prefix * delta_prefix) @ inv_variance.astype(jnp.float32))
+        - lambda_cost.astype(jnp.float32) * cost_prefix
+    )
+    best_idx = jnp.argmax(prefix_advantages)
+    positive = prefix_advantages > 0.0
+    last_positive_idx = jnp.max(jnp.where(positive, jnp.arange(prefix_advantages.shape[0], dtype=jnp.int32), -1))
+    use_best = strategy_code == jnp.int32(1)
+    chosen_idx = jnp.where(use_best, best_idx.astype(jnp.int32), last_positive_idx)
+    chosen_adv = jnp.where(chosen_idx >= 0, prefix_advantages[chosen_idx], jnp.max(prefix_advantages))
+    chosen_delta = jnp.where(
+        chosen_idx >= 0,
+        delta_prefix[chosen_idx],
+        jnp.zeros((residual.shape[0],), dtype=jnp.float32),
+    )
+    accepted_count = jnp.maximum(chosen_idx + 1, 0)
+    return accepted_count.astype(jnp.int32), chosen_delta.astype(jnp.float32), chosen_adv.astype(jnp.float32)
+
+
+def choose_transport_batch_jax(
+    candidates: CandidateBatch,
+    advantages: np.ndarray,
+    selected: np.ndarray,
+    residual: np.ndarray,
+    inv_variance: np.ndarray,
+    lambda_cost: float,
+    qcat: QueryCatalogue,
+    prefix_strategy: str = "largest_positive",
+) -> TransportResult:
+    if len(selected) == 0:
+        return TransportResult(
+            accepted_indices=np.empty(0, dtype=np.int32),
+            delta_sum=np.zeros_like(residual, dtype=np.float32),
+            batch_advantage=0.0,
+            mean_advantage=0.0,
+        )
+    order = np.argsort(-advantages[selected])
+    selected = selected[order]
+    strategy_code = 1 if prefix_strategy == "best_advantage" else 0
+    accepted_count, delta_sum, batch_adv = _choose_transport_prefix_jit(
+        jnp.asarray(candidates.old_rows[selected], dtype=jnp.int32),
+        jnp.asarray(candidates.new_rows[selected], dtype=jnp.int32),
+        jnp.asarray(residual, dtype=jnp.float32),
+        jnp.asarray(inv_variance, dtype=jnp.float32),
+        jnp.asarray(candidates.edit_cost[selected], dtype=jnp.float32),
+        jnp.asarray(qcat.attrs, dtype=jnp.int32),
+        jnp.asarray(qcat.ops, dtype=jnp.int32),
+        jnp.asarray(qcat.values, dtype=jnp.int32),
+        jnp.asarray(qcat.lows, dtype=jnp.int32),
+        jnp.asarray(qcat.highs, dtype=jnp.int32),
+        jnp.asarray(lambda_cost, dtype=jnp.float32),
+        jnp.asarray(strategy_code, dtype=jnp.int32),
+    )
+    count = int(np.asarray(accepted_count))
+    if count <= 0:
+        return TransportResult(
+            accepted_indices=np.empty(0, dtype=np.int32),
+            delta_sum=np.zeros_like(residual, dtype=np.float32),
+            batch_advantage=float(np.asarray(batch_adv)),
+            mean_advantage=0.0,
+        )
+    idx = selected[:count]
+    return TransportResult(
+        accepted_indices=idx.astype(np.int32),
+        delta_sum=np.asarray(delta_sum, dtype=np.float32),
+        batch_advantage=float(np.asarray(batch_adv)),
         mean_advantage=float(advantages[idx].mean()),
     )
 

@@ -22,7 +22,12 @@ from qdte.evolution.gpu_candidates import (
 from qdte.evolution.scheduler import select_active_queries
 from qdte.evolution.scoring import compute_deltas, score_candidates, score_candidates_target_only
 from qdte.evolution.state import QDTEState
-from qdte.evolution.transport import apply_edits, choose_transport_batch, select_top_nonconflicting
+from qdte.evolution.transport import (
+    apply_edits,
+    choose_transport_batch,
+    choose_transport_batch_jax,
+    select_top_nonconflicting,
+)
 from qdte.measurement.measure import measure_real_dataset
 from qdte.preprocess import decode_array, load_and_preprocess_csv
 from qdte.queries.eval_jax import answer_queries
@@ -156,6 +161,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     max_iters = int(qdte_cfg.get("max_iters", 5000))
     accepted_per_iter = int(qdte_cfg.get("accepted_per_iter", 64))
     transport_mode = str(qdte_cfg.get("transport_mode", "microbatch_greedy"))
+    transport_delta_backend = str(qdte_cfg.get("transport_delta_backend", "cpu"))
     if transport_mode == "sequential_greedy":
         accepted_per_iter = 1
     num_active_targets = int(qdte_cfg.get("num_active_targets", 64))
@@ -256,20 +262,32 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         t_transport = time.perf_counter()
         before_loss = measured_loss(state.residual, state.inv_variance)
         selected = select_top_nonconflicting(candidates, advantages, accepted_per_iter, min_advantage)
-        if len(selected) > 0:
-            deltas = compute_deltas(candidates.old_rows[selected], candidates.new_rows[selected], qcat)
+        if transport_delta_backend in {"jax_prefix", "gpu_prefix"}:
+            transport = choose_transport_batch_jax(
+                candidates,
+                advantages,
+                selected,
+                state.residual,
+                state.inv_variance,
+                lambda_cost,
+                qcat,
+                prefix_strategy=transport_prefix_strategy,
+            )
         else:
-            deltas = np.empty((0, qcat.m), dtype=np.int8)
-        transport = choose_transport_batch(
-            candidates,
-            advantages,
-            deltas,
-            selected,
-            state.residual,
-            state.inv_variance,
-            lambda_cost,
-            prefix_strategy=transport_prefix_strategy,
-        )
+            if len(selected) > 0:
+                deltas = compute_deltas(candidates.old_rows[selected], candidates.new_rows[selected], qcat)
+            else:
+                deltas = np.empty((0, qcat.m), dtype=np.int8)
+            transport = choose_transport_batch(
+                candidates,
+                advantages,
+                deltas,
+                selected,
+                state.residual,
+                state.inv_variance,
+                lambda_cost,
+                prefix_strategy=transport_prefix_strategy,
+            )
         if len(transport.accepted_indices) > 0:
             apply_edits(state.X_syn, candidates, transport.accepted_indices)
             if use_gpu_candidate_backend:
@@ -389,6 +407,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "gpu_device_count": int(jax.local_device_count()),
         "score_backend": score_backend,
         "candidate_backend": candidate_backend,
+        "transport_delta_backend": transport_delta_backend,
+        "transport_prefix_strategy": transport_prefix_strategy,
         "use_pmap": bool(use_pmap),
     }
     if bool(evaluation_cfg.get("compute_true_query_error", True)):
@@ -411,6 +431,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     runtime_dict["gpu_devices"] = [str(d) for d in jax.devices()]
     runtime_dict["score_backend"] = score_backend
     runtime_dict["candidate_backend"] = candidate_backend
+    runtime_dict["transport_delta_backend"] = transport_delta_backend
+    runtime_dict["transport_prefix_strategy"] = transport_prefix_strategy
     runtime_dict["use_pmap"] = bool(use_pmap)
     write_json(final_metrics, output_dir / "metrics_final.json")
     _write_timeseries(timeseries, output_dir / "metrics_timeseries.csv")
