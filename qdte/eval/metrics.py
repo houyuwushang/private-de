@@ -11,12 +11,24 @@ def measured_loss(residual: np.ndarray, inv_variance: np.ndarray) -> float:
     return float(0.5 * np.sum(r * r * inv))
 
 
-def query_error_metrics(true_answers: np.ndarray, syn_answers: np.ndarray, n_real: int, n_syn: int) -> dict[str, float]:
+def rms_standardized_residual(loss: float, num_queries: int) -> float:
+    if num_queries <= 0:
+        return 0.0
+    return float(math.sqrt(max(0.0, 2.0 * float(loss) / float(num_queries))))
+
+
+def query_error_metrics(
+    true_answers: np.ndarray,
+    syn_answers: np.ndarray,
+    n_real: int,
+    n_syn: int,
+    prefix: str = "true_query",
+) -> dict[str, float]:
     true_rate = true_answers.astype(np.float64) / float(n_real)
     syn_rate = syn_answers.astype(np.float64) / float(n_syn)
     diff = syn_rate - true_rate
     return {
-        "true_query_mae": float(np.mean(np.abs(diff))),
-        "true_query_rmse": float(math.sqrt(float(np.mean(diff * diff)))),
-        "true_query_max_error": float(np.max(np.abs(diff))),
+        f"{prefix}_mae": float(np.mean(np.abs(diff))),
+        f"{prefix}_rmse": float(math.sqrt(float(np.mean(diff * diff)))),
+        f"{prefix}_max_error": float(np.max(np.abs(diff))),
     }

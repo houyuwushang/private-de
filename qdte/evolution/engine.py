@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ import pandas as pd
 
 from qdte.config import save_yaml
 from qdte.dataio import ensure_dir, save_npy, write_json
-from qdte.eval.metrics import measured_loss, query_error_metrics
+from qdte.eval.metrics import measured_loss, query_error_metrics, rms_standardized_residual
 from qdte.eval.runtime import RuntimeStats
 from qdte.evolution.candidates import generate_candidates
 from qdte.evolution.initialization import initialize_independent_oneway
@@ -40,6 +41,111 @@ def _resolve_n_syn(value: Any, n_real: int) -> int:
     return int(value)
 
 
+def _count_by_family(families: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for family in families:
+        counts[family] = counts.get(family, 0) + 1
+    return counts
+
+
+def _query_indices_by_family(families: list[str]) -> dict[str, np.ndarray]:
+    grouped: dict[str, list[int]] = {}
+    for idx, family in enumerate(families):
+        grouped.setdefault(family, []).append(idx)
+    return {family: np.asarray(indices, dtype=np.int32) for family, indices in grouped.items()}
+
+
+def _workload_summary(qcat: Any, workload_groups: list[Any], schema: Any, config: dict[str, Any]) -> dict[str, Any]:
+    cfg = config.get("workload", {})
+    defaults = {
+        "max_queries": 10000,
+        "max_2way_cells": 5000,
+        "range_intervals_per_num_attr": 64,
+        "mixed_queries_per_pair": 64,
+        "include_oneway": True,
+        "include_2way_cat": True,
+        "include_prefix": True,
+        "include_range": True,
+        "include_mixed": True,
+        "include_halfspace": False,
+    }
+    config_values = {key: cfg.get(key, default) for key, default in defaults.items()}
+    query_counts = _count_by_family(qcat.families)
+    group_counts = _count_by_family([group.family for group in workload_groups])
+    max_queries = int(config_values["max_queries"])
+    max_queries_hit = int(qcat.m) >= max_queries
+
+    pair_cells = [
+        int(schema.columns[a].cardinality) * int(schema.columns[b].cardinality)
+        for a in range(schema.d)
+        for b in range(a + 1, schema.d)
+    ]
+    total_2way_cells_possible = int(sum(pair_cells))
+    twoway_queries_constructed = int(query_counts.get("twoway", 0))
+    max_2way_cells_appears_limiting = (
+        bool(config_values["include_2way_cat"])
+        and not max_queries_hit
+        and total_2way_cells_possible > int(config_values["max_2way_cells"])
+        and twoway_queries_constructed < total_2way_cells_possible
+    )
+    return {
+        "total_num_queries": int(qcat.m),
+        "num_queries_by_family": query_counts,
+        "num_groups_by_family": group_counts,
+        "workload_config": config_values,
+        "max_queries_hit": bool(max_queries_hit),
+        "max_2way_cells_appears_limiting": bool(max_2way_cells_appears_limiting),
+        "num_2way_pairs_possible": int(len(pair_cells)),
+        "num_2way_groups_constructed": int(group_counts.get("twoway", 0)),
+        "num_2way_cells_possible": total_2way_cells_possible,
+        "num_2way_queries_constructed": twoway_queries_constructed,
+    }
+
+
+def _metrics_by_family(
+    qcat: Any,
+    initial_residual: np.ndarray,
+    final_residual: np.ndarray,
+    inv_variance: np.ndarray,
+    true_answers: np.ndarray | None,
+    initial_answers: np.ndarray,
+    final_answers: np.ndarray,
+    n_real: int,
+    n_syn: int,
+) -> dict[str, dict[str, float | int]]:
+    result: dict[str, dict[str, float | int]] = {}
+    for family, idx in _query_indices_by_family(qcat.families).items():
+        initial_family_loss = measured_loss(initial_residual[idx], inv_variance[idx])
+        final_family_loss = measured_loss(final_residual[idx], inv_variance[idx])
+        family_metrics: dict[str, float | int] = {
+            "num_queries": int(len(idx)),
+            "initial_measured_loss": initial_family_loss,
+            "final_measured_loss": final_family_loss,
+            "measured_loss_reduction": float(initial_family_loss - final_family_loss),
+        }
+        if true_answers is not None:
+            family_metrics.update(
+                query_error_metrics(
+                    true_answers[idx],
+                    initial_answers[idx],
+                    n_real,
+                    n_syn,
+                    prefix="initial_true_query",
+                )
+            )
+            family_metrics.update(
+                query_error_metrics(
+                    true_answers[idx],
+                    final_answers[idx],
+                    n_real,
+                    n_syn,
+                    prefix="final_true_query",
+                )
+            )
+        result[family] = family_metrics
+    return result
+
+
 def _write_timeseries(rows: list[dict[str, Any]], path: Path) -> None:
     if rows:
         pd.DataFrame(rows).to_csv(path, index=False)
@@ -49,11 +155,15 @@ def _write_timeseries(rows: list[dict[str, Any]], path: Path) -> None:
                 "iteration",
                 "wall_time",
                 "measured_loss",
+                "rms_standardized_residual",
                 "residual_l2",
                 "residual_l1",
                 "active_queries",
                 "num_candidates",
+                "candidates_scored_this_iter",
                 "positive_advantage_rate",
+                "positive_returned_rate",
+                "selected_nonconflicting",
                 "accepted_edits",
                 "accepted_rate",
                 "mean_advantage",
@@ -98,6 +208,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
 
     qcat, workload_groups = build_workload(schema, config)
     qcat.save_json(output_dir / "queries.json")
+    workload_summary = _workload_summary(qcat, workload_groups, schema, config)
     log(f"Constructed workload: queries={qcat.m}, groups={len(workload_groups)}")
 
     t0 = time.perf_counter()
@@ -151,7 +262,10 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         iteration=0,
     )
     stats.time_init_seconds = time.perf_counter() - t0
+    initial_answers = state.answer_syn.copy()
+    initial_residual = state.residual.copy()
     initial_loss = measured_loss(state.residual, state.inv_variance)
+    initial_rms = rms_standardized_residual(initial_loss, qcat.m)
     log(f"Initial measured loss: {initial_loss:.6g}")
 
     X_real_for_evaluation = X_real if bool(evaluation_cfg.get("compute_true_query_error", True)) else None
@@ -185,6 +299,14 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     timeseries: list[dict[str, Any]] = []
     use_gpu_candidate_backend = candidate_backend in {"jax_repair", "gpu_repair"}
     X_syn_gpu = replicate_table_to_devices(state.X_syn) if use_gpu_candidate_backend else None
+    configured_total_candidates = int(
+        qdte_cfg.get("total_candidates_per_iter", max(1, num_active_targets * int(qdte_cfg.get("candidates_per_target", 64))))
+    )
+    gpu_return_top_k = int(qdte_cfg.get("gpu_return_top_k", 0))
+    per_device_total_candidates = int(math.ceil(configured_total_candidates / max(1, jax.local_device_count())))
+    gpu_topk_return_mode = bool(
+        use_gpu_candidate_backend and 0 < gpu_return_top_k < per_device_total_candidates
+    )
 
     for iteration in range(1, max_iters + 1):
         iter_start = time.perf_counter()
@@ -225,6 +347,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         stats.num_random_candidates += int(diag.get("random_candidates", 0.0))
         stats.num_source_filter_attempts += int(diag.get("source_filter_attempts", 0.0))
         stats.num_source_filter_failures += int(diag.get("source_filter_failures", 0.0))
+        stats.num_candidates_returned_to_cpu += int(candidates.size)
 
         if candidates.size == 0:
             patience += 1
@@ -256,12 +379,16 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             stats.time_scoring_seconds += time.perf_counter() - t_score
         else:
             advantages = fused_advantages
-        stats.num_candidates_scored += int(diag.get("scored_candidates", candidates.size))
-        positive_rate = float(np.mean(advantages > min_advantage)) if len(advantages) else 0.0
+        candidates_scored_this_iter = int(diag.get("scored_candidates", candidates.size))
+        stats.num_candidates_scored += candidates_scored_this_iter
+        positive_returned_count = int(np.sum(advantages > min_advantage)) if len(advantages) else 0
+        stats.num_positive_returned_candidates += positive_returned_count
+        positive_rate = float(positive_returned_count / max(1, len(advantages)))
 
         t_transport = time.perf_counter()
         before_loss = measured_loss(state.residual, state.inv_variance)
         selected = select_top_nonconflicting(candidates, advantages, accepted_per_iter, min_advantage)
+        stats.num_selected_nonconflicting_candidates += int(len(selected))
         if transport_delta_backend in {"jax_prefix", "gpu_prefix"}:
             transport = choose_transport_batch_jax(
                 candidates,
@@ -340,11 +467,15 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 "iteration": iteration,
                 "wall_time": time.perf_counter() - stats.start_time,
                 "measured_loss": cur_loss,
+                "rms_standardized_residual": rms_standardized_residual(cur_loss, qcat.m),
                 "residual_l2": float(np.linalg.norm(state.residual)),
                 "residual_l1": float(np.sum(np.abs(state.residual))),
                 "active_queries": int(len(active)),
                 "num_candidates": int(candidates.size),
+                "candidates_scored_this_iter": candidates_scored_this_iter,
                 "positive_advantage_rate": positive_rate,
+                "positive_returned_rate": positive_rate,
+                "selected_nonconflicting": int(len(selected)),
                 "accepted_edits": int(len(transport.accepted_indices)),
                 "accepted_rate": float(len(transport.accepted_indices) / max(1, candidates.size)),
                 "mean_advantage": transport.mean_advantage,
@@ -376,6 +507,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     state.answer_syn = final_answers.astype(np.float32)
     state.residual = (state.target - state.answer_syn).astype(np.float32)
     final_loss = measured_loss(state.residual, state.inv_variance)
+    final_rms = rms_standardized_residual(final_loss, qcat.m)
+    loss_reduction = float(initial_loss - final_loss)
     log(f"Final measured loss: {final_loss:.6g}")
     log(f"Final incremental answer drift before recompute: {final_incremental_answer_drift:.6g}")
     log(f"Candidates scored: {stats.num_candidates_scored}")
@@ -398,7 +531,9 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "num_measurement_groups": int(len(measurements.groups)),
         "initial_measured_loss": initial_loss,
         "final_measured_loss": final_loss,
-        "loss_reduction": float(initial_loss - final_loss),
+        "loss_reduction": loss_reduction,
+        "initial_rms_standardized_residual": initial_rms,
+        "final_rms_standardized_residual": final_rms,
         "final_incremental_answer_drift": final_incremental_answer_drift,
         "num_candidates_scored": int(stats.num_candidates_scored),
         "num_candidates_requested": int(stats.num_candidates_requested),
@@ -411,30 +546,86 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "transport_prefix_strategy": transport_prefix_strategy,
         "use_pmap": bool(use_pmap),
     }
+    true_answers: np.ndarray | None = None
     if bool(evaluation_cfg.get("compute_true_query_error", True)):
         if X_real_for_evaluation is None:
             raise RuntimeError("Internal error: true-query evaluation requested but real data reference was cleared.")
-        log("Computing exact true query answers for post-run evaluation only.")
+        log("Computing exact true query answers for offline evaluation metrics only.")
         true_answers = answer_queries(
             X_real_for_evaluation,
             qcat,
             batch_size=int(runtime_cfg.get("answer_batch_size", 8192)),
         )
-        final_metrics.update(query_error_metrics(true_answers, final_answers, n_real, state.X_syn.shape[0]))
+        initial_true_metrics = query_error_metrics(
+            true_answers,
+            initial_answers,
+            n_real,
+            state.X_syn.shape[0],
+            prefix="initial_true_query",
+        )
+        final_true_metrics = query_error_metrics(
+            true_answers,
+            final_answers,
+            n_real,
+            state.X_syn.shape[0],
+            prefix="final_true_query",
+        )
+        final_alias_metrics = query_error_metrics(
+            true_answers,
+            final_answers,
+            n_real,
+            state.X_syn.shape[0],
+            prefix="true_query",
+        )
+        final_metrics.update(initial_true_metrics)
+        final_metrics.update(final_true_metrics)
+        final_metrics.update(final_alias_metrics)
+        final_metrics["true_query_mae_reduction"] = float(
+            initial_true_metrics["initial_true_query_mae"] - final_true_metrics["final_true_query_mae"]
+        )
+        final_metrics["true_query_rmse_reduction"] = float(
+            initial_true_metrics["initial_true_query_rmse"] - final_true_metrics["final_true_query_rmse"]
+        )
         log(
             "True query error for evaluation only: "
-            f"MAE={final_metrics['true_query_mae']:.6g}, "
-            f"RMSE={final_metrics['true_query_rmse']:.6g}"
+            f"initial_MAE={final_metrics['initial_true_query_mae']:.6g}, "
+            f"final_MAE={final_metrics['final_true_query_mae']:.6g}, "
+            f"final_RMSE={final_metrics['final_true_query_rmse']:.6g}"
         )
 
     runtime_dict = stats.as_dict()
+    efficiency_metrics = {
+        "loss_reduction_per_second": float(loss_reduction / max(1.0e-9, stats.time_generation_seconds)),
+        "candidates_scored_per_second": float(
+            stats.num_candidates_scored / max(1.0e-9, stats.time_generation_seconds)
+        ),
+        "accepted_edits_per_second": float(stats.num_accepted_edits / max(1.0e-9, stats.time_generation_seconds)),
+        "accepted_per_scored_candidate": float(stats.num_accepted_edits / max(1, stats.num_candidates_scored)),
+    }
+    final_metrics.update(efficiency_metrics)
+    runtime_dict.update(efficiency_metrics)
+    runtime_dict["positive_advantage_all_rate_available"] = bool(not gpu_topk_return_mode)
+    runtime_dict["positive_returned_rate_is_topk_biased"] = bool(gpu_topk_return_mode)
     runtime_dict["gpu_devices"] = [str(d) for d in jax.devices()]
     runtime_dict["score_backend"] = score_backend
     runtime_dict["candidate_backend"] = candidate_backend
     runtime_dict["transport_delta_backend"] = transport_delta_backend
     runtime_dict["transport_prefix_strategy"] = transport_prefix_strategy
     runtime_dict["use_pmap"] = bool(use_pmap)
+    metrics_by_family = _metrics_by_family(
+        qcat,
+        initial_residual,
+        state.residual,
+        state.inv_variance,
+        true_answers,
+        initial_answers,
+        final_answers,
+        n_real,
+        state.X_syn.shape[0],
+    )
     write_json(final_metrics, output_dir / "metrics_final.json")
+    write_json(metrics_by_family, output_dir / "metrics_by_family.json")
+    write_json(workload_summary, output_dir / "workload_summary.json")
     _write_timeseries(timeseries, output_dir / "metrics_timeseries.csv")
     write_json(runtime_dict, output_dir / "runtime.json")
     (output_dir / "logs.txt").write_text("\n".join(logs) + "\n", encoding="utf-8")
