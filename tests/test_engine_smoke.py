@@ -82,17 +82,24 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
     assert "final_rms_standardized_residual" in metrics_json
     assert "initial_true_query_mae" in metrics_json
     assert "final_true_query_mae" in metrics_json
+    assert "positive_returned_rate_is_topk_biased" in metrics_json
     assert metrics_json["true_query_mae"] == metrics_json["final_true_query_mae"]
     assert metrics["final_incremental_answer_drift"] == 0.0
     by_family_json = orjson.loads((out_dir / "metrics_by_family.json").read_bytes())
     assert "oneway" in by_family_json
     assert by_family_json["oneway"]["num_queries"] > 0
+    assert "true_query_mae_reduction" in by_family_json["oneway"]
+    assert "true_query_rmse_reduction" in by_family_json["oneway"]
     workload_json = orjson.loads((out_dir / "workload_summary.json").read_bytes())
     assert workload_json["total_num_queries"] == metrics["num_queries"]
     assert "num_queries_by_family" in workload_json
+    assert workload_json["total_queries"] == workload_json["total_num_queries"]
+    assert workload_json["queries_by_family"] == workload_json["num_queries_by_family"]
     measurement_json = orjson.loads((out_dir / "measurements.json").read_bytes())
     assert "true_answers_debug" not in measurement_json
     assert "true_answers" not in measurement_json
     runtime_json = orjson.loads((out_dir / "runtime.json").read_bytes())
     assert runtime_json["num_candidates_requested"] >= runtime_json["num_candidates_scored"]
     assert "accepted_per_scored_candidate" in runtime_json
+    assert "candidate_funnel" in runtime_json
+    assert runtime_json["candidate_funnel"]["requested"] == runtime_json["num_candidates_requested"]

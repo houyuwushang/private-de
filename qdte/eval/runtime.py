@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -27,13 +28,27 @@ class RuntimeStats:
     num_positive_returned_candidates: int = 0
     num_selected_nonconflicting_candidates: int = 0
 
-    def as_dict(self) -> dict[str, float | int]:
+    def as_dict(self) -> dict[str, Any]:
         total = time.perf_counter() - self.start_time
         accepted_rate = self.num_accepted_edits / max(1, self.num_candidates_scored)
         scoring_throughput = self.num_candidates_scored / max(1.0e-9, self.time_scoring_seconds)
         source_failure_rate = self.num_source_filter_failures / max(1, self.num_source_filter_attempts)
         generation_seconds = max(1.0e-9, self.time_generation_seconds)
         positive_returned_rate = self.num_positive_returned_candidates / max(1, self.num_candidates_returned_to_cpu)
+        selected_per_returned = self.num_selected_nonconflicting_candidates / max(
+            1, self.num_candidates_returned_to_cpu
+        )
+        candidate_funnel = {
+            "requested": int(self.num_candidates_requested),
+            "scored": int(self.num_candidates_scored),
+            "returned_to_cpu": int(self.num_candidates_returned_to_cpu),
+            "positive_returned": int(self.num_positive_returned_candidates),
+            "selected_nonconflicting": int(self.num_selected_nonconflicting_candidates),
+            "accepted": int(self.num_accepted_edits),
+            "accepted_per_scored": float(accepted_rate),
+            "positive_returned_rate": float(positive_returned_rate),
+            "selected_per_returned": float(selected_per_returned),
+        }
         return {
             "wall_clock_seconds": float(total),
             "time_measurement_seconds": float(self.time_measurement_seconds),
@@ -61,8 +76,7 @@ class RuntimeStats:
             "candidates_scored_per_second": float(self.num_candidates_scored / generation_seconds),
             "accepted_edits_per_second": float(self.num_accepted_edits / generation_seconds),
             "positive_returned_rate": float(positive_returned_rate),
-            "selected_nonconflicting_per_returned_candidate": float(
-                self.num_selected_nonconflicting_candidates / max(1, self.num_candidates_returned_to_cpu)
-            ),
+            "selected_nonconflicting_per_returned_candidate": float(selected_per_returned),
             "source_filter_failure_rate": float(source_failure_rate),
+            "candidate_funnel": candidate_funnel,
         }

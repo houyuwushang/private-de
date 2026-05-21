@@ -90,8 +90,11 @@ def _workload_summary(qcat: Any, workload_groups: list[Any], schema: Any, config
     )
     return {
         "total_num_queries": int(qcat.m),
+        "total_queries": int(qcat.m),
         "num_queries_by_family": query_counts,
+        "queries_by_family": query_counts,
         "num_groups_by_family": group_counts,
+        "groups_by_family": group_counts,
         "workload_config": config_values,
         "max_queries_hit": bool(max_queries_hit),
         "max_2way_cells_appears_limiting": bool(max_2way_cells_appears_limiting),
@@ -141,6 +144,12 @@ def _metrics_by_family(
                     n_syn,
                     prefix="final_true_query",
                 )
+            )
+            family_metrics["true_query_mae_reduction"] = float(
+                family_metrics["initial_true_query_mae"] - family_metrics["final_true_query_mae"]
+            )
+            family_metrics["true_query_rmse_reduction"] = float(
+                family_metrics["initial_true_query_rmse"] - family_metrics["final_true_query_rmse"]
             )
         result[family] = family_metrics
     return result
@@ -606,6 +615,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     runtime_dict.update(efficiency_metrics)
     runtime_dict["positive_advantage_all_rate_available"] = bool(not gpu_topk_return_mode)
     runtime_dict["positive_returned_rate_is_topk_biased"] = bool(gpu_topk_return_mode)
+    final_metrics["positive_advantage_all_rate_available"] = bool(not gpu_topk_return_mode)
+    final_metrics["positive_returned_rate_is_topk_biased"] = bool(gpu_topk_return_mode)
     runtime_dict["gpu_devices"] = [str(d) for d in jax.devices()]
     runtime_dict["score_backend"] = score_backend
     runtime_dict["candidate_backend"] = candidate_backend
