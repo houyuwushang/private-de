@@ -107,6 +107,27 @@ class QueryCatalogue:
         return terms
 
 
+def query_key(qcat: QueryCatalogue, qid: int) -> tuple[tuple[int, int, int, int, int], ...]:
+    return tuple(sorted(qcat.query_terms(qid)))
+
+
+def filter_query_catalogue(qcat: QueryCatalogue, keep_indices: np.ndarray) -> QueryCatalogue:
+    keep = np.asarray(keep_indices, dtype=np.int32)
+    return QueryCatalogue(
+        m=int(len(keep)),
+        max_terms=int(qcat.max_terms),
+        attrs=qcat.attrs[keep].copy(),
+        ops=qcat.ops[keep].copy(),
+        values=qcat.values[keep].copy(),
+        lows=qcat.lows[keep].copy(),
+        highs=qcat.highs[keep].copy(),
+        num_terms=qcat.num_terms[keep].copy(),
+        names=[qcat.names[int(i)] for i in keep],
+        groups=[qcat.groups[int(i)] for i in keep],
+        families=[qcat.families[int(i)] for i in keep],
+    )
+
+
 class QueryBuilder:
     def __init__(self, max_terms: int):
         self.max_terms = int(max_terms)

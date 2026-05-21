@@ -29,6 +29,25 @@ class WorkloadGroup:
         }
 
 
+def filter_workload_groups(groups: list[WorkloadGroup], keep_indices: np.ndarray) -> list[WorkloadGroup]:
+    keep = np.asarray(keep_indices, dtype=np.int32)
+    index_map = {int(old_idx): new_idx for new_idx, old_idx in enumerate(keep.tolist())}
+    filtered: list[WorkloadGroup] = []
+    for group in groups:
+        remapped = [index_map[int(idx)] for idx in group.query_indices if int(idx) in index_map]
+        if remapped:
+            filtered.append(
+                WorkloadGroup(
+                    name=group.name,
+                    family=group.family,
+                    query_indices=np.asarray(remapped, dtype=np.int32),
+                    sensitivity_l2=group.sensitivity_l2,
+                    is_partition=group.is_partition,
+                )
+            )
+    return filtered
+
+
 def _range_intervals(cardinality: int, count: int, rng: np.random.Generator) -> list[tuple[int, int]]:
     if cardinality <= 1:
         return [(0, 0)]

@@ -7,6 +7,7 @@ import pandas as pd
 import orjson
 
 from qdte.evolution.engine import run_qdte
+from qdte.queries.types import QueryCatalogue, query_key
 
 
 def test_engine_smoke_outputs(tmp_path: Path) -> None:
@@ -68,7 +69,26 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
         },
         "debug": {"recompute_after_batch": True, "assert_batch_loss_decrease": True},
         "runtime": {"use_pmap": False, "scoring_chunk_size": 32, "answer_batch_size": 64, "xla_preallocate": False},
-        "evaluation": {"compute_true_query_error": True, "save_synthetic_csv": True},
+        "evaluation": {
+            "compute_true_query_error": True,
+            "compute_heldout_query_error": True,
+            "heldout_exclude_measured_queries": True,
+            "save_synthetic_csv": True,
+            "heldout_workload": {
+                "include_oneway": True,
+                "include_2way_cat": True,
+                "include_prefix": True,
+                "include_range": True,
+                "include_mixed": True,
+                "include_halfspace": False,
+                "max_queries": 180,
+                "max_terms": 4,
+                "max_2way_cells": 80,
+                "range_intervals_per_num_attr": 8,
+                "mixed_queries_per_pair": 8,
+                "random_seed": 10000,
+            },
+        },
     }
     metrics = run_qdte(config)
     assert metrics["num_queries"] > 0
@@ -76,6 +96,10 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
     assert (out_dir / "metrics_final.json").exists()
     assert (out_dir / "metrics_by_family.json").exists()
     assert (out_dir / "workload_summary.json").exists()
+    assert (out_dir / "queries_holdout.json").exists()
+    assert (out_dir / "workload_summary_holdout.json").exists()
+    assert (out_dir / "metrics_holdout.json").exists()
+    assert (out_dir / "metrics_by_family_holdout.json").exists()
     assert (out_dir / "metrics_timeseries.csv").exists()
     assert (out_dir / "runtime.json").exists()
     metrics_json = orjson.loads((out_dir / "metrics_final.json").read_bytes())
@@ -83,6 +107,7 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
     assert "initial_true_query_mae" in metrics_json
     assert "final_true_query_mae" in metrics_json
     assert "positive_returned_rate_is_topk_biased" in metrics_json
+    assert "heldout_final_true_query_mae" in metrics_json
     assert metrics_json["true_query_mae"] == metrics_json["final_true_query_mae"]
     assert metrics["final_incremental_answer_drift"] == 0.0
     by_family_json = orjson.loads((out_dir / "metrics_by_family.json").read_bytes())
@@ -95,6 +120,21 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
     assert "num_queries_by_family" in workload_json
     assert workload_json["total_queries"] == workload_json["total_num_queries"]
     assert workload_json["queries_by_family"] == workload_json["num_queries_by_family"]
+    holdout_workload_json = orjson.loads((out_dir / "workload_summary_holdout.json").read_bytes())
+    assert holdout_workload_json["total_queries"] > 0
+    assert holdout_workload_json["num_removed_as_measured_duplicates"] > 0
+    assert holdout_workload_json["heldout_exclude_measured_queries"] is True
+    holdout_metrics_json = orjson.loads((out_dir / "metrics_holdout.json").read_bytes())
+    assert holdout_metrics_json["num_queries"] == holdout_workload_json["total_queries"]
+    assert holdout_metrics_json["num_queries"] > 0
+    assert "final_true_query_mae" in holdout_metrics_json
+    by_family_holdout_json = orjson.loads((out_dir / "metrics_by_family_holdout.json").read_bytes())
+    assert by_family_holdout_json
+    measured_qcat = QueryCatalogue.from_dict(orjson.loads((out_dir / "queries.json").read_bytes()))
+    heldout_qcat = QueryCatalogue.from_dict(orjson.loads((out_dir / "queries_holdout.json").read_bytes()))
+    measured_keys = {query_key(measured_qcat, qid) for qid in range(measured_qcat.m)}
+    heldout_keys = {query_key(heldout_qcat, qid) for qid in range(heldout_qcat.m)}
+    assert measured_keys.isdisjoint(heldout_keys)
     measurement_json = orjson.loads((out_dir / "measurements.json").read_bytes())
     assert "true_answers_debug" not in measurement_json
     assert "true_answers" not in measurement_json

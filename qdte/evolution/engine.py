@@ -32,7 +32,24 @@ from qdte.evolution.transport import (
 from qdte.measurement.measure import measure_real_dataset
 from qdte.preprocess import decode_array, load_and_preprocess_csv
 from qdte.queries.eval_jax import answer_queries
-from qdte.queries.workload import build_workload
+from qdte.queries.types import QueryCatalogue, filter_query_catalogue, query_key
+from qdte.queries.workload import WorkloadGroup, build_workload, filter_workload_groups
+
+
+HELDOUT_WORKLOAD_DEFAULTS: dict[str, Any] = {
+    "include_oneway": False,
+    "include_2way_cat": True,
+    "include_prefix": True,
+    "include_range": True,
+    "include_mixed": True,
+    "include_halfspace": False,
+    "max_queries": 10000,
+    "max_terms": 4,
+    "max_2way_cells": 10000,
+    "range_intervals_per_num_attr": 128,
+    "mixed_queries_per_pair": 128,
+    "random_seed": 10000,
+}
 
 
 def _resolve_n_syn(value: Any, n_real: int) -> int:
@@ -53,6 +70,11 @@ def _query_indices_by_family(families: list[str]) -> dict[str, np.ndarray]:
     for idx, family in enumerate(families):
         grouped.setdefault(family, []).append(idx)
     return {family: np.asarray(indices, dtype=np.int32) for family, indices in grouped.items()}
+
+
+def _heldout_workload_config(evaluation_cfg: dict[str, Any]) -> dict[str, Any]:
+    cfg = evaluation_cfg.get("heldout_workload", {})
+    return {key: cfg.get(key, default) for key, default in HELDOUT_WORKLOAD_DEFAULTS.items()}
 
 
 def _workload_summary(qcat: Any, workload_groups: list[Any], schema: Any, config: dict[str, Any]) -> dict[str, Any]:
@@ -103,6 +125,103 @@ def _workload_summary(qcat: Any, workload_groups: list[Any], schema: Any, config
         "num_2way_cells_possible": total_2way_cells_possible,
         "num_2way_queries_constructed": twoway_queries_constructed,
     }
+
+
+def _heldout_workload_summary(
+    qcat: QueryCatalogue,
+    workload_groups: list[WorkloadGroup],
+    workload_config: dict[str, Any],
+    num_removed_as_measured_duplicates: int,
+    heldout_exclude_measured_queries: bool,
+) -> dict[str, Any]:
+    query_counts = _count_by_family(qcat.families)
+    group_counts = _count_by_family([group.family for group in workload_groups])
+    return {
+        "total_num_queries": int(qcat.m),
+        "total_queries": int(qcat.m),
+        "num_queries_by_family": query_counts,
+        "queries_by_family": query_counts,
+        "num_groups_by_family": group_counts,
+        "groups_by_family": group_counts,
+        "num_removed_as_measured_duplicates": int(num_removed_as_measured_duplicates),
+        "heldout_exclude_measured_queries": bool(heldout_exclude_measured_queries),
+        "workload_config": workload_config,
+    }
+
+
+def _query_error_metrics_or_zero(
+    true_answers: np.ndarray,
+    syn_answers: np.ndarray,
+    n_real: int,
+    n_syn: int,
+    prefix: str,
+) -> dict[str, float]:
+    if len(true_answers) == 0:
+        return {
+            f"{prefix}_mae": 0.0,
+            f"{prefix}_rmse": 0.0,
+            f"{prefix}_max_error": 0.0,
+        }
+    return query_error_metrics(true_answers, syn_answers, n_real, n_syn, prefix=prefix)
+
+
+def _true_query_evaluation_metrics(
+    qcat: QueryCatalogue,
+    true_answers: np.ndarray,
+    initial_answers: np.ndarray,
+    final_answers: np.ndarray,
+    n_real: int,
+    n_syn: int,
+) -> dict[str, Any]:
+    initial_metrics = _query_error_metrics_or_zero(
+        true_answers,
+        initial_answers,
+        n_real,
+        n_syn,
+        prefix="initial_true_query",
+    )
+    final_metrics = _query_error_metrics_or_zero(
+        true_answers,
+        final_answers,
+        n_real,
+        n_syn,
+        prefix="final_true_query",
+    )
+    return {
+        "num_queries": int(qcat.m),
+        "queries_by_family": _count_by_family(qcat.families),
+        **initial_metrics,
+        **final_metrics,
+        "true_query_mae_reduction": float(
+            initial_metrics["initial_true_query_mae"] - final_metrics["final_true_query_mae"]
+        ),
+        "true_query_rmse_reduction": float(
+            initial_metrics["initial_true_query_rmse"] - final_metrics["final_true_query_rmse"]
+        ),
+    }
+
+
+def _true_query_metrics_by_family(
+    qcat: QueryCatalogue,
+    true_answers: np.ndarray,
+    initial_answers: np.ndarray,
+    final_answers: np.ndarray,
+    n_real: int,
+    n_syn: int,
+) -> dict[str, dict[str, float | int]]:
+    result: dict[str, dict[str, float | int]] = {}
+    for family, idx in _query_indices_by_family(qcat.families).items():
+        family_metrics = _true_query_evaluation_metrics(
+            filter_query_catalogue(qcat, idx),
+            true_answers[idx],
+            initial_answers[idx],
+            final_answers[idx],
+            n_real,
+            n_syn,
+        )
+        family_metrics.pop("queries_by_family")
+        result[family] = family_metrics
+    return result
 
 
 def _metrics_by_family(
@@ -219,6 +338,37 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     qcat.save_json(output_dir / "queries.json")
     workload_summary = _workload_summary(qcat, workload_groups, schema, config)
     log(f"Constructed workload: queries={qcat.m}, groups={len(workload_groups)}")
+    compute_heldout_eval = bool(evaluation_cfg.get("compute_heldout_query_error", False))
+    heldout_qcat: QueryCatalogue | None = None
+    heldout_workload_groups: list[WorkloadGroup] = []
+    if compute_heldout_eval:
+        heldout_config = _heldout_workload_config(evaluation_cfg)
+        heldout_qcat, heldout_workload_groups = build_workload(schema, {"workload": heldout_config})
+        heldout_exclude_measured_queries = bool(evaluation_cfg.get("heldout_exclude_measured_queries", True))
+        num_removed_as_measured_duplicates = 0
+        if heldout_exclude_measured_queries:
+            measured_keys = {query_key(qcat, qid) for qid in range(qcat.m)}
+            keep_indices = np.asarray(
+                [qid for qid in range(heldout_qcat.m) if query_key(heldout_qcat, qid) not in measured_keys],
+                dtype=np.int32,
+            )
+            num_removed_as_measured_duplicates = int(heldout_qcat.m - len(keep_indices))
+            heldout_qcat = filter_query_catalogue(heldout_qcat, keep_indices)
+            heldout_workload_groups = filter_workload_groups(heldout_workload_groups, keep_indices)
+        heldout_qcat.save_json(output_dir / "queries_holdout.json")
+        heldout_summary = _heldout_workload_summary(
+            heldout_qcat,
+            heldout_workload_groups,
+            heldout_config,
+            num_removed_as_measured_duplicates,
+            heldout_exclude_measured_queries,
+        )
+        write_json(heldout_summary, output_dir / "workload_summary_holdout.json")
+        log(
+            "Constructed held-out workload for offline evaluation only: "
+            f"queries={heldout_qcat.m}, groups={len(heldout_workload_groups)}, "
+            f"removed_measured_duplicates={num_removed_as_measured_duplicates}"
+        )
 
     t0 = time.perf_counter()
     measurements = measure_real_dataset(
@@ -275,9 +425,17 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     initial_residual = state.residual.copy()
     initial_loss = measured_loss(state.residual, state.inv_variance)
     initial_rms = rms_standardized_residual(initial_loss, qcat.m)
+    heldout_initial_answers: np.ndarray | None = None
+    if heldout_qcat is not None:
+        heldout_initial_answers = answer_queries(
+            state.X_syn,
+            heldout_qcat,
+            batch_size=int(runtime_cfg.get("answer_batch_size", 8192)),
+        )
     log(f"Initial measured loss: {initial_loss:.6g}")
 
-    X_real_for_evaluation = X_real if bool(evaluation_cfg.get("compute_true_query_error", True)) else None
+    compute_true_eval = bool(evaluation_cfg.get("compute_true_query_error", True))
+    X_real_for_evaluation = X_real if compute_true_eval or compute_heldout_eval else None
     X_real = None
     preprocess_result = None
 
@@ -512,6 +670,13 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
 
     stats.time_generation_seconds = time.perf_counter() - generation_start
     final_answers = answer_queries(state.X_syn, qcat, batch_size=int(runtime_cfg.get("answer_batch_size", 8192)))
+    heldout_final_answers: np.ndarray | None = None
+    if heldout_qcat is not None:
+        heldout_final_answers = answer_queries(
+            state.X_syn,
+            heldout_qcat,
+            batch_size=int(runtime_cfg.get("answer_batch_size", 8192)),
+        )
     final_incremental_answer_drift = float(np.max(np.abs(final_answers - state.answer_syn)))
     state.answer_syn = final_answers.astype(np.float32)
     state.residual = (state.target - state.answer_syn).astype(np.float32)
@@ -556,7 +721,9 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "use_pmap": bool(use_pmap),
     }
     true_answers: np.ndarray | None = None
-    if bool(evaluation_cfg.get("compute_true_query_error", True)):
+    metrics_holdout: dict[str, Any] | None = None
+    metrics_by_family_holdout: dict[str, dict[str, float | int]] | None = None
+    if compute_true_eval:
         if X_real_for_evaluation is None:
             raise RuntimeError("Internal error: true-query evaluation requested but real data reference was cleared.")
         log("Computing exact true query answers for offline evaluation metrics only.")
@@ -601,6 +768,47 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             f"final_MAE={final_metrics['final_true_query_mae']:.6g}, "
             f"final_RMSE={final_metrics['final_true_query_rmse']:.6g}"
         )
+    if compute_heldout_eval:
+        if X_real_for_evaluation is None:
+            raise RuntimeError("Internal error: held-out evaluation requested but real data reference was cleared.")
+        if heldout_qcat is None or heldout_initial_answers is None or heldout_final_answers is None:
+            raise RuntimeError("Internal error: held-out evaluation requested but held-out answers are unavailable.")
+        log("Computing held-out exact true query answers for offline evaluation metrics only.")
+        heldout_true_answers = answer_queries(
+            X_real_for_evaluation,
+            heldout_qcat,
+            batch_size=int(runtime_cfg.get("answer_batch_size", 8192)),
+        )
+        metrics_holdout = _true_query_evaluation_metrics(
+            heldout_qcat,
+            heldout_true_answers,
+            heldout_initial_answers,
+            heldout_final_answers,
+            n_real,
+            state.X_syn.shape[0],
+        )
+        metrics_by_family_holdout = _true_query_metrics_by_family(
+            heldout_qcat,
+            heldout_true_answers,
+            heldout_initial_answers,
+            heldout_final_answers,
+            n_real,
+            state.X_syn.shape[0],
+        )
+        final_metrics["heldout_num_queries"] = int(metrics_holdout["num_queries"])
+        final_metrics["heldout_initial_true_query_mae"] = float(metrics_holdout["initial_true_query_mae"])
+        final_metrics["heldout_final_true_query_mae"] = float(metrics_holdout["final_true_query_mae"])
+        final_metrics["heldout_true_query_mae_reduction"] = float(metrics_holdout["true_query_mae_reduction"])
+        final_metrics["heldout_initial_true_query_rmse"] = float(metrics_holdout["initial_true_query_rmse"])
+        final_metrics["heldout_final_true_query_rmse"] = float(metrics_holdout["final_true_query_rmse"])
+        final_metrics["heldout_true_query_rmse_reduction"] = float(metrics_holdout["true_query_rmse_reduction"])
+        log(
+            "Held-out true query error for evaluation only: "
+            f"queries={metrics_holdout['num_queries']}, "
+            f"initial_MAE={metrics_holdout['initial_true_query_mae']:.6g}, "
+            f"final_MAE={metrics_holdout['final_true_query_mae']:.6g}, "
+            f"final_RMSE={metrics_holdout['final_true_query_rmse']:.6g}"
+        )
 
     runtime_dict = stats.as_dict()
     efficiency_metrics = {
@@ -636,6 +844,9 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     )
     write_json(final_metrics, output_dir / "metrics_final.json")
     write_json(metrics_by_family, output_dir / "metrics_by_family.json")
+    if metrics_holdout is not None and metrics_by_family_holdout is not None:
+        write_json(metrics_holdout, output_dir / "metrics_holdout.json")
+        write_json(metrics_by_family_holdout, output_dir / "metrics_by_family_holdout.json")
     write_json(workload_summary, output_dir / "workload_summary.json")
     _write_timeseries(timeseries, output_dir / "metrics_timeseries.csv")
     write_json(runtime_dict, output_dir / "runtime.json")
