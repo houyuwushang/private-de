@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 
 from qdte.evolution.candidates import CandidateBatch
+from qdte.queries.delta_index import QueryDeltaIndex
 from qdte.queries.eval_jax import eval_records_queries_arrays
 from qdte.queries.types import QueryCatalogue
 
@@ -24,14 +25,41 @@ def _score_candidates_jit(
     values: jax.Array,
     lows: jax.Array,
     highs: jax.Array,
+    linear_attrs: jax.Array,
+    linear_weights: jax.Array,
+    linear_thresholds: jax.Array,
+    linear_num_terms: jax.Array,
     lambda_cost: jax.Array,
 ) -> jax.Array:
-    phi_old = eval_records_queries_arrays(old_rows, attrs, ops, values, lows, highs)
-    phi_new = eval_records_queries_arrays(new_rows, attrs, ops, values, lows, highs)
-    delta = phi_new.astype(jnp.float32) - phi_old.astype(jnp.float32)
+    phi_old = eval_records_queries_arrays(
+        old_rows,
+        attrs,
+        ops,
+        values,
+        lows,
+        highs,
+        linear_attrs,
+        linear_weights,
+        linear_thresholds,
+        linear_num_terms,
+    )
+    phi_new = eval_records_queries_arrays(
+        new_rows,
+        attrs,
+        ops,
+        values,
+        lows,
+        highs,
+        linear_attrs,
+        linear_weights,
+        linear_thresholds,
+        linear_num_terms,
+    )
     weights = residual.astype(jnp.float32) * inv_variance.astype(jnp.float32)
-    linear = delta @ weights
-    quad = (delta * delta) @ inv_variance.astype(jnp.float32)
+    enter = phi_new & (~phi_old)
+    exit_ = phi_old & (~phi_new)
+    linear = enter.astype(jnp.float32) @ weights - exit_.astype(jnp.float32) @ weights
+    quad = (enter | exit_).astype(jnp.float32) @ inv_variance.astype(jnp.float32)
     return linear - 0.5 * quad - lambda_cost.astype(jnp.float32) * edit_cost.astype(jnp.float32)
 
 
@@ -42,26 +70,30 @@ def _score_candidates_pmap(
     residual: jax.Array,
     inv_variance: jax.Array,
     edit_cost: jax.Array,
-    qarrays: tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
+    qarrays: tuple[jax.Array, ...],
     lambda_cost: jax.Array,
 ) -> jax.Array:
-    attrs, ops, values, lows, highs = qarrays
-    phi_old = eval_records_queries_arrays(old_rows, attrs, ops, values, lows, highs)
-    phi_new = eval_records_queries_arrays(new_rows, attrs, ops, values, lows, highs)
-    delta = phi_new.astype(jnp.float32) - phi_old.astype(jnp.float32)
+    phi_old = eval_records_queries_arrays(old_rows, *qarrays)
+    phi_new = eval_records_queries_arrays(new_rows, *qarrays)
     weights = residual.astype(jnp.float32) * inv_variance.astype(jnp.float32)
-    linear = delta @ weights
-    quad = (delta * delta) @ inv_variance.astype(jnp.float32)
+    enter = phi_new & (~phi_old)
+    exit_ = phi_old & (~phi_new)
+    linear = enter.astype(jnp.float32) @ weights - exit_.astype(jnp.float32) @ weights
+    quad = (enter | exit_).astype(jnp.float32) @ inv_variance.astype(jnp.float32)
     return linear - 0.5 * quad - lambda_cost.astype(jnp.float32) * edit_cost.astype(jnp.float32)
 
 
-def _qarrays(qcat: QueryCatalogue) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+def _qarrays(qcat: QueryCatalogue) -> tuple[jax.Array, ...]:
     return (
         jnp.asarray(qcat.attrs, dtype=jnp.int32),
         jnp.asarray(qcat.ops, dtype=jnp.int32),
         jnp.asarray(qcat.values, dtype=jnp.int32),
         jnp.asarray(qcat.lows, dtype=jnp.int32),
         jnp.asarray(qcat.highs, dtype=jnp.int32),
+        jnp.asarray(qcat.linear_attrs, dtype=jnp.int32),
+        jnp.asarray(qcat.linear_weights, dtype=jnp.float32),
+        jnp.asarray(qcat.linear_thresholds, dtype=jnp.float32),
+        jnp.asarray(qcat.linear_num_terms, dtype=jnp.int32),
     )
 
 
@@ -132,6 +164,14 @@ def compute_deltas(old_rows: np.ndarray, new_rows: np.ndarray, qcat: QueryCatalo
     return np.asarray(delta, dtype=np.int8)
 
 
+def compute_deltas_sparse(
+    old_rows: np.ndarray,
+    new_rows: np.ndarray,
+    delta_index: QueryDeltaIndex,
+) -> np.ndarray:
+    return delta_index.dense_candidate_deltas(old_rows, new_rows)
+
+
 def edit_advantage_from_delta(
     residual: np.ndarray,
     inv_variance: np.ndarray,
@@ -143,6 +183,30 @@ def edit_advantage_from_delta(
     linear = d @ (residual.astype(np.float32) * inv_variance.astype(np.float32))
     quad = (d * d) @ inv_variance.astype(np.float32)
     return linear - 0.5 * quad - float(lambda_cost) * edit_cost.astype(np.float32)
+
+
+def score_candidates_sparse(
+    candidates: CandidateBatch,
+    residual: np.ndarray,
+    inv_variance: np.ndarray,
+    delta_index: QueryDeltaIndex,
+    lambda_cost: float,
+) -> np.ndarray:
+    scores = np.empty(candidates.size, dtype=np.float32)
+    weights = residual.astype(np.float32) * inv_variance.astype(np.float32)
+    inv = inv_variance.astype(np.float32)
+    for idx in range(candidates.size):
+        delta = delta_index.candidate_delta(candidates.old_rows[idx], candidates.new_rows[idx])
+        if len(delta.qids) == 0:
+            advantage = 0.0
+        else:
+            signs = delta.values.astype(np.float32)
+            qids = delta.qids
+            linear = float(signs @ weights[qids])
+            quad = float((signs * signs) @ inv[qids])
+            advantage = linear - 0.5 * quad
+        scores[idx] = np.float32(advantage - float(lambda_cost) * float(candidates.edit_cost[idx]))
+    return scores
 
 
 def score_candidates_target_only(

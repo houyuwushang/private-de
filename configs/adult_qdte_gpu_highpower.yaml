@@ -42,26 +42,45 @@ privacy:
 projection:
   project_partitions: true
   clip_nonpartition: true
-  prefix_monotonicity: false
+  prefix_monotonicity: true
+  consistency:
+    enabled: true
+    method: local_marginal_ipf
+    max_scope_cells: 200000
+    max_iterations: 100
+    tolerance: 1.0e-2
+    max_lsq_iterations: 100
 
 init:
   N_syn: same_as_real
   method: independent_oneway
 
 qdte:
-  score_backend: dense_gpu
+  score_backend: sparse_delta_gpu
   candidate_backend: jax_repair
-  transport_mode: microbatch_greedy
+  transport_mode: atom_flow
+  atom_flow_update_mode: batch
+  atom_flow_pool_multiplier: 16
+  atom_flow_max_pool: 0
   transport_delta_backend: jax_prefix
   transport_prefix_strategy: best_advantage
   max_iters: 500
   num_active_targets: 64
   candidates_per_target: 64
-  total_candidates_per_iter: 131072
-  accepted_per_iter: 512
+  total_candidates_per_iter: 1572864
+  accepted_per_iter: 1024
   gpu_source_draws: 32
-  gpu_return_top_k: 4096
+  gpu_batches_per_iter: 1
+  gpu_score_query_block_size: 1024
+  gpu_sparse_query_block_size: 64
+  gpu_sparse_changed_attr_capacity: 4
+  gpu_return_top_k: 8192
   kappa_noise: 1.0
+  allow_below_noise_fallback: true
+  debt_alpha: 0.0
+  debt_decay: 0.95
+  debt_repay: 1.0
+  debt_cap: 1.0e6
   lambda_cost: 0.01
   numerical_distance_gamma: 0.1
   random_candidate_fraction: 0.05

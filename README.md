@@ -12,20 +12,32 @@
   - `prefix`
   - `range`
   - `mixed`
+  - `halfspace`
 - 支持 DP measurement：
   - 使用 zCDP Gaussian mechanism 加噪。
-  - 对 partition workload 可做 projection。
+  - 对 partition workload 可做 simplex projection。
   - 对非 partition counts 可做 clipping。
+  - 支持 scope-local marginal consistency projection：把 `EQ/LE/GE/RANGE` 的任意维 conjunction 映射到局部 marginal table，强制非负、已知总行数 `N`、以及重叠 query scope 的边际一致性。
 - 支持 oracle mode，用于 debug 或上界实验，不应作为 DP 结果使用。
 - 支持 QDTE edit loop：
   - active query selection
   - CPU repair candidate generation
+  - optional paired-query / masked-paired / masked-exit / exit-only CPU compiler：从 residual field 生成更结构化的 transport proposals
   - dense JAX/GPU scoring
   - non-conflicting edit selection
-  - batch transport acceptance
+  - prefix-greedy microbatch transport acceptance
+  - exact successive atom-flow transport over encoded row atoms
   - periodic full recompute drift check
+- 支持默认严格的 noise threshold：未超过 `kappa_noise * sigma` 的 residual 默认不会触发候选生成。
+- 支持基础 debt scheduler 更新，用于记录 query-level collateral damage，并可通过 `debt_alpha` 影响后续 active query priority。
+- 支持 prefix monotonicity projection，可对 prefix measurement group 做 weighted isotonic projection。
+- 支持 halfspace 查询的 measurement、JAX/CPU evaluation、CPU repair candidate path 和 consistency projection；GPU fused repair backend 对 halfspace 仍会 fail-fast。
 - 支持 GPU-oriented candidate path：
   - `jax_repair` / `gpu_repair`
+  - cached GPU query/schema context
+  - fixed-shape active query padding to reduce recompiles
+  - boolean enter/exit dense scoring to reduce temporary tensor pressure
+  - query-block dense scoring to avoid one huge candidate x query temporary matrix
   - top-k candidates returned to CPU
   - JAX prefix transport delta path
 - 支持 audit 输出：
@@ -54,6 +66,8 @@ edit advantage =
 exact true answers 只能用于离线 evaluation metrics。它们不会用于 active query selection、candidate generation、scoring、transport、stopping 或 hyperparameter selection，也不会写入 `measurements.json`。
 
 held-out workload 也只用于离线评估：它不会进入 measurement 或 optimization loop。
+
+当前支持两类 transport：`microbatch_greedy`/`sequential_greedy` prefix transport，以及 `atom_flow`。`atom_flow` 在候选 old-row/new-row encoded atom 图上选择一批 row edits，仍只使用 noisy/projected measurement residual。默认 `atom_flow_update_mode: batch` 会把 delta/score 和 prefix objective 放到 JAX 路径上批量计算，并在 engine 中一次性更新 residual；`atom_flow_update_mode: exact` 保留逐个 flow unit 精确 marginal 更新，适合小池对照。
 
 ## 主要目录
 
@@ -88,9 +102,69 @@ python scripts/run_qdte.py --config configs/adult_qdte.yaml --privacy.mode dp
 /home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q
 ```
 
+候选生成消融入口是：
+
+```bash
+/home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_ablation.py \
+  --config configs/smoke.yaml \
+  --variant random_mutation \
+  --qdte.max_iters 1000 \
+  --qdte.stop_patience 1000
+```
+
+当前可选 candidate-generation variants 包括 `random_mutation`、`single_query`、`masked_single_query`、`paired_query`、`masked_paired_query`、`masked_exit_query`、`directed_exit_only`、`masked_exit_only` 和 `random_source_directed_exit`，其中多数也有 `_full` 或 `blind_` 消融形式。2026-06-10 的统一 1000-step smoke 消融显示：`random_mutation` 长跑 measured loss 最好；`masked_single_query` 略好于重跑的 `single_query` measured loss，但仍没有超过 random；full-budget paired 系列和 exit-only 系列更容易停滞或退化。
+
 ## 关键配置
 
 基础 QDTE 配置在 `configs/adult_qdte.yaml`。高吞吐 GPU 配置在 `configs/adult_qdte_gpu_highpower.yaml`。
+
+`configs/adult_qdte.yaml` 是质量优先配置，当前使用：
+
+- `transport_mode: atom_flow`
+- `atom_flow_update_mode: batch`
+- `atom_flow_pool_multiplier: 16`
+- `atom_flow_max_pool: 0`
+- `transport_prefix_strategy: best_advantage`
+- `allow_below_noise_fallback: false`
+
+两个 Adult 配置都默认开启 measurement consistency projection：
+
+- `projection.prefix_monotonicity: true`
+- `projection.consistency.enabled: true`
+- `projection.consistency.method: local_marginal_ipf`
+
+该投影使用已知行数作为硬约束：每个局部 marginal table 都满足非负且总和为 `N`，并通过重叠 scope 的 shared marginals 对齐 oneway/twoway/prefix/range/mixed 等查询之间的一致性。超出 `max_scope_cells` 的 scope 会 fail-fast，不会静默跳过。
+
+`configs/adult_qdte_gpu_highpower.yaml` 是吞吐优先配置，当前显式使用：
+
+- `score_backend: sparse_delta_gpu`
+- `candidate_backend: jax_repair`
+- `transport_mode: atom_flow`
+- `atom_flow_update_mode: batch`
+- `atom_flow_pool_multiplier: 16`
+- `atom_flow_max_pool: 0`
+- `transport_delta_backend: jax_prefix`
+- `total_candidates_per_iter: 1572864`
+- `gpu_batches_per_iter: 1`
+- `gpu_sparse_query_block_size: 64`
+- `gpu_sparse_changed_attr_capacity: 4`
+- `gpu_return_top_k: 8192`
+- `accepted_per_iter: 1024`
+- `allow_below_noise_fallback: true`
+
+高吞吐配置当前默认使用 sparse-delta GPU scoring 和 batch atom-flow。`sparse_delta_gpu` 会把 attribute-to-query affected index、multi-word query scope bitsets 和 sparse query blocks 放进 fused JAX `pmap` scorer，避免每个 candidate 扫完整 query catalogue。50-iteration Adult 探针中，scoring time 从 dense GPU baseline 的约 `30.15s` 降到约 `14.26s`，总 generation time 从约 `36.65s` 降到约 `19.91s`。
+
+需要回退到 dense GPU scoring 对照时，可覆盖：
+
+```bash
+--qdte.score_backend dense_gpu --qdte.gpu_score_query_block_size 1024
+```
+
+需要回退到 exact atom-flow 对照时，可覆盖：
+
+```bash
+--qdte.atom_flow_update_mode exact --qdte.atom_flow_max_pool 1024
+```
 
 held-out evaluation 可通过 `evaluation` 打开：
 
@@ -146,20 +220,55 @@ evaluation:
 /home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q
 ```
 
-结果：
+最近一次完整测试结果：
 
 ```text
-15 passed in 19.63s
+76 passed in 6.92s
+```
+
+近期新增覆盖包括 directed repair enter/exit contract、paired/masked-paired/masked-exit compiler edge cases，以及 `sparse_delta_gpu` 跨 31 encoded attributes 边界的 multi-word bitset regression。
+
+最近一次 highpower 代码优化基准：
+
+```text
+config: configs/adult_qdte_gpu_highpower.yaml
+output: outputs/bench_gpu_sparsedelta_gpu_50
+max_iters: 50
+total_candidates_per_iter: 1572864
+gpu_batches_per_iter: 1
+score_backend: sparse_delta_gpu
+gpu_sparse_query_block_size: 64
+gpu_return_top_k: 8192
+accepted_per_iter: 1024
+result: 78,643,200 candidates scored
+candidate_scoring_throughput_per_second: about 5.52M
+candidates_scored_per_second: about 3.95M
+accepted edits: 36,617
+final measured loss: 127,132
+dense GPU 50-iter baseline scoring time: about 30.15s
+sparse-delta GPU 50-iter scoring time: about 14.26s
+```
+
+对比过的高候选规模：
+
+```text
+524,288 candidates/iter: ran, about 1.34M scoring candidates/s
+655,360 candidates/iter: ran, about 1.38M scoring candidates/s
+786,432 candidates/iter: ran, about 1.50M scoring candidates/s
+1,048,576 candidates/iter + 2048 query blocks: ran, about 1.82M scoring candidates/s
+1,572,864 candidates/iter + 1024 query blocks: ran, about 2.68M scoring candidates/s
+2,097,152 candidates/iter + 1024 query blocks: ran, but dropped to about 2.26M scoring candidates/s
 ```
 
 当前普通 shell 中 `pytest` 和 `python` 不在默认 PATH，直接运行 `pytest -q` 会失败；请优先使用上面的 conda 环境命令。
 
 ## 当前限制
 
-- halfspace workload 尚未实现。
+- halfspace 的 GPU fused candidate repair 尚未实现；`include_halfspace: true` 目前需要 `qdte.candidate_backend: cpu_repair`。
+- `sparse_delta_gpu` 已使用 multi-word `uint32` query-scope bitsets，去掉了原先 31 个 encoded attributes 的单 word 限制；仍需保证 `gpu_sparse_changed_attr_capacity` 覆盖候选可能修改的属性数。
 - 没有 adaptive query selection。
 - 没有 public schema loader。
-- 没有 debt scheduler。
 - 没有 plausibility materializer。
 - 没有 baseline 系统。
+- highpower GPU 配置默认仍偏吞吐，但当前使用 batch atom-flow transport。
 - held-out workload 如果配置过窄，排除 measured duplicates 后可能剩余 0 个查询；实际实验应选择足够宽的 held-out workload。

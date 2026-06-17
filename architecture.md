@@ -55,6 +55,10 @@ Important settings:
 - `privacy.measurement_mode: static_all`
 - `qdte.candidate_backend`: omitted, so the engine uses `cpu_repair`
 - `qdte.score_backend: dense_gpu`
+- `qdte.transport_mode: atom_flow`
+- `qdte.atom_flow_update_mode: batch`
+- `qdte.atom_flow_pool_multiplier: 16`
+- `qdte.atom_flow_max_pool: 0`
 - `qdte.max_iters: 5000`
 - `qdte.total_candidates_per_iter: 4096`
 - `qdte.accepted_per_iter: 64`
@@ -69,15 +73,21 @@ Important settings:
 
 - Output directory: `outputs/adult_qdte_gpu_highpower`
 - `qdte.candidate_backend: jax_repair`
+- `qdte.score_backend: sparse_delta_gpu`
+- `qdte.transport_mode: atom_flow`
+- `qdte.atom_flow_update_mode: batch`
 - `qdte.transport_delta_backend: jax_prefix`
 - `qdte.transport_prefix_strategy: best_advantage`
 - `qdte.max_iters: 500`
-- `qdte.total_candidates_per_iter: 131072`
-- `qdte.accepted_per_iter: 512`
+- `qdte.total_candidates_per_iter: 1572864`
+- `qdte.accepted_per_iter: 1024`
 - `qdte.gpu_source_draws: 32`
-- `qdte.gpu_return_top_k: 4096`
+- `qdte.gpu_batches_per_iter: 1`
+- `qdte.gpu_sparse_query_block_size: 64`
+- `qdte.gpu_sparse_changed_attr_capacity: 4`
+- `qdte.gpu_return_top_k: 8192`
 
-This path scores many more candidates on GPU and returns only a top-k subset to CPU-side selection/transport.
+This path scores many more candidates on GPU, uses sparse-delta GPU scoring by default, and returns only a top-k subset to CPU-side atom-flow transport.
 
 ### Other configs
 
@@ -89,6 +99,7 @@ This path scores many more candidates on GPU and returns only a top-k subset to 
 ```text
 qdte/
   config.py                 YAML loading, dotted CLI overrides
+  config_validation.py      fail-fast validation for unsupported modes/backends
   dataio.py                 output directory, JSON, NPY helpers
   preprocess.py             CSV encoding/decoding
   schema.py                 encoded table schema dataclasses
@@ -100,9 +111,11 @@ qdte/
     types.py                query catalogue representation
     workload.py             workload/group construction
     eval_jax.py             JAX query evaluation
+    delta_index.py          sparse affected-query index for edit deltas
   measurement/
     measure.py              real-data measurement, DP noise, projection
     projection.py           simplex projection and count clipping
+    consistency.py          scope-local marginal consistency projection
   evolution/
     engine.py               end-to-end QDTE orchestration
     state.py                mutable QDTE state dataclass
@@ -110,8 +123,8 @@ qdte/
     scheduler.py            active query selection
     candidates.py           CPU repair candidate generation
     gpu_candidates.py       JAX/GPU fused candidate generation and scoring
-    scoring.py              JAX dense candidate scoring and delta computation
-    transport.py            nonconflicting selection and batch transport
+    scoring.py              dense/sparse candidate scoring and delta computation
+    transport.py            nonconflicting, prefix, and atom-flow transport
   eval/
     metrics.py              measured loss and true-query evaluation metrics
     runtime.py              runtime counters and throughput stats
@@ -129,19 +142,20 @@ High-level sequence:
 4. Measure real data:
    - compute true query answers on `X_real`;
    - if `privacy.mode=dp`, add zCDP Gaussian noise;
-   - project/clamp noisy counts where configured.
+   - project/clamp noisy counts where configured;
+   - optionally apply prefix monotonicity and scope-local marginal consistency projection.
 5. Initialize synthetic data from one-way noisy targets.
 6. Run QDTE edit loop:
    - choose active target queries;
    - generate candidate edits;
    - score candidate edits against the measured target;
-   - select nonconflicting edits;
-   - choose a positive transport prefix;
+   - select transport edits with atom-flow or prefix-greedy transport;
    - apply accepted edits;
    - update synthetic query answers incrementally;
    - periodically recompute all synthetic answers to check drift.
-7. Save encoded and decoded synthetic data.
-8. Save final metrics, timeseries, runtime profile, schema, workload, measurements, logs, and resolved config.
+7. Optionally compute exact true-query and held-out query metrics for offline evaluation only.
+8. Save encoded and decoded synthetic data.
+9. Save final metrics, per-family metrics, timeseries, runtime profile, schema, workload, measurements, logs, held-out outputs, and resolved config.
 
 ## Privacy Boundary
 
@@ -223,8 +237,12 @@ Each query is stored in fixed-size arrays:
 - `lows`
 - `highs`
 - `num_terms`
+- `linear_attrs`
+- `linear_weights`
+- `linear_thresholds`
+- `linear_num_terms`
 
-This array layout is important because it can be passed directly to JAX kernels.
+The ordinary arrays represent `EQ/LE/GE/RANGE` conjunctions. The linear arrays represent halfspace predicates of the form `sum_i weight_i * x[attr_i] <= threshold`. This fixed array layout is important because it can be passed directly to JAX kernels.
 
 ### Workload groups
 
@@ -237,6 +255,7 @@ Implemented families:
 - `prefix`
 - `range`
 - `mixed`
+- `halfspace`
 
 Each `WorkloadGroup` carries:
 
@@ -246,6 +265,8 @@ Each `WorkloadGroup` carries:
 - `is_partition`
 
 Partition groups such as one-way and selected two-way marginals can be projected to the simplex with total count equal to the real dataset size.
+
+Halfspace queries are implemented for measurement, evaluation, CPU repair, and consistency projection. GPU fused candidate repair intentionally rejects `include_halfspace: true` because directed halfspace repair has not been implemented in that backend.
 
 ### JAX query evaluation
 
@@ -267,6 +288,7 @@ Implemented in:
 
 - `qdte/measurement/measure.py`
 - `qdte/measurement/projection.py`
+- `qdte/measurement/consistency.py`
 
 `measure_real_dataset` returns a `Measurements` dataclass:
 
@@ -275,12 +297,17 @@ Implemented in:
 - `variances`: per-query noise variances.
 - `inv_variances`: inverse variances used in weighted loss.
 - `groups`: per-group budget/noise metadata.
-- `mode`, `rho_total`, `epsilon_delta`, `delta`.
+- `mode`, `rho_total`, `rho_spent`, `epsilon_delta`, `delta`.
+- `projection_diagnostics`: projection metadata, including consistency diagnostics when enabled.
 
 Projection helpers:
 
 - `project_simplex`: projects partition marginals onto nonnegative counts summing to dataset size.
 - `clip_counts`: clips non-partition counts into `[0, N]`.
+- `project_non_decreasing`: weighted PAVA projection for prefix measurements.
+- `project_consistent_targets`: maps supported query scopes to local marginal tables, enforces non-negativity and known row count `N`, and reconciles overlapping scopes by shared marginals.
+
+The consistency projection supports `EQ`, `LE`, `GE`, `RANGE`, and halfspace masks represented by `QueryCatalogue`. It fails fast when a scope exceeds `projection.consistency.max_scope_cells`; it does not silently skip large scopes. The current implementation still reports diagonal variances after projection. Full post-projection covariance propagation is future work.
 
 ## QDTE State
 
@@ -293,7 +320,7 @@ Implemented in `qdte/evolution/state.py`.
 - `target`: DP noisy/projected target answers.
 - `residual`: `target - answer_syn`.
 - `variance`, `inv_variance`, `sigma`.
-- `debt`: reserved scheduling signal.
+- `debt`: query-level scheduling signal updated from weighted loss damage/improvement after accepted edits.
 - `iteration`.
 
 The main loss is implemented in `qdte/eval/metrics.py`:
@@ -318,7 +345,9 @@ Implemented in `qdte/evolution/scheduler.py`.
 priority = (abs(residual) - kappa_noise * sigma) / sigma
 ```
 
-Only positive priorities are preferred. If none are positive, it falls back to absolute standardized residual. The top `num_active_targets` queries become the targets for directed candidate repair.
+Only positive priorities are preferred. If none are positive, the default behavior is to return no active queries. When `allow_below_noise_fallback: true`, selection falls back to absolute standardized residual. The selected top `num_active_targets` queries become the targets for directed candidate repair.
+
+By default, `allow_below_noise_fallback: false` makes this threshold strict: if no query exceeds `kappa_noise * sigma`, no candidates are generated and the patience counter advances. High-throughput GPU configs may set `allow_below_noise_fallback: true` to keep the GPU candidate path busy.
 
 ## Candidate Generation
 
@@ -347,6 +376,14 @@ For each active query:
 5. Add random mutation candidates according to `random_candidate_fraction`.
 6. Compute edit cost with `compute_edit_cost`.
 
+The optional `qdte.candidate_compiler: masked_single_query` mode is a target-preserving masked version of the default one-query repair. For positive residuals it samples near-miss rows that satisfy the unmasked terms and fail the full query, then repairs only sampled masked terms. For negative residuals it samples rows satisfying the full query and breaks sampled masked terms, guaranteeing target-query exit when the candidate is kept. The final acceptance rule still uses the full measured-objective edit advantage.
+
+The optional `qdte.candidate_compiler: paired_query` mode adds paired CPU proposals before the normal one-query repair fallback. It chooses negative-residual source queries and positive-residual destination queries from the active set, samples rows that satisfy the source and not the destination, repairs them into the destination, and optionally tries to break the source while preserving destination membership. `qdte.candidate_compiler: masked_paired_query` uses sampled subsets of ordinary query terms for source/destination constraints, widening the proposal space while keeping the same full measured-objective scoring. `qdte.candidate_compiler: masked_exit_query` samples rows that already satisfy a positive-residual destination mask and exits only a negative-residual source mask, preserving the destination mask. These paired proposals are not accepted just because they match the pair or mask.
+
+The experimental exit-axis compilers isolate the candidate-generation design choices from the scoring and transport objective. `directed_exit_only` uses only negative-residual queries, samples old rows satisfying the query, and compiles directed exit repairs. `masked_exit_only` is the single-query masked version: it samples a subset of the negative query terms and exits only that mask, with final scoring still using the full measured objective. `random_source_directed_exit` keeps the negative-residual query direction for repair but removes source filtering, so the old row source is random. These variants are CPU-only ablations; they exist to compare QDTE-style directed proposal construction with Private-GSD-style random mutation under the same QDTE scorer.
+
+The experimental `qdte.transport_mode: blind_accept` bypasses positive-advantage and batch/prefix objective gates, accepting generated nonconflicting candidates in generation order. This mode is a sanity-check ablation only; it is not equivalent to Private-GSD, which still ranks whole candidate datasets by fitness.
+
 ### GPU repair backend: `qdte/evolution/gpu_candidates.py`
 
 Enabled by:
@@ -356,21 +393,27 @@ qdte:
   candidate_backend: jax_repair
 ```
 
-This backend fuses candidate generation and dense scoring inside a JAX `pmap` kernel:
+This backend fuses candidate generation and scoring inside a JAX `pmap` kernel:
 
 - Replicates `X_syn` to each local GPU with `replicate_table_to_devices`.
+- Reuses a cached GPU context so query/schema constants are device-put once per run.
+- Pads active query ids to fixed `num_active_targets` capacity to reduce `pmap` recompilation.
 - Samples source rows on GPU.
 - Performs source satisfaction filtering using `_eval_candidate_source_satisfaction`.
 - Applies directed enter/exit repairs in `_repair_directed_rows`.
 - Applies random mutations in `_random_mutation_rows`.
 - Computes edit costs on GPU.
-- Evaluates all query deltas on GPU.
 - Scores all generated candidates on GPU.
+- With `score_backend: dense_gpu`, uses boolean enter/exit masks and optional query-block scoring via `gpu_score_query_block_size`.
+- With `score_backend: sparse_delta_gpu`, uses a precomputed attribute-to-query affected index and multi-word query-scope bitsets so each edit evaluates only query blocks touched by changed attributes.
 - Optionally returns only local top-k candidates via `gpu_return_top_k`.
+- Optionally runs multiple GPU scoring batches inside one QDTE iteration via `gpu_batches_per_iter`.
 
 The returned `CandidateBatch.diagnostics["scored_candidates"]` records the full number of candidates scored, even if only top-k candidates are transferred back for selection.
 
 The replicated GPU table is updated after accepted edits via `apply_edits_to_replicated_table`.
+
+The GPU repair backend does not implement directed halfspace repair. Config validation fails fast for `workload.include_halfspace: true` with `qdte.candidate_backend: jax_repair` or `gpu_repair`.
 
 ## Candidate Scoring
 
@@ -398,8 +441,22 @@ Available scoring paths:
 
 - `score_candidates`: dense JAX scoring over all queries, with optional multi-GPU `pmap`.
 - `score_candidates_target_only`: cheaper ablation path that only scores against each candidate's target query.
+- `score_candidates_sparse`: exact CPU sparse-delta scoring via `QueryDeltaIndex`; useful for audit/debug, not the current fastest path.
+- `sparse_delta_gpu`: compiled sparse-delta scoring inside the fused GPU candidate backend.
 - `compute_deltas`: computes full query deltas for selected candidates.
+- `compute_deltas_sparse`: computes dense delta matrices from sparse affected-query evaluation.
 - `edit_advantage_from_delta`: test/helper function for validating advantage calculations.
+
+Dense JAX scoring computes the same formula with boolean enter/exit masks:
+
+```text
+linear = enter dot weights - exit dot weights
+quad = (enter or exit) dot inv_variance
+```
+
+This is equivalent to explicitly materializing `delta = phi_new - phi_old`, but reduces large temporary float32 tensors in GPU scoring.
+
+The sparse GPU scorer keeps the same objective. It uses multi-word `uint32` query-scope bitsets for duplicate suppression, so it no longer has the previous single-word 31 encoded-attribute limit. It still assumes the configured `gpu_sparse_changed_attr_capacity` covers all attributes a candidate can change. The current Adult highpower config sets that capacity to `4`, matching `workload.max_terms: 4`.
 
 ## Selection and Transport
 
@@ -442,6 +499,30 @@ qdte:
 
 It moves the prefix delta/advantage calculation into JAX using `_choose_transport_prefix_jit`. This reduces CPU transfer and CPU-side delta computation for high-throughput configurations.
 
+### Atom-flow transport
+
+`transport_mode: atom_flow` supports two update modes:
+
+- `atom_flow_update_mode: exact`: successive atom-flow over full encoded old-row/new-row atom edges. Each accepted flow unit updates the current weighted residual and affected edge marginals before the next unit is selected.
+- `atom_flow_update_mode: batch`: the default current path. It groups positive returned candidates by atom edge, estimates same-edge diminishing returns, enforces row capacity once, then uses JAX prefix objective evaluation to accept a positive batch prefix.
+
+Both modes consume only measured residuals, inverse variances, candidate deltas, and edit costs. The accepted batch is evaluated with the original measured objective:
+
+```text
+A(B) = residual @ (Delta_B * inv_variance)
+       - 0.5 * (Delta_B^2 @ inv_variance)
+       - lambda_cost * total_edit_cost
+```
+
+Batch atom-flow is an approximate selector compared with exact successive atom-flow, but it still lets the engine update:
+
+```text
+answer_syn = answer_syn + transport.delta_sum
+residual = target - answer_syn
+```
+
+once after accepting the prefix.
+
 ### Applying edits
 
 `apply_edits` mutates the CPU `X_syn` table:
@@ -466,18 +547,20 @@ Per iteration:
 4. Score candidates:
    - CPU repair path uses `score_candidates` or `score_candidates_target_only`.
    - GPU repair path returns fused scores from `generate_and_score_candidates_gpu`.
-5. Select candidate edits with `select_top_nonconflicting`.
-6. Choose transport batch with `choose_transport_batch` or `choose_transport_batch_jax`.
-7. Apply accepted edits.
-8. Incrementally update:
+5. Choose transport:
+   - `transport_mode: atom_flow` and `atom_flow_update_mode: batch`: `choose_atom_flow_batch_transport`;
+   - `transport_mode: atom_flow` and `atom_flow_update_mode: exact`: `choose_atom_flow_transport`;
+   - otherwise, `select_top_nonconflicting` followed by `choose_transport_batch` or `choose_transport_batch_jax`.
+6. Apply accepted edits.
+7. Incrementally update:
 
 ```text
 answer_syn = answer_syn + transport.delta_sum
 residual = target - answer_syn
 ```
 
-9. Periodically recompute `answer_queries(state.X_syn, qcat)` to remove or detect incremental drift.
-10. Log timeseries metrics at `log_every` and on selected special iterations.
+8. Periodically recompute `answer_queries(state.X_syn, qcat)` to remove or detect incremental drift.
+9. Log timeseries metrics at `log_every` and on selected special iterations.
 
 The final step always recomputes synthetic query answers and reports `final_incremental_answer_drift`.
 
@@ -492,9 +575,18 @@ For a normal run, `run_qdte` writes:
 - `synthetic_encoded.npy`: encoded synthetic table.
 - `synthetic_decoded.csv`: decoded synthetic table, if `evaluation.save_synthetic_csv` is true.
 - `metrics_final.json`: final privacy, loss, query error, and run summary.
+- `metrics_by_family.json`: measured and optional true-query metrics split by query family.
 - `metrics_timeseries.csv`: per-log-interval optimization metrics.
+- `workload_summary.json`: measured workload summary.
 - `runtime.json`: wall time, phase timings, throughput counters, backend names.
 - `logs.txt`: console logs from the run.
+
+When held-out evaluation is enabled, the run also writes:
+
+- `queries_holdout.json`
+- `workload_summary_holdout.json`
+- `metrics_holdout.json`
+- `metrics_by_family_holdout.json`
 
 The user-required files are:
 
@@ -543,12 +635,19 @@ The current test suite covers the critical pieces:
 - `tests/test_transport.py`: batch transport and selection behavior.
 - `tests/test_queries.py`: query evaluation/workload behavior.
 - `tests/test_edit_advantage.py`: edit advantage consistency.
-- `tests/test_repairs.py`: candidate repair behavior.
+- `tests/test_repairs.py`: candidate repair behavior, including directed enter/exit contracts for k-way conjunctions, halfspace queries, generated directed candidates, and the paired-query homogeneous-table edge case.
+- `tests/test_projection.py`: prefix monotonicity projection behavior.
+- `tests/test_consistency_projection.py`: scope-local consistency projection.
+- `tests/test_config_validation.py`: unsupported-mode and backend validation.
+- `tests/test_delta_index.py`: sparse affected-query delta index and sparse scoring.
+- `tests/test_gpu_candidates.py`: GPU padding, query-block scoring, and sparse GPU scoring helpers.
+- `tests/test_scheduler.py`: strict noise thresholding and debt scheduling.
+- `tests/test_workload.py`: workload family construction, including halfspace.
 
 The last verified test run passed:
 
 ```text
-13 passed
+76 passed in 6.92s
 ```
 
 ## Current Verified Runs
@@ -590,15 +689,28 @@ Observed output directory:
 outputs/adult_qdte_gpu_highpower
 ```
 
-Observed summary:
+Current highpower defaults:
 
-- `final_measured_loss`: about `5800.76`
-- `true_query_mae`: about `0.000388`
-- `true_query_rmse`: about `0.001548`
-- `num_candidates_scored`: `65,536,000`
-- busy dual-GPU total power was observed around `388W` mean and `438W` peak during the run.
+- `score_backend: sparse_delta_gpu`
+- `candidate_backend: jax_repair`
+- `transport_mode: atom_flow`
+- `atom_flow_update_mode: batch`
+- `total_candidates_per_iter: 1572864`
+- `gpu_return_top_k: 8192`
+- `accepted_per_iter: 1024`
 
-This configuration is faster and uses the GPU much more heavily, but the default 5000-step configuration still gives better final quality.
+Recent 50-iteration sparse-delta GPU probe:
+
+- `num_candidates_scored`: `78,643,200`
+- `time_generation_seconds`: about `19.91`
+- `time_scoring_seconds`: about `14.26`
+- `candidate_scoring_throughput_per_second`: about `5.52M`
+- `candidates_scored_per_second`: about `3.95M`
+- `final_measured_loss`: about `127,132`
+
+A 1000-iteration highpower held-out run completed with zero incremental answer drift and improved measured and held-out 2-way true-query metrics. That run did not prove held-out generalization for prefix/range/mixed because duplicate filtering left only 2-way held-out queries.
+
+This configuration is faster and uses the GPU much more heavily, but final quality should still be evaluated against the quality-oriented config for each workload and privacy setting.
 
 ## Important Implementation Notes
 
@@ -607,5 +719,8 @@ This configuration is faster and uses the GPU much more heavily, but the default
 - The default path prioritizes final quality and robustness.
 - The high-throughput path prioritizes GPU occupancy and iteration throughput.
 - `measurement_mode=static_all` is the only implemented privacy measurement mode. Adaptive select-measure-generate is intentionally rejected with `NotImplementedError` in this version.
-- `include_halfspace` appears in config for compatibility, but halfspace workload construction is not implemented in `build_workload`.
+- `include_halfspace` is implemented for measurement/evaluation/CPU repair/consistency projection. GPU fused candidate repair for halfspace is not implemented and fails fast in config validation.
+- Consistency projection currently keeps the existing diagonal variance representation; full post-projection covariance propagation is not implemented.
+- `sparse_delta_gpu` uses multi-word `uint32` query-scope bitsets, so the previous single-word 31 encoded-attribute limit has been removed. The remaining capacity assumption is `gpu_sparse_changed_attr_capacity`: it must cover the number of attributes a candidate can change.
+- There is no repository-level dependency manifest yet; current tests and runs rely on the local `qdte` conda environment.
 - The dense query evaluation uses a boolean `(batch_size, num_queries)` satisfaction matrix. This is simple and GPU-friendly, but it can be memory-bandwidth-bound.

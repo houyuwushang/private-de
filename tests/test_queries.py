@@ -39,3 +39,19 @@ def test_query_key_and_filter_catalogue_remove_exact_duplicates() -> None:
     assert filtered.m == 1
     assert filtered.names == ["fresh"]
     assert query_key(filtered, 0) not in measured_keys
+
+
+def test_halfspace_query_eval_key_and_filter() -> None:
+    builder = QueryBuilder(max_terms=2)
+    builder.add_halfspace([(0, 1.0), (1, -1.0)], threshold=0.0, name="a-b<=0", group="halfspace")
+    builder.add([(0, OP_EQ, 1, 1, 1)], "a=1", "oneway:0", "oneway")
+    qcat = builder.build()
+    X = np.asarray([[0, 0], [1, 0], [1, 2], [2, 1]], dtype=np.int32)
+
+    phi = np.asarray(eval_records_queries(X, qcat))
+
+    assert phi.astype(int).tolist() == [[1, 0], [0, 1], [1, 1], [0, 0]]
+    assert answer_queries(X, qcat).tolist() == [2.0, 2.0]
+    filtered = filter_query_catalogue(qcat, np.asarray([0], dtype=np.int32))
+    assert filtered.linear_num_terms.tolist() == [2]
+    assert query_key(filtered, 0) == query_key(qcat, 0)

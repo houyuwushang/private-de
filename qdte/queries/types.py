@@ -30,12 +30,31 @@ class QueryCatalogue:
     lows: np.ndarray
     highs: np.ndarray
     num_terms: np.ndarray
+    linear_attrs: np.ndarray
+    linear_weights: np.ndarray
+    linear_thresholds: np.ndarray
+    linear_num_terms: np.ndarray
     names: list[str]
     groups: list[str]
     families: list[str]
 
     def arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         return self.attrs, self.ops, self.values, self.lows, self.highs
+
+    def eval_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        return (
+            self.attrs,
+            self.ops,
+            self.values,
+            self.lows,
+            self.highs,
+            self.linear_attrs,
+            self.linear_weights,
+            self.linear_thresholds,
+            self.linear_num_terms,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +66,10 @@ class QueryCatalogue:
             "lows": self.lows.tolist(),
             "highs": self.highs.tolist(),
             "num_terms": self.num_terms.tolist(),
+            "linear_attrs": self.linear_attrs.tolist(),
+            "linear_weights": self.linear_weights.tolist(),
+            "linear_thresholds": self.linear_thresholds.tolist(),
+            "linear_num_terms": self.linear_num_terms.tolist(),
             "names": self.names,
             "groups": self.groups,
             "families": self.families,
@@ -63,6 +86,12 @@ class QueryCatalogue:
             lows=np.asarray(data["lows"], dtype=np.int32),
             highs=np.asarray(data["highs"], dtype=np.int32),
             num_terms=np.asarray(data["num_terms"], dtype=np.int32),
+            linear_attrs=np.asarray(data.get("linear_attrs", [[-1] * int(data["max_terms"])] * int(data["m"])), dtype=np.int32),
+            linear_weights=np.asarray(
+                data.get("linear_weights", [[0.0] * int(data["max_terms"])] * int(data["m"])), dtype=np.float32
+            ),
+            linear_thresholds=np.asarray(data.get("linear_thresholds", [0.0] * int(data["m"])), dtype=np.float32),
+            linear_num_terms=np.asarray(data.get("linear_num_terms", [0] * int(data["m"])), dtype=np.int32),
             names=list(data["names"]),
             groups=list(data["groups"]),
             families=list(data["families"]),
@@ -90,6 +119,13 @@ class QueryCatalogue:
             else:
                 raise ValueError(f"Unknown op {op}")
             sat &= cond
+        if int(self.linear_num_terms[qid]) > 0:
+            score = np.zeros(X.shape[0], dtype=np.float32)
+            for t in range(int(self.linear_num_terms[qid])):
+                attr = int(self.linear_attrs[qid, t])
+                weight = float(self.linear_weights[qid, t])
+                score += weight * X[:, attr].astype(np.float32)
+            sat &= score <= float(self.linear_thresholds[qid])
         return sat
 
     def query_terms(self, qid: int) -> list[tuple[int, int, int, int, int]]:
@@ -106,9 +142,19 @@ class QueryCatalogue:
             )
         return terms
 
+    def linear_terms(self, qid: int) -> list[tuple[int, float]]:
+        terms: list[tuple[int, float]] = []
+        for t in range(int(self.linear_num_terms[qid])):
+            terms.append((int(self.linear_attrs[qid, t]), float(self.linear_weights[qid, t])))
+        return terms
+
 
 def query_key(qcat: QueryCatalogue, qid: int) -> tuple[tuple[int, int, int, int, int], ...]:
-    return tuple(sorted(qcat.query_terms(qid)))
+    ordinary = tuple(sorted(qcat.query_terms(qid)))
+    linear = tuple(sorted((attr, round(weight, 8)) for attr, weight in qcat.linear_terms(qid)))
+    if linear:
+        return ordinary + (("__halfspace__", linear, round(float(qcat.linear_thresholds[qid]), 8)),)  # type: ignore[return-value]
+    return ordinary
 
 
 def filter_query_catalogue(qcat: QueryCatalogue, keep_indices: np.ndarray) -> QueryCatalogue:
@@ -122,6 +168,10 @@ def filter_query_catalogue(qcat: QueryCatalogue, keep_indices: np.ndarray) -> Qu
         lows=qcat.lows[keep].copy(),
         highs=qcat.highs[keep].copy(),
         num_terms=qcat.num_terms[keep].copy(),
+        linear_attrs=qcat.linear_attrs[keep].copy(),
+        linear_weights=qcat.linear_weights[keep].copy(),
+        linear_thresholds=qcat.linear_thresholds[keep].copy(),
+        linear_num_terms=qcat.linear_num_terms[keep].copy(),
         names=[qcat.names[int(i)] for i in keep],
         groups=[qcat.groups[int(i)] for i in keep],
         families=[qcat.families[int(i)] for i in keep],
@@ -136,6 +186,10 @@ class QueryBuilder:
         self._values: list[list[int]] = []
         self._lows: list[list[int]] = []
         self._highs: list[list[int]] = []
+        self._linear_attrs: list[list[int]] = []
+        self._linear_weights: list[list[float]] = []
+        self._linear_thresholds: list[float] = []
+        self._linear_num_terms: list[int] = []
         self.names: list[str] = []
         self.groups: list[str] = []
         self.families: list[str] = []
@@ -170,6 +224,49 @@ class QueryBuilder:
         self._values.append(values)
         self._lows.append(lows)
         self._highs.append(highs)
+        self._linear_attrs.append([-1] * self.max_terms)
+        self._linear_weights.append([0.0] * self.max_terms)
+        self._linear_thresholds.append(0.0)
+        self._linear_num_terms.append(0)
+        self.names.append(name)
+        self.groups.append(group)
+        self.families.append(family)
+        return True
+
+    def add_halfspace(
+        self,
+        linear_terms: list[tuple[int, float]],
+        threshold: float,
+        name: str,
+        group: str,
+        family: str = "halfspace",
+    ) -> bool:
+        if not linear_terms or len(linear_terms) > self.max_terms:
+            return False
+        merged: dict[int, float] = {}
+        for attr, weight in linear_terms:
+            merged[int(attr)] = merged.get(int(attr), 0.0) + float(weight)
+        terms = tuple(sorted((attr, round(weight, 8)) for attr, weight in merged.items() if abs(weight) > 1.0e-12))
+        if not terms:
+            return False
+        key = ("halfspace", terms, round(float(threshold), 8))
+        if key in self._seen:
+            return False
+        self._seen.add(key)
+        self._attrs.append([-1] * self.max_terms)
+        self._ops.append([OP_EQ] * self.max_terms)
+        self._values.append([0] * self.max_terms)
+        self._lows.append([0] * self.max_terms)
+        self._highs.append([0] * self.max_terms)
+        linear_attrs = [-1] * self.max_terms
+        linear_weights = [0.0] * self.max_terms
+        for idx, (attr, weight) in enumerate(terms):
+            linear_attrs[idx] = int(attr)
+            linear_weights[idx] = float(weight)
+        self._linear_attrs.append(linear_attrs)
+        self._linear_weights.append(linear_weights)
+        self._linear_thresholds.append(float(threshold))
+        self._linear_num_terms.append(len(terms))
         self.names.append(name)
         self.groups.append(group)
         self.families.append(family)
@@ -186,6 +283,10 @@ class QueryBuilder:
             lows=np.asarray(self._lows, dtype=np.int32).reshape(m, self.max_terms),
             highs=np.asarray(self._highs, dtype=np.int32).reshape(m, self.max_terms),
             num_terms=np.asarray([sum(1 for a in row if a >= 0) for row in self._attrs], dtype=np.int32),
+            linear_attrs=np.asarray(self._linear_attrs, dtype=np.int32).reshape(m, self.max_terms),
+            linear_weights=np.asarray(self._linear_weights, dtype=np.float32).reshape(m, self.max_terms),
+            linear_thresholds=np.asarray(self._linear_thresholds, dtype=np.float32).reshape(m),
+            linear_num_terms=np.asarray(self._linear_num_terms, dtype=np.int32).reshape(m),
             names=self.names,
             groups=self.groups,
             families=self.families,

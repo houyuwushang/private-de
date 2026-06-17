@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from qdte.config import save_yaml
+from qdte.config_validation import validate_config
 from qdte.dataio import ensure_dir, save_npy, write_json
 from qdte.eval.metrics import measured_loss, query_error_metrics, rms_standardized_residual
 from qdte.eval.runtime import RuntimeStats
@@ -18,20 +19,35 @@ from qdte.evolution.initialization import initialize_independent_oneway
 from qdte.evolution.gpu_candidates import (
     apply_edits_to_replicated_table,
     generate_and_score_candidates_gpu,
+    prepare_gpu_candidate_context,
     replicate_table_to_devices,
 )
-from qdte.evolution.scheduler import select_active_queries
-from qdte.evolution.scoring import compute_deltas, score_candidates, score_candidates_target_only
+from qdte.evolution.scheduler import debt_diagnostics, select_active_queries, update_query_debt_from_loss_vectors
+from qdte.evolution.scoring import (
+    compute_deltas,
+    compute_deltas_sparse,
+    score_candidates,
+    score_candidates_sparse,
+    score_candidates_target_only,
+)
 from qdte.evolution.state import QDTEState
 from qdte.evolution.transport import (
     apply_edits,
+    choose_atom_flow_batch_transport,
+    choose_atom_flow_transport,
+    choose_blind_transport,
+    choose_constructive_pair_transport,
+    choose_directed_group_transport,
+    choose_random_group_transport,
     choose_transport_batch,
     choose_transport_batch_jax,
+    select_nonconflicting_in_order,
     select_top_nonconflicting,
 )
 from qdte.measurement.measure import measure_real_dataset
 from qdte.preprocess import decode_array, load_and_preprocess_csv
 from qdte.queries.eval_jax import answer_queries
+from qdte.queries.delta_index import QueryDeltaIndex
 from qdte.queries.types import QueryCatalogue, filter_query_catalogue, query_key
 from qdte.queries.workload import WorkloadGroup, build_workload, filter_workload_groups
 
@@ -48,14 +64,235 @@ HELDOUT_WORKLOAD_DEFAULTS: dict[str, Any] = {
     "max_2way_cells": 10000,
     "range_intervals_per_num_attr": 128,
     "mixed_queries_per_pair": 128,
+    "halfspace_queries": 128,
     "random_seed": 10000,
 }
+
+
+REPAIR_TYPE_NAMES: dict[int, str] = {
+    0: "random",
+    1: "single_enter",
+    2: "single_exit",
+    3: "paired",
+    4: "masked_paired",
+    5: "masked_exit",
+    6: "directed_exit_only",
+    7: "random_source_directed_exit",
+    8: "masked_exit_only",
+    9: "masked_single",
+    10: "residual_weighted",
+    11: "enumerated_local",
+    12: "soft_single",
+    13: "residual_value",
+    14: "relaxed_masked_single",
+    15: "constructive_partner",
+    16: "constructive_attached_partner",
+    17: "protected_same_row",
+    18: "bounded_best_partner",
+}
+
+
+def _mean_or_zero(values: np.ndarray) -> float:
+    if len(values) == 0:
+        return 0.0
+    finite = values[np.isfinite(values)]
+    if len(finite) == 0:
+        return 0.0
+    return float(np.mean(finite))
+
+
+def _rate(mask: np.ndarray, denom: int) -> float:
+    return float(np.sum(mask) / max(1, int(denom)))
+
+
+def _candidate_diagnostic_summary(
+    *,
+    iteration: int,
+    candidates: Any,
+    advantages: np.ndarray,
+    residual: np.ndarray,
+    inv_variance: np.ndarray,
+    qcat: QueryCatalogue,
+    lambda_cost: float,
+    min_advantage: float,
+    selected_indices: np.ndarray,
+    accepted_indices: np.ndarray,
+    delta_index: QueryDeltaIndex | None,
+) -> dict[str, float | int]:
+    if candidates.size == 0:
+        return {"iteration": int(iteration), "candidate_diag_enabled": 1, "candidate_diag_count": 0}
+    if delta_index is not None:
+        deltas = compute_deltas_sparse(candidates.old_rows, candidates.new_rows, delta_index)
+    else:
+        deltas = compute_deltas(candidates.old_rows, candidates.new_rows, qcat)
+    d = deltas.astype(np.float32, copy=False)
+    weights = residual.astype(np.float32, copy=False) * inv_variance.astype(np.float32, copy=False)
+    full_linear = d @ weights
+    full_quad = (d * d) @ inv_variance.astype(np.float32, copy=False)
+    full_component = full_linear - 0.5 * full_quad
+    full_advantage = full_component - float(lambda_cost) * candidates.edit_cost.astype(np.float32, copy=False)
+
+    target_component = np.full(candidates.size, np.nan, dtype=np.float32)
+    valid_target = (candidates.target_query_ids >= 0) & (candidates.target_query_ids < qcat.m)
+    valid_idx = np.flatnonzero(valid_target)
+    if len(valid_idx) > 0:
+        qids = candidates.target_query_ids[valid_idx].astype(np.int32, copy=False)
+        target_delta = d[valid_idx, qids]
+        target_component[valid_idx] = target_delta * weights[qids] - 0.5 * (target_delta * target_delta) * inv_variance[qids]
+    collateral_component = full_component - target_component
+
+    contribution = d * weights.reshape(1, -1)
+    beneficial_count = np.sum(contribution > 0.0, axis=1).astype(np.float32)
+    harmful_count = np.sum(contribution < 0.0, axis=1).astype(np.float32)
+    affected_count = np.sum(d != 0.0, axis=1).astype(np.float32)
+    conflict = (beneficial_count > 0.0) & (harmful_count > 0.0)
+    positive = np.asarray(advantages > float(min_advantage), dtype=bool)
+    selected_mask = np.zeros(candidates.size, dtype=bool)
+    selected_indices = np.asarray(selected_indices, dtype=np.int32)
+    selected_indices = selected_indices[(selected_indices >= 0) & (selected_indices < candidates.size)]
+    selected_mask[selected_indices] = True
+    accepted_mask = np.zeros(candidates.size, dtype=bool)
+    accepted_indices = np.asarray(accepted_indices, dtype=np.int32)
+    accepted_indices = accepted_indices[(accepted_indices >= 0) & (accepted_indices < candidates.size)]
+    accepted_mask[accepted_indices] = True
+    valid_target_positive = valid_target & (target_component > 0.0)
+    target_positive_full_negative = valid_target_positive & (~positive)
+    target_positive_collateral_negative = valid_target_positive & (collateral_component < 0.0)
+
+    row: dict[str, float | int] = {
+        "iteration": int(iteration),
+        "candidate_diag_enabled": 1,
+        "candidate_diag_count": int(candidates.size),
+        "diag_positive_full_rate": _rate(positive, candidates.size),
+        "diag_selected_rate": _rate(selected_mask, candidates.size),
+        "diag_accepted_rate": _rate(accepted_mask, candidates.size),
+        "diag_mean_full_advantage": _mean_or_zero(np.asarray(advantages, dtype=np.float32)),
+        "diag_mean_full_component": _mean_or_zero(full_component),
+        "diag_mean_target_component": _mean_or_zero(target_component[valid_target]),
+        "diag_mean_collateral_component": _mean_or_zero(collateral_component[valid_target]),
+        "diag_target_positive_rate": _rate(valid_target_positive, int(np.sum(valid_target))),
+        "diag_target_positive_full_negative_rate": _rate(target_positive_full_negative, int(np.sum(valid_target))),
+        "diag_target_positive_collateral_negative_rate": _rate(
+            target_positive_collateral_negative,
+            int(np.sum(valid_target_positive)),
+        ),
+        "diag_mean_affected_queries": _mean_or_zero(affected_count),
+        "diag_mean_beneficial_queries": _mean_or_zero(beneficial_count),
+        "diag_mean_harmful_queries": _mean_or_zero(harmful_count),
+        "diag_residual_conflict_rate": _rate(conflict, candidates.size),
+    }
+    for diag_key in (
+        "requested_candidates",
+        "directed_candidate_budget",
+        "random_candidate_budget",
+        "directed_candidates",
+        "random_candidates",
+        "planned_random_candidates",
+        "fallback_random_candidates",
+        "mixture_random_candidates",
+        "directed_candidate_shortfall",
+        "candidate_shortfall",
+        "source_filter_attempts",
+        "source_filter_failures",
+        "source_filter_kept",
+        "paired_source_filter_attempts",
+        "paired_source_filter_failures",
+        "paired_source_filter_kept",
+        "random_source_exit_attempts",
+        "qdte_mixture_candidates",
+        "constructive_partner_candidates",
+        "constructive_attached_partner_candidates",
+        "constructive_attached_pair_units",
+        "constructive_partner_seed_candidates",
+        "constructive_partner_source_attempts",
+        "constructive_partner_source_failures",
+        "best_partner_candidates",
+        "best_partner_pair_units",
+        "best_partner_seed_candidates",
+        "best_partner_source_attempts",
+        "best_partner_source_failures",
+        "best_partner_pairs_evaluated",
+        "best_partner_positive_pairs",
+        "protected_same_row_candidates",
+        "protected_repair_seed_candidates",
+        "protected_repair_attempts",
+        "protected_repair_target_failures",
+        "protected_repair_protection_successes",
+    ):
+        row[f"diag_{diag_key}"] = float(candidates.diagnostics.get(diag_key, 0.0))
+
+    present_types = sorted(set(int(x) for x in candidates.repair_type.tolist()))
+    for repair_type in present_types:
+        name = REPAIR_TYPE_NAMES.get(repair_type, f"type_{repair_type}")
+        prefix = f"rtype_{name}"
+        mask = candidates.repair_type == repair_type
+        count = int(np.sum(mask))
+        valid_mask = mask & valid_target
+        valid_count = int(np.sum(valid_mask))
+        target_pos = valid_mask & (target_component > 0.0)
+        row[f"{prefix}_generated"] = count
+        row[f"{prefix}_positive"] = int(np.sum(mask & positive))
+        row[f"{prefix}_selected"] = int(np.sum(mask & selected_mask))
+        row[f"{prefix}_accepted"] = int(np.sum(mask & accepted_mask))
+        row[f"{prefix}_positive_rate"] = _rate(mask & positive, count)
+        row[f"{prefix}_selected_rate"] = _rate(mask & selected_mask, count)
+        row[f"{prefix}_accepted_rate"] = _rate(mask & accepted_mask, count)
+        row[f"{prefix}_mean_full_advantage"] = _mean_or_zero(np.asarray(advantages, dtype=np.float32)[mask])
+        row[f"{prefix}_mean_target_component"] = _mean_or_zero(target_component[valid_mask])
+        row[f"{prefix}_mean_collateral_component"] = _mean_or_zero(collateral_component[valid_mask])
+        row[f"{prefix}_target_positive_rate"] = _rate(target_pos, valid_count)
+        row[f"{prefix}_target_positive_full_negative_rate"] = _rate(target_pos & (~positive), valid_count)
+        row[f"{prefix}_target_positive_collateral_negative_rate"] = _rate(
+            target_pos & (collateral_component < 0.0),
+            int(np.sum(target_pos)),
+        )
+        row[f"{prefix}_mean_affected_queries"] = _mean_or_zero(affected_count[mask])
+        row[f"{prefix}_mean_beneficial_queries"] = _mean_or_zero(beneficial_count[mask])
+        row[f"{prefix}_mean_harmful_queries"] = _mean_or_zero(harmful_count[mask])
+        row[f"{prefix}_residual_conflict_rate"] = _rate(conflict & mask, count)
+    return row
 
 
 def _resolve_n_syn(value: Any, n_real: int) -> int:
     if value is None or str(value) == "same_as_real":
         return int(n_real)
     return int(value)
+
+
+def _scheduled_accept_limit(
+    *,
+    iteration: int,
+    max_iters: int,
+    base_accept: int,
+    qdte_cfg: dict[str, Any],
+) -> int:
+    schedule = str(qdte_cfg.get("accepted_per_iter_schedule", "fixed"))
+    if schedule in {"fixed", "none"}:
+        return max(1, int(base_accept))
+
+    start = int(qdte_cfg.get("accepted_per_iter_start", base_accept))
+    end = int(qdte_cfg.get("accepted_per_iter_end", 1))
+    warmup_iters = max(0, int(qdte_cfg.get("accepted_per_iter_warmup_iters", 0)))
+    anneal_iters = int(qdte_cfg.get("accepted_per_iter_anneal_iters", max_iters - warmup_iters))
+    anneal_iters = max(1, anneal_iters)
+
+    if iteration <= warmup_iters:
+        value = float(start)
+    else:
+        progress = (iteration - warmup_iters - 1) / max(1, anneal_iters - 1)
+        progress = min(1.0, max(0.0, float(progress)))
+        if schedule == "linear":
+            value = start + (end - start) * progress
+        elif schedule == "cosine":
+            value = end + 0.5 * (start - end) * (1.0 + math.cos(math.pi * progress))
+        elif schedule == "exponential":
+            if start <= 0 or end <= 0:
+                value = start + (end - start) * progress
+            else:
+                value = start * ((end / start) ** progress)
+        else:
+            raise ValueError(f"Unknown qdte.accepted_per_iter_schedule={schedule!r}")
+    return max(1, int(round(value)))
 
 
 def _count_by_family(families: list[str]) -> dict[str, int]:
@@ -84,6 +321,7 @@ def _workload_summary(qcat: Any, workload_groups: list[Any], schema: Any, config
         "max_2way_cells": 5000,
         "range_intervals_per_num_attr": 64,
         "mixed_queries_per_pair": 64,
+        "halfspace_queries": 64,
         "include_oneway": True,
         "include_2way_cat": True,
         "include_prefix": True,
@@ -292,22 +530,108 @@ def _write_timeseries(rows: list[dict[str, Any]], path: Path) -> None:
                 "positive_advantage_rate",
                 "positive_returned_rate",
                 "selected_nonconflicting",
+                "accept_limit",
                 "accepted_edits",
                 "accepted_rate",
                 "mean_advantage",
                 "batch_advantage",
                 "requested_candidates",
+                "directed_candidate_budget",
+                "random_candidate_budget",
                 "directed_candidates",
                 "random_candidates",
+                "planned_random_candidates",
+                "fallback_random_candidates",
+                "mixture_random_candidates",
+                "paired_candidates",
+                "masked_paired_candidates",
+                "masked_exit_candidates",
+                "masked_single_query_candidates",
+                "relaxed_masked_single_query_candidates",
+                "directed_exit_only_candidates",
+                "masked_exit_only_candidates",
+                "random_source_directed_exit_candidates",
+                "residual_weighted_mutation_candidates",
+                "enumerated_local_candidates",
+                "soft_single_query_candidates",
+                "residual_value_mutation_candidates",
+                "constructive_partner_candidates",
+                "constructive_attached_partner_candidates",
+                "constructive_attached_pair_units",
+                "constructive_partner_seed_candidates",
+                "constructive_partner_source_attempts",
+                "constructive_partner_source_failures",
+                "best_partner_candidates",
+                "best_partner_pair_units",
+                "best_partner_seed_candidates",
+                "best_partner_source_attempts",
+                "best_partner_source_failures",
+                "best_partner_pairs_evaluated",
+                "best_partner_positive_pairs",
+                "protected_same_row_candidates",
+                "protected_repair_seed_candidates",
+                "protected_repair_attempts",
+                "protected_repair_target_failures",
+                "protected_repair_protection_successes",
+                "proposal_mixture_candidates",
+                "qdte_mixture_candidates",
+                "single_directed_candidates",
+                "directed_candidate_shortfall",
                 "candidate_shortfall",
                 "source_filter_attempts",
                 "source_filter_failures",
+                "paired_source_filter_attempts",
+                "paired_source_filter_failures",
+                "random_source_exit_attempts",
+                "atom_flow_pool_candidates",
+                "atom_flow_edges",
+                "atom_flow_source_atoms",
+                "atom_flow_target_atoms",
+                "atom_flow_augments",
+                "atom_flow_batch_mode",
+                "atom_flow_exact_mode",
+                "atom_flow_selected_candidates",
+                "atom_flow_prefix_candidates",
+                "constructive_pair_pool_candidates",
+                "constructive_pair_seed_candidates",
+                "constructive_pair_pairs_evaluated",
+                "constructive_pair_positive_pairs",
+                "constructive_pair_explicit_pairs_evaluated",
+                "constructive_pair_explicit_positive_pairs",
+                "constructive_pair_units",
+                "constructive_pair_single_units",
+                "constructive_pair_pair_units",
+                "constructive_pair_explicit_pair_units",
+                "constructive_pair_selected_units",
+                "constructive_pair_prefix_units",
+                "constructive_pair_selected_candidates",
+                "constructive_pair_accepted_candidates",
+                "random_group_pool_candidates",
+                "random_group_groups_evaluated",
+                "random_group_positive_groups",
+                "random_group_best_group_size",
+                "random_group_accepted_candidates",
+                "random_group_groups_with_negative_member",
+                "directed_group_pool_candidates",
+                "directed_group_seed_candidates",
+                "directed_group_groups_evaluated",
+                "directed_group_positive_groups",
+                "directed_group_expansion_steps",
+                "directed_group_best_group_size",
+                "directed_group_accepted_candidates",
+                "directed_group_groups_with_negative_member",
                 "incremental_answer_drift",
+                "mean_debt",
+                "max_debt",
+                "num_positive_debt_queries",
+                "mean_collateral_damage",
+                "max_collateral_damage",
             ]
         ).to_csv(path, index=False)
 
 
 def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
+    validate_config(config)
     run_cfg = config.get("run", {})
     qdte_cfg = config.get("qdte", {})
     runtime_cfg = config.get("runtime", {})
@@ -378,6 +702,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         config,
         rng,
         batch_size=int(runtime_cfg.get("answer_batch_size", 8192)),
+        cardinalities=schema.cardinalities,
     )
     stats.time_measurement_seconds = time.perf_counter() - t0
     write_json(measurements.to_public_dict(), output_dir / "measurements.json")
@@ -385,6 +710,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         log(
             "Real DP measurement performed on X_real: "
             f"rho_total={measurements.rho_total:.6g}, "
+            f"rho_spent={measurements.rho_spent:.6g}, "
             f"epsilon(delta={measurements.delta:.2g})={measurements.epsilon_delta:.6g}, "
             f"measured_queries={qcat.m}, groups={len(measurements.groups)}"
         )
@@ -445,18 +771,53 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     transport_delta_backend = str(qdte_cfg.get("transport_delta_backend", "cpu"))
     if transport_mode == "sequential_greedy":
         accepted_per_iter = 1
+    accepted_per_iter_schedule = str(qdte_cfg.get("accepted_per_iter_schedule", "fixed"))
+    accepted_per_iter_start = int(qdte_cfg.get("accepted_per_iter_start", accepted_per_iter))
+    accepted_per_iter_end = int(qdte_cfg.get("accepted_per_iter_end", 1))
+    accepted_per_iter_warmup_iters = int(qdte_cfg.get("accepted_per_iter_warmup_iters", 0))
+    accepted_per_iter_anneal_iters = int(
+        qdte_cfg.get("accepted_per_iter_anneal_iters", max_iters - accepted_per_iter_warmup_iters)
+    )
+    atom_flow_pool_multiplier = int(qdte_cfg.get("atom_flow_pool_multiplier", 16))
+    atom_flow_max_pool = int(qdte_cfg.get("atom_flow_max_pool", 0))
+    atom_flow_update_mode = str(qdte_cfg.get("atom_flow_update_mode", "batch"))
+    constructive_pair_pool_multiplier = int(qdte_cfg.get("constructive_pair_pool_multiplier", atom_flow_pool_multiplier))
+    constructive_pair_max_pool = int(qdte_cfg.get("constructive_pair_max_pool", atom_flow_max_pool))
+    constructive_pair_partner_limit = int(qdte_cfg.get("constructive_pair_partner_limit", 16))
+    constructive_pair_harm_query_limit = int(qdte_cfg.get("constructive_pair_harm_query_limit", 16))
+    constructive_pair_max_units = int(qdte_cfg.get("constructive_pair_max_units", 0))
+    constructive_pair_min_target_component = float(qdte_cfg.get("constructive_pair_min_target_component", 0.0))
+    random_group_count = int(qdte_cfg.get("random_group_count", 64))
+    random_group_min_size = int(qdte_cfg.get("random_group_min_size", 2))
+    random_group_max_size = int(qdte_cfg.get("random_group_max_size", 0))
+    random_group_pool_multiplier = int(qdte_cfg.get("random_group_pool_multiplier", 0))
+    random_group_max_pool = int(qdte_cfg.get("random_group_max_pool", 0))
+    directed_group_seed_count = int(qdte_cfg.get("directed_group_seed_count", 32))
+    directed_group_min_size = int(qdte_cfg.get("directed_group_min_size", 1))
+    directed_group_max_size = int(qdte_cfg.get("directed_group_max_size", 0))
+    directed_group_pool_multiplier = int(qdte_cfg.get("directed_group_pool_multiplier", 0))
+    directed_group_max_pool = int(qdte_cfg.get("directed_group_max_pool", 0))
+    directed_group_allow_negative_steps = bool(qdte_cfg.get("directed_group_allow_negative_steps", False))
     num_active_targets = int(qdte_cfg.get("num_active_targets", 64))
     kappa_noise = float(qdte_cfg.get("kappa_noise", 1.0))
+    allow_below_noise_fallback = bool(qdte_cfg.get("allow_below_noise_fallback", False))
     lambda_cost = float(qdte_cfg.get("lambda_cost", 0.01))
+    debt_alpha = float(qdte_cfg.get("debt_alpha", 0.0))
+    debt_decay = float(qdte_cfg.get("debt_decay", 0.95))
+    debt_repay = float(qdte_cfg.get("debt_repay", 1.0))
+    debt_cap = float(qdte_cfg.get("debt_cap", 1.0e6))
     min_advantage = float(qdte_cfg.get("min_advantage", 1.0e-6))
     transport_prefix_strategy = str(qdte_cfg.get("transport_prefix_strategy", "largest_positive"))
     stop_patience = int(qdte_cfg.get("stop_patience", 50))
     full_recompute_every = int(qdte_cfg.get("full_recompute_every", 50))
     log_every = int(qdte_cfg.get("log_every", 10))
+    candidate_diagnostics_enabled = bool(qdte_cfg.get("candidate_diagnostics", False))
     chunk_size = int(runtime_cfg.get("scoring_chunk_size", 4096))
     use_pmap = bool(runtime_cfg.get("use_pmap", True))
     score_backend = str(qdte_cfg.get("score_backend", "dense_gpu"))
     candidate_backend = str(qdte_cfg.get("candidate_backend", "cpu_repair"))
+    use_sparse_delta_backend = transport_delta_backend == "sparse_cpu" or score_backend == "sparse_delta"
+    query_delta_index = QueryDeltaIndex.build(qcat, num_attrs=schema.d) if use_sparse_delta_backend else None
     debug_recompute_after_batch = bool(debug_cfg.get("recompute_after_batch", False))
     debug_assert_loss_decrease = bool(debug_cfg.get("assert_batch_loss_decrease", False))
     residual_drift_tolerance = float(debug_cfg.get("residual_drift_tolerance", 1.0e-5))
@@ -464,8 +825,10 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     generation_start = time.perf_counter()
     patience = 0
     timeseries: list[dict[str, Any]] = []
+    candidate_diagnostic_rows: list[dict[str, float | int]] = []
     use_gpu_candidate_backend = candidate_backend in {"jax_repair", "gpu_repair"}
     X_syn_gpu = replicate_table_to_devices(state.X_syn) if use_gpu_candidate_backend else None
+    gpu_candidate_context = prepare_gpu_candidate_context(qcat, schema, config) if use_gpu_candidate_backend else None
     configured_total_candidates = int(
         qdte_cfg.get("total_candidates_per_iter", max(1, num_active_targets * int(qdte_cfg.get("candidates_per_target", 64))))
     )
@@ -474,18 +837,78 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     gpu_topk_return_mode = bool(
         use_gpu_candidate_backend and 0 < gpu_return_top_k < per_device_total_candidates
     )
+    last_debt_diagnostics = debt_diagnostics(state.debt)
+    last_transport_diagnostics: dict[str, float | int] = {}
 
     for iteration in range(1, max_iters + 1):
         iter_start = time.perf_counter()
         state.iteration = iteration
+        accept_limit = _scheduled_accept_limit(
+            iteration=iteration,
+            max_iters=max_iters,
+            base_accept=accepted_per_iter,
+            qdte_cfg=qdte_cfg,
+        )
+        debt_info = debt_diagnostics(state.debt)
         active = select_active_queries(
             state.residual,
             state.sigma,
             state.debt,
             num_active_targets=num_active_targets,
             kappa_noise=kappa_noise,
-            debt_alpha=float(qdte_cfg.get("debt_alpha", 0.0)),
+            debt_alpha=debt_alpha,
+            allow_below_noise_fallback=allow_below_noise_fallback,
         )
+        if len(active) == 0:
+            patience += 1
+            cur_loss = measured_loss(state.residual, state.inv_variance)
+            if iteration == 1 or iteration % log_every == 0:
+                timeseries.append(
+                    {
+                        "iteration": iteration,
+                        "wall_time": time.perf_counter() - stats.start_time,
+                        "measured_loss": cur_loss,
+                        "rms_standardized_residual": rms_standardized_residual(cur_loss, qcat.m),
+                        "residual_l2": float(np.linalg.norm(state.residual)),
+                        "residual_l1": float(np.sum(np.abs(state.residual))),
+                        "active_queries": 0,
+                        "num_candidates": 0,
+                        "candidates_scored_this_iter": 0,
+                        "positive_advantage_rate": 0.0,
+                        "positive_returned_rate": 0.0,
+                        "selected_nonconflicting": 0,
+                        "accept_limit": int(accept_limit),
+                        "accepted_edits": 0,
+                        "accepted_rate": 0.0,
+                        "mean_advantage": 0.0,
+                        "batch_advantage": 0.0,
+                        "requested_candidates": 0,
+                        "directed_candidate_budget": 0,
+                        "random_candidate_budget": 0,
+                        "directed_candidates": 0,
+                        "random_candidates": 0,
+                        "planned_random_candidates": 0,
+                        "fallback_random_candidates": 0,
+                        "mixture_random_candidates": 0,
+                        "qdte_mixture_candidates": 0,
+                        "directed_candidate_shortfall": 0,
+                        "candidate_shortfall": 0,
+                        "source_filter_attempts": 0,
+                        "source_filter_failures": 0,
+                        "incremental_answer_drift": 0.0,
+                        **debt_info,
+                    }
+                )
+            log(
+                "No active queries above noise threshold at "
+                f"iter={iteration}: patience={patience}, kappa_noise={kappa_noise:.6g}"
+            )
+            stats.num_iterations = iteration
+            stats.time_generation_seconds += time.perf_counter() - iter_start
+            if patience >= stop_patience:
+                log(f"Stopping at iter={iteration}: patience={patience}")
+                break
+            continue
         t_candidate = time.perf_counter()
         fused_advantages: np.ndarray | None = None
         if use_gpu_candidate_backend:
@@ -500,18 +923,32 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 state.inv_variance,
                 config,
                 rng,
+                context=gpu_candidate_context,
             )
             candidates = gpu_batch.candidates
             fused_advantages = gpu_batch.advantages
             stats.time_scoring_seconds += time.perf_counter() - t_candidate
         else:
-            candidates = generate_candidates(state.X_syn, qcat, schema, active, state.residual, config, rng)
+            candidates = generate_candidates(
+                state.X_syn,
+                qcat,
+                schema,
+                active,
+                state.residual,
+                config,
+                rng,
+                inv_variance=state.inv_variance,
+            )
             stats.time_candidate_generation_seconds += time.perf_counter() - t_candidate
         diag = candidates.diagnostics
         stats.num_candidates_requested += int(diag.get("requested_candidates", candidates.size))
         stats.num_candidate_shortfall += int(diag.get("candidate_shortfall", 0.0))
         stats.num_directed_candidates += int(diag.get("directed_candidates", 0.0))
         stats.num_random_candidates += int(diag.get("random_candidates", 0.0))
+        stats.num_planned_random_candidates += int(diag.get("planned_random_candidates", 0.0))
+        stats.num_fallback_random_candidates += int(diag.get("fallback_random_candidates", 0.0))
+        stats.num_mixture_random_candidates += int(diag.get("mixture_random_candidates", 0.0))
+        stats.num_directed_candidate_shortfall += int(diag.get("directed_candidate_shortfall", 0.0))
         stats.num_source_filter_attempts += int(diag.get("source_filter_attempts", 0.0))
         stats.num_source_filter_failures += int(diag.get("source_filter_failures", 0.0))
         stats.num_candidates_returned_to_cpu += int(candidates.size)
@@ -531,6 +968,16 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     state.residual,
                     state.inv_variance,
                     qcat,
+                    lambda_cost=lambda_cost,
+                )
+            elif score_backend == "sparse_delta":
+                if query_delta_index is None:
+                    raise RuntimeError("Internal error: sparse_delta score backend requires QueryDeltaIndex.")
+                advantages = score_candidates_sparse(
+                    candidates,
+                    state.residual,
+                    state.inv_variance,
+                    query_delta_index,
                     lambda_cost=lambda_cost,
                 )
             else:
@@ -554,33 +1001,196 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
 
         t_transport = time.perf_counter()
         before_loss = measured_loss(state.residual, state.inv_variance)
-        selected = select_top_nonconflicting(candidates, advantages, accepted_per_iter, min_advantage)
-        stats.num_selected_nonconflicting_candidates += int(len(selected))
-        if transport_delta_backend in {"jax_prefix", "gpu_prefix"}:
-            transport = choose_transport_batch_jax(
+        residual_before_debt = state.residual.copy()
+        loss_vec_before_debt = 0.5 * residual_before_debt.astype(np.float64) ** 2 * state.inv_variance.astype(
+            np.float64
+        )
+        if transport_mode == "blind_accept":
+            selected = select_nonconflicting_in_order(
                 candidates,
-                advantages,
-                selected,
-                state.residual,
-                state.inv_variance,
-                lambda_cost,
-                qcat,
-                prefix_strategy=transport_prefix_strategy,
+                np.arange(candidates.size, dtype=np.int32),
+                accept_limit,
             )
-        else:
-            if len(selected) > 0:
+            stats.num_selected_nonconflicting_candidates += int(len(selected))
+            if len(selected) > 0 and transport_delta_backend == "sparse_cpu":
+                if query_delta_index is None:
+                    raise RuntimeError("Internal error: sparse_cpu transport backend requires QueryDeltaIndex.")
+                deltas = compute_deltas_sparse(
+                    candidates.old_rows[selected],
+                    candidates.new_rows[selected],
+                    query_delta_index,
+                )
+            elif len(selected) > 0:
                 deltas = compute_deltas(candidates.old_rows[selected], candidates.new_rows[selected], qcat)
             else:
                 deltas = np.empty((0, qcat.m), dtype=np.int8)
-            transport = choose_transport_batch(
+            transport = choose_blind_transport(
                 candidates,
-                advantages,
                 deltas,
                 selected,
                 state.residual,
                 state.inv_variance,
                 lambda_cost,
+            )
+        elif transport_mode == "atom_flow":
+            selected = np.empty(0, dtype=np.int32)
+            if atom_flow_update_mode == "exact":
+                transport = choose_atom_flow_transport(
+                    candidates,
+                    advantages,
+                    state.residual,
+                    state.inv_variance,
+                    lambda_cost,
+                    qcat,
+                    max_accept=accept_limit,
+                    min_advantage=min_advantage,
+                    pool_multiplier=atom_flow_pool_multiplier,
+                    max_pool=atom_flow_max_pool,
+                    delta_index=query_delta_index if transport_delta_backend == "sparse_cpu" else None,
+                )
+            elif atom_flow_update_mode == "batch":
+                transport = choose_atom_flow_batch_transport(
+                    candidates,
+                    advantages,
+                    state.residual,
+                    state.inv_variance,
+                    lambda_cost,
+                    qcat,
+                    max_accept=accept_limit,
+                    min_advantage=min_advantage,
+                    pool_multiplier=atom_flow_pool_multiplier,
+                    max_pool=atom_flow_max_pool,
+                    prefix_strategy=transport_prefix_strategy,
+                    delta_index=query_delta_index if transport_delta_backend == "sparse_cpu" else None,
+                )
+            else:
+                raise ValueError(f"Unknown qdte.atom_flow_update_mode={atom_flow_update_mode!r}")
+            stats.num_selected_nonconflicting_candidates += int(
+                transport.diagnostics.get("atom_flow_pool_candidates", 0)
+            )
+        elif transport_mode == "constructive_pair":
+            selected = np.empty(0, dtype=np.int32)
+            transport = choose_constructive_pair_transport(
+                candidates,
+                advantages,
+                state.residual,
+                state.inv_variance,
+                lambda_cost,
+                qcat,
+                max_accept=accept_limit,
+                min_advantage=min_advantage,
+                pool_multiplier=constructive_pair_pool_multiplier,
+                max_pool=constructive_pair_max_pool,
+                partner_limit=constructive_pair_partner_limit,
+                harm_query_limit=constructive_pair_harm_query_limit,
+                max_units=constructive_pair_max_units,
+                min_target_component=constructive_pair_min_target_component,
                 prefix_strategy=transport_prefix_strategy,
+                delta_index=query_delta_index if transport_delta_backend == "sparse_cpu" else None,
+            )
+            selected = transport.accepted_indices
+            stats.num_selected_nonconflicting_candidates += int(
+                transport.diagnostics.get("constructive_pair_selected_candidates", len(transport.accepted_indices))
+            )
+        elif transport_mode == "random_group":
+            selected = np.empty(0, dtype=np.int32)
+            transport = choose_random_group_transport(
+                candidates,
+                advantages,
+                state.residual,
+                state.inv_variance,
+                lambda_cost,
+                qcat,
+                max_accept=accept_limit,
+                min_advantage=min_advantage,
+                rng=rng,
+                group_count=random_group_count,
+                min_group_size=random_group_min_size,
+                max_group_size=random_group_max_size,
+                pool_multiplier=random_group_pool_multiplier,
+                max_pool=random_group_max_pool,
+                delta_index=query_delta_index if transport_delta_backend == "sparse_cpu" else None,
+            )
+            selected = transport.accepted_indices
+            stats.num_selected_nonconflicting_candidates += int(
+                transport.diagnostics.get("random_group_groups_evaluated", 0)
+            )
+        elif transport_mode == "directed_group":
+            selected = np.empty(0, dtype=np.int32)
+            transport = choose_directed_group_transport(
+                candidates,
+                advantages,
+                state.residual,
+                state.inv_variance,
+                lambda_cost,
+                qcat,
+                max_accept=accept_limit,
+                min_advantage=min_advantage,
+                seed_count=directed_group_seed_count,
+                min_group_size=directed_group_min_size,
+                max_group_size=directed_group_max_size,
+                pool_multiplier=directed_group_pool_multiplier,
+                max_pool=directed_group_max_pool,
+                allow_negative_steps=directed_group_allow_negative_steps,
+                delta_index=query_delta_index if transport_delta_backend == "sparse_cpu" else None,
+            )
+            selected = transport.accepted_indices
+            stats.num_selected_nonconflicting_candidates += int(
+                transport.diagnostics.get("directed_group_groups_evaluated", 0)
+            )
+        else:
+            selected = select_top_nonconflicting(candidates, advantages, accept_limit, min_advantage)
+            stats.num_selected_nonconflicting_candidates += int(len(selected))
+            if transport_delta_backend in {"jax_prefix", "gpu_prefix"}:
+                transport = choose_transport_batch_jax(
+                    candidates,
+                    advantages,
+                    selected,
+                    state.residual,
+                    state.inv_variance,
+                    lambda_cost,
+                    qcat,
+                    prefix_strategy=transport_prefix_strategy,
+                )
+            else:
+                if len(selected) > 0 and transport_delta_backend == "sparse_cpu":
+                    if query_delta_index is None:
+                        raise RuntimeError("Internal error: sparse_cpu transport backend requires QueryDeltaIndex.")
+                    deltas = compute_deltas_sparse(
+                        candidates.old_rows[selected],
+                        candidates.new_rows[selected],
+                        query_delta_index,
+                    )
+                elif len(selected) > 0:
+                    deltas = compute_deltas(candidates.old_rows[selected], candidates.new_rows[selected], qcat)
+                else:
+                    deltas = np.empty((0, qcat.m), dtype=np.int8)
+                transport = choose_transport_batch(
+                    candidates,
+                    advantages,
+                    deltas,
+                    selected,
+                    state.residual,
+                    state.inv_variance,
+                    lambda_cost,
+                    prefix_strategy=transport_prefix_strategy,
+                )
+        if candidate_diagnostics_enabled:
+            diagnostic_delta_index = query_delta_index if transport_delta_backend == "sparse_cpu" else None
+            candidate_diagnostic_rows.append(
+                _candidate_diagnostic_summary(
+                    iteration=iteration,
+                    candidates=candidates,
+                    advantages=advantages,
+                    residual=residual_before_debt,
+                    inv_variance=state.inv_variance,
+                    qcat=qcat,
+                    lambda_cost=lambda_cost,
+                    min_advantage=min_advantage,
+                    selected_indices=selected,
+                    accepted_indices=transport.accepted_indices,
+                    delta_index=diagnostic_delta_index,
+                )
             )
         if len(transport.accepted_indices) > 0:
             apply_edits(state.X_syn, candidates, transport.accepted_indices)
@@ -591,13 +1201,24 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     X_syn_gpu,
                     candidates.row_ids[transport.accepted_indices],
                     candidates.new_rows[transport.accepted_indices],
-                )
+            )
             state.answer_syn = (state.answer_syn + transport.delta_sum).astype(np.float32)
             state.residual = (state.target - state.answer_syn).astype(np.float32)
+            loss_vec_after_debt = 0.5 * state.residual.astype(np.float64) ** 2 * state.inv_variance.astype(np.float64)
+            state.debt, debt_info = update_query_debt_from_loss_vectors(
+                state.debt,
+                loss_vec_before_debt,
+                loss_vec_after_debt,
+                debt_decay=debt_decay,
+                debt_repay=debt_repay,
+                debt_cap=debt_cap,
+            )
+            last_debt_diagnostics = debt_info
             stats.num_accepted_edits += len(transport.accepted_indices)
             patience = 0
         else:
             patience += 1
+        last_transport_diagnostics = transport.diagnostics
         stats.time_transport_seconds += time.perf_counter() - t_transport
         debug_drift = 0.0
 
@@ -642,23 +1263,166 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 "candidates_scored_this_iter": candidates_scored_this_iter,
                 "positive_advantage_rate": positive_rate,
                 "positive_returned_rate": positive_rate,
-                "selected_nonconflicting": int(len(selected)),
+                "selected_nonconflicting": int(
+                    transport.diagnostics.get("atom_flow_pool_candidates", len(selected))
+                ),
+                "accept_limit": int(accept_limit),
                 "accepted_edits": int(len(transport.accepted_indices)),
                 "accepted_rate": float(len(transport.accepted_indices) / max(1, candidates.size)),
                 "mean_advantage": transport.mean_advantage,
                 "batch_advantage": transport.batch_advantage,
                 "requested_candidates": int(diag.get("requested_candidates", candidates.size)),
+                "directed_candidate_budget": int(diag.get("directed_candidate_budget", 0.0)),
+                "random_candidate_budget": int(diag.get("random_candidate_budget", 0.0)),
                 "directed_candidates": int(diag.get("directed_candidates", 0.0)),
                 "random_candidates": int(diag.get("random_candidates", 0.0)),
+                "planned_random_candidates": int(diag.get("planned_random_candidates", 0.0)),
+                "fallback_random_candidates": int(diag.get("fallback_random_candidates", 0.0)),
+                "mixture_random_candidates": int(diag.get("mixture_random_candidates", 0.0)),
+                "paired_candidates": int(diag.get("paired_candidates", 0.0)),
+                "masked_paired_candidates": int(diag.get("masked_paired_candidates", 0.0)),
+                "masked_exit_candidates": int(diag.get("masked_exit_candidates", 0.0)),
+                "masked_single_query_candidates": int(diag.get("masked_single_query_candidates", 0.0)),
+                "relaxed_masked_single_query_candidates": int(
+                    diag.get("relaxed_masked_single_query_candidates", 0.0)
+                ),
+                "directed_exit_only_candidates": int(diag.get("directed_exit_only_candidates", 0.0)),
+                "masked_exit_only_candidates": int(diag.get("masked_exit_only_candidates", 0.0)),
+                "random_source_directed_exit_candidates": int(
+                    diag.get("random_source_directed_exit_candidates", 0.0)
+                ),
+                "residual_weighted_mutation_candidates": int(
+                    diag.get("residual_weighted_mutation_candidates", 0.0)
+                ),
+                "enumerated_local_candidates": int(diag.get("enumerated_local_candidates", 0.0)),
+                "soft_single_query_candidates": int(diag.get("soft_single_query_candidates", 0.0)),
+                "residual_value_mutation_candidates": int(diag.get("residual_value_mutation_candidates", 0.0)),
+                "constructive_partner_candidates": int(diag.get("constructive_partner_candidates", 0.0)),
+                "constructive_attached_partner_candidates": int(
+                    diag.get("constructive_attached_partner_candidates", 0.0)
+                ),
+                "constructive_attached_pair_units": int(diag.get("constructive_attached_pair_units", 0.0)),
+                "constructive_partner_seed_candidates": int(
+                    diag.get("constructive_partner_seed_candidates", 0.0)
+                ),
+                "constructive_partner_source_attempts": int(
+                    diag.get("constructive_partner_source_attempts", 0.0)
+                ),
+                "constructive_partner_source_failures": int(
+                    diag.get("constructive_partner_source_failures", 0.0)
+                ),
+                "best_partner_candidates": int(diag.get("best_partner_candidates", 0.0)),
+                "best_partner_pair_units": int(diag.get("best_partner_pair_units", 0.0)),
+                "best_partner_seed_candidates": int(diag.get("best_partner_seed_candidates", 0.0)),
+                "best_partner_source_attempts": int(diag.get("best_partner_source_attempts", 0.0)),
+                "best_partner_source_failures": int(diag.get("best_partner_source_failures", 0.0)),
+                "best_partner_pairs_evaluated": int(diag.get("best_partner_pairs_evaluated", 0.0)),
+                "best_partner_positive_pairs": int(diag.get("best_partner_positive_pairs", 0.0)),
+                "protected_same_row_candidates": int(diag.get("protected_same_row_candidates", 0.0)),
+                "protected_repair_seed_candidates": int(diag.get("protected_repair_seed_candidates", 0.0)),
+                "protected_repair_attempts": int(diag.get("protected_repair_attempts", 0.0)),
+                "protected_repair_target_failures": int(diag.get("protected_repair_target_failures", 0.0)),
+                "protected_repair_protection_successes": int(
+                    diag.get("protected_repair_protection_successes", 0.0)
+                ),
+                "proposal_mixture_candidates": int(diag.get("proposal_mixture_candidates", 0.0)),
+                "qdte_mixture_candidates": int(diag.get("qdte_mixture_candidates", 0.0)),
+                "single_directed_candidates": int(diag.get("single_directed_candidates", 0.0)),
+                "directed_candidate_shortfall": int(diag.get("directed_candidate_shortfall", 0.0)),
                 "candidate_shortfall": int(diag.get("candidate_shortfall", 0.0)),
                 "source_filter_attempts": int(diag.get("source_filter_attempts", 0.0)),
                 "source_filter_failures": int(diag.get("source_filter_failures", 0.0)),
+                "paired_source_filter_attempts": int(diag.get("paired_source_filter_attempts", 0.0)),
+                "paired_source_filter_failures": int(diag.get("paired_source_filter_failures", 0.0)),
+                "random_source_exit_attempts": int(diag.get("random_source_exit_attempts", 0.0)),
+                "atom_flow_pool_candidates": int(transport.diagnostics.get("atom_flow_pool_candidates", 0)),
+                "atom_flow_edges": int(transport.diagnostics.get("atom_flow_edges", 0)),
+                "atom_flow_source_atoms": int(transport.diagnostics.get("atom_flow_source_atoms", 0)),
+                "atom_flow_target_atoms": int(transport.diagnostics.get("atom_flow_target_atoms", 0)),
+                "atom_flow_augments": int(transport.diagnostics.get("atom_flow_augments", 0)),
+                "atom_flow_batch_mode": int(transport.diagnostics.get("atom_flow_batch_mode", 0)),
+                "atom_flow_exact_mode": int(transport.diagnostics.get("atom_flow_exact_mode", 0)),
+                "atom_flow_selected_candidates": int(
+                    transport.diagnostics.get("atom_flow_selected_candidates", 0)
+                ),
+                "atom_flow_prefix_candidates": int(transport.diagnostics.get("atom_flow_prefix_candidates", 0)),
+                "constructive_pair_pool_candidates": int(
+                    transport.diagnostics.get("constructive_pair_pool_candidates", 0)
+                ),
+                "constructive_pair_seed_candidates": int(
+                    transport.diagnostics.get("constructive_pair_seed_candidates", 0)
+                ),
+                "constructive_pair_pairs_evaluated": int(
+                    transport.diagnostics.get("constructive_pair_pairs_evaluated", 0)
+                ),
+                "constructive_pair_positive_pairs": int(
+                    transport.diagnostics.get("constructive_pair_positive_pairs", 0)
+                ),
+                "constructive_pair_explicit_pairs_evaluated": int(
+                    transport.diagnostics.get("constructive_pair_explicit_pairs_evaluated", 0)
+                ),
+                "constructive_pair_explicit_positive_pairs": int(
+                    transport.diagnostics.get("constructive_pair_explicit_positive_pairs", 0)
+                ),
+                "constructive_pair_units": int(transport.diagnostics.get("constructive_pair_units", 0)),
+                "constructive_pair_single_units": int(
+                    transport.diagnostics.get("constructive_pair_single_units", 0)
+                ),
+                "constructive_pair_pair_units": int(transport.diagnostics.get("constructive_pair_pair_units", 0)),
+                "constructive_pair_explicit_pair_units": int(
+                    transport.diagnostics.get("constructive_pair_explicit_pair_units", 0)
+                ),
+                "constructive_pair_selected_units": int(
+                    transport.diagnostics.get("constructive_pair_selected_units", 0)
+                ),
+                "constructive_pair_prefix_units": int(
+                    transport.diagnostics.get("constructive_pair_prefix_units", 0)
+                ),
+                "constructive_pair_selected_candidates": int(
+                    transport.diagnostics.get("constructive_pair_selected_candidates", 0)
+                ),
+                "constructive_pair_accepted_candidates": int(
+                    transport.diagnostics.get("constructive_pair_accepted_candidates", 0)
+                ),
+                "random_group_pool_candidates": int(transport.diagnostics.get("random_group_pool_candidates", 0)),
+                "random_group_groups_evaluated": int(
+                    transport.diagnostics.get("random_group_groups_evaluated", 0)
+                ),
+                "random_group_positive_groups": int(transport.diagnostics.get("random_group_positive_groups", 0)),
+                "random_group_best_group_size": int(transport.diagnostics.get("random_group_best_group_size", 0)),
+                "random_group_accepted_candidates": int(
+                    transport.diagnostics.get("random_group_accepted_candidates", 0)
+                ),
+                "random_group_groups_with_negative_member": int(
+                    transport.diagnostics.get("random_group_groups_with_negative_member", 0)
+                ),
+                "directed_group_pool_candidates": int(transport.diagnostics.get("directed_group_pool_candidates", 0)),
+                "directed_group_seed_candidates": int(transport.diagnostics.get("directed_group_seed_candidates", 0)),
+                "directed_group_groups_evaluated": int(
+                    transport.diagnostics.get("directed_group_groups_evaluated", 0)
+                ),
+                "directed_group_positive_groups": int(
+                    transport.diagnostics.get("directed_group_positive_groups", 0)
+                ),
+                "directed_group_expansion_steps": int(
+                    transport.diagnostics.get("directed_group_expansion_steps", 0)
+                ),
+                "directed_group_best_group_size": int(
+                    transport.diagnostics.get("directed_group_best_group_size", 0)
+                ),
+                "directed_group_accepted_candidates": int(
+                    transport.diagnostics.get("directed_group_accepted_candidates", 0)
+                ),
+                "directed_group_groups_with_negative_member": int(
+                    transport.diagnostics.get("directed_group_groups_with_negative_member", 0)
+                ),
                 "incremental_answer_drift": debug_drift,
+                **debt_info,
             }
             timeseries.append(row)
             log(
                 f"iter={iteration} loss={cur_loss:.6g} candidates={candidates.size} "
-                f"positive={positive_rate:.3f} accepted={len(transport.accepted_indices)} "
+                f"positive={positive_rate:.3f} accept_limit={accept_limit} accepted={len(transport.accepted_indices)} "
                 f"batch_adv={transport.batch_advantage:.6g}"
             )
 
@@ -696,6 +1460,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "dataset_name": run_cfg.get("dataset_name"),
         "privacy_mode": measurements.mode,
         "rho_total": measurements.rho_total,
+        "rho_spent": measurements.rho_spent,
         "delta": measurements.delta,
         "epsilon_delta": measurements.epsilon_delta,
         "num_rows_real": n_real,
@@ -713,11 +1478,39 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "num_candidates_requested": int(stats.num_candidates_requested),
         "num_candidate_shortfall": int(stats.num_candidate_shortfall),
         "num_accepted_edits": int(stats.num_accepted_edits),
+        "accepted_per_iter": int(accepted_per_iter),
+        "accepted_per_iter_schedule": accepted_per_iter_schedule,
+        "accepted_per_iter_start": int(accepted_per_iter_start),
+        "accepted_per_iter_end": int(accepted_per_iter_end),
+        "accepted_per_iter_warmup_iters": int(accepted_per_iter_warmup_iters),
+        "accepted_per_iter_anneal_iters": int(accepted_per_iter_anneal_iters),
         "gpu_device_count": int(jax.local_device_count()),
         "score_backend": score_backend,
         "candidate_backend": candidate_backend,
+        "transport_mode": transport_mode,
         "transport_delta_backend": transport_delta_backend,
         "transport_prefix_strategy": transport_prefix_strategy,
+        "atom_flow_pool_multiplier": atom_flow_pool_multiplier,
+        "atom_flow_max_pool": atom_flow_max_pool,
+        "atom_flow_update_mode": atom_flow_update_mode,
+        "constructive_pair_pool_multiplier": constructive_pair_pool_multiplier,
+        "constructive_pair_max_pool": constructive_pair_max_pool,
+        "constructive_pair_partner_limit": constructive_pair_partner_limit,
+        "constructive_pair_harm_query_limit": constructive_pair_harm_query_limit,
+        "constructive_pair_max_units": constructive_pair_max_units,
+        "constructive_pair_min_target_component": constructive_pair_min_target_component,
+        "random_group_count": random_group_count,
+        "random_group_min_size": random_group_min_size,
+        "random_group_max_size": random_group_max_size,
+        "random_group_pool_multiplier": random_group_pool_multiplier,
+        "random_group_max_pool": random_group_max_pool,
+        "directed_group_seed_count": directed_group_seed_count,
+        "directed_group_min_size": directed_group_min_size,
+        "directed_group_max_size": directed_group_max_size,
+        "directed_group_pool_multiplier": directed_group_pool_multiplier,
+        "directed_group_max_pool": directed_group_max_pool,
+        "directed_group_allow_negative_steps": directed_group_allow_negative_steps,
+        "candidate_diagnostics_enabled": bool(candidate_diagnostics_enabled),
         "use_pmap": bool(use_pmap),
     }
     true_answers: np.ndarray | None = None
@@ -821,6 +1614,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     }
     final_metrics.update(efficiency_metrics)
     runtime_dict.update(efficiency_metrics)
+    runtime_dict.update(last_debt_diagnostics)
+    runtime_dict.update({f"last_{key}": value for key, value in last_transport_diagnostics.items()})
     runtime_dict["positive_advantage_all_rate_available"] = bool(not gpu_topk_return_mode)
     runtime_dict["positive_returned_rate_is_topk_biased"] = bool(gpu_topk_return_mode)
     final_metrics["positive_advantage_all_rate_available"] = bool(not gpu_topk_return_mode)
@@ -828,9 +1623,58 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     runtime_dict["gpu_devices"] = [str(d) for d in jax.devices()]
     runtime_dict["score_backend"] = score_backend
     runtime_dict["candidate_backend"] = candidate_backend
+    runtime_dict["accepted_per_iter"] = int(accepted_per_iter)
+    runtime_dict["accepted_per_iter_schedule"] = accepted_per_iter_schedule
+    runtime_dict["accepted_per_iter_start"] = int(accepted_per_iter_start)
+    runtime_dict["accepted_per_iter_end"] = int(accepted_per_iter_end)
+    runtime_dict["accepted_per_iter_warmup_iters"] = int(accepted_per_iter_warmup_iters)
+    runtime_dict["accepted_per_iter_anneal_iters"] = int(accepted_per_iter_anneal_iters)
     runtime_dict["transport_delta_backend"] = transport_delta_backend
     runtime_dict["transport_prefix_strategy"] = transport_prefix_strategy
+    runtime_dict["transport_mode"] = transport_mode
+    runtime_dict["atom_flow_pool_multiplier"] = atom_flow_pool_multiplier
+    runtime_dict["atom_flow_max_pool"] = atom_flow_max_pool
+    runtime_dict["atom_flow_update_mode"] = atom_flow_update_mode
+    runtime_dict["constructive_pair_pool_multiplier"] = constructive_pair_pool_multiplier
+    runtime_dict["constructive_pair_max_pool"] = constructive_pair_max_pool
+    runtime_dict["constructive_pair_partner_limit"] = constructive_pair_partner_limit
+    runtime_dict["constructive_pair_harm_query_limit"] = constructive_pair_harm_query_limit
+    runtime_dict["constructive_pair_max_units"] = constructive_pair_max_units
+    runtime_dict["constructive_pair_min_target_component"] = constructive_pair_min_target_component
+    runtime_dict["random_group_count"] = random_group_count
+    runtime_dict["random_group_min_size"] = random_group_min_size
+    runtime_dict["random_group_max_size"] = random_group_max_size
+    runtime_dict["random_group_pool_multiplier"] = random_group_pool_multiplier
+    runtime_dict["random_group_max_pool"] = random_group_max_pool
+    runtime_dict["directed_group_seed_count"] = directed_group_seed_count
+    runtime_dict["directed_group_min_size"] = directed_group_min_size
+    runtime_dict["directed_group_max_size"] = directed_group_max_size
+    runtime_dict["directed_group_pool_multiplier"] = directed_group_pool_multiplier
+    runtime_dict["directed_group_max_pool"] = directed_group_max_pool
+    runtime_dict["directed_group_allow_negative_steps"] = bool(directed_group_allow_negative_steps)
+    runtime_dict["candidate_diagnostics_enabled"] = bool(candidate_diagnostics_enabled)
     runtime_dict["use_pmap"] = bool(use_pmap)
+    runtime_dict["gpu_batches_per_iter"] = int(qdte_cfg.get("gpu_batches_per_iter", 1))
+    runtime_dict["gpu_score_query_block_size"] = int(
+        gpu_candidate_context.score_query_block_size if gpu_candidate_context is not None else 0
+    )
+    runtime_dict["gpu_score_query_block_count"] = int(
+        gpu_candidate_context.score_query_block_count if gpu_candidate_context is not None else 0
+    )
+    runtime_dict["gpu_sparse_score_mode"] = int(
+        gpu_candidate_context.sparse_score_mode if gpu_candidate_context is not None else 0
+    )
+    runtime_dict["gpu_sparse_query_block_size"] = int(
+        gpu_candidate_context.sparse_query_block_size if gpu_candidate_context is not None else 0
+    )
+    runtime_dict["gpu_sparse_query_block_count"] = int(
+        gpu_candidate_context.sparse_query_block_count if gpu_candidate_context is not None else 0
+    )
+    runtime_dict["gpu_sparse_changed_attr_capacity"] = int(
+        gpu_candidate_context.sparse_changed_attr_capacity if gpu_candidate_context is not None else 0
+    )
+    runtime_dict["gpu_return_top_k"] = int(qdte_cfg.get("gpu_return_top_k", 0))
+    runtime_dict["total_candidates_per_iter"] = configured_total_candidates
     metrics_by_family = _metrics_by_family(
         qcat,
         initial_residual,
@@ -849,6 +1693,11 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         write_json(metrics_by_family_holdout, output_dir / "metrics_by_family_holdout.json")
     write_json(workload_summary, output_dir / "workload_summary.json")
     _write_timeseries(timeseries, output_dir / "metrics_timeseries.csv")
+    if candidate_diagnostic_rows:
+        pd.DataFrame(candidate_diagnostic_rows).to_csv(
+            output_dir / "candidate_diagnostics_timeseries.csv",
+            index=False,
+        )
     write_json(runtime_dict, output_dir / "runtime.json")
     (output_dir / "logs.txt").write_text("\n".join(logs) + "\n", encoding="utf-8")
     return final_metrics

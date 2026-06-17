@@ -42,7 +42,14 @@ privacy:
 projection:
   project_partitions: true
   clip_nonpartition: true
-  prefix_monotonicity: false
+  prefix_monotonicity: true
+  consistency:
+    enabled: true
+    method: local_marginal_ipf
+    max_scope_cells: 200000
+    max_iterations: 100
+    tolerance: 1.0e-2
+    max_lsq_iterations: 100
 
 init:
   N_syn: same_as_real
@@ -50,13 +57,22 @@ init:
 
 qdte:
   score_backend: dense_gpu
-  transport_mode: microbatch_greedy
+  transport_mode: atom_flow
+  atom_flow_update_mode: batch
+  atom_flow_pool_multiplier: 16
+  atom_flow_max_pool: 0
+  transport_prefix_strategy: best_advantage
   max_iters: 5000
   num_active_targets: 64
   candidates_per_target: 64
   total_candidates_per_iter: 4096
   accepted_per_iter: 64
   kappa_noise: 1.0
+  allow_below_noise_fallback: false
+  debt_alpha: 0.0
+  debt_decay: 0.95
+  debt_repay: 1.0
+  debt_cap: 1.0e6
   lambda_cost: 0.01
   numerical_distance_gamma: 0.1
   random_candidate_fraction: 0.05

@@ -6,8 +6,26 @@ import numpy as np
 import pandas as pd
 import orjson
 
-from qdte.evolution.engine import run_qdte
+from qdte.evolution.engine import _scheduled_accept_limit, run_qdte
 from qdte.queries.types import QueryCatalogue, query_key
+
+
+def test_scheduled_accept_limit_cosine_anneals_to_one() -> None:
+    cfg = {
+        "accepted_per_iter_schedule": "cosine",
+        "accepted_per_iter_start": 8,
+        "accepted_per_iter_end": 1,
+        "accepted_per_iter_anneal_iters": 5,
+    }
+
+    limits = [
+        _scheduled_accept_limit(iteration=i, max_iters=5, base_accept=8, qdte_cfg=cfg)
+        for i in range(1, 6)
+    ]
+
+    assert limits[0] == 8
+    assert limits[-1] == 1
+    assert limits == sorted(limits, reverse=True)
 
 
 def test_engine_smoke_outputs(tmp_path: Path) -> None:
@@ -62,6 +80,7 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
             "kappa_noise": 0.0,
             "lambda_cost": 0.0,
             "random_candidate_fraction": 0.1,
+            "candidate_diagnostics": True,
             "full_recompute_every": 2,
             "stop_patience": 3,
             "min_advantage": 1e-6,
@@ -101,12 +120,14 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
     assert (out_dir / "metrics_holdout.json").exists()
     assert (out_dir / "metrics_by_family_holdout.json").exists()
     assert (out_dir / "metrics_timeseries.csv").exists()
+    assert (out_dir / "candidate_diagnostics_timeseries.csv").exists()
     assert (out_dir / "runtime.json").exists()
     metrics_json = orjson.loads((out_dir / "metrics_final.json").read_bytes())
     assert "final_rms_standardized_residual" in metrics_json
     assert "initial_true_query_mae" in metrics_json
     assert "final_true_query_mae" in metrics_json
     assert "positive_returned_rate_is_topk_biased" in metrics_json
+    assert metrics_json["candidate_diagnostics_enabled"] is True
     assert "heldout_final_true_query_mae" in metrics_json
     assert metrics_json["true_query_mae"] == metrics_json["final_true_query_mae"]
     assert metrics["final_incremental_answer_drift"] == 0.0
@@ -138,8 +159,205 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
     measurement_json = orjson.loads((out_dir / "measurements.json").read_bytes())
     assert "true_answers_debug" not in measurement_json
     assert "true_answers" not in measurement_json
+    assert measurement_json["rho_spent"] <= measurement_json["rho_total"] + 1.0e-12
     runtime_json = orjson.loads((out_dir / "runtime.json").read_bytes())
     assert runtime_json["num_candidates_requested"] >= runtime_json["num_candidates_scored"]
+    assert runtime_json["candidate_diagnostics_enabled"] is True
     assert "accepted_per_scored_candidate" in runtime_json
     assert "candidate_funnel" in runtime_json
     assert runtime_json["candidate_funnel"]["requested"] == runtime_json["num_candidates_requested"]
+    assert "mean_debt" in runtime_json
+    candidate_diagnostics = pd.read_csv(out_dir / "candidate_diagnostics_timeseries.csv")
+    assert "diag_mean_target_component" in candidate_diagnostics.columns
+    assert "diag_mean_collateral_component" in candidate_diagnostics.columns
+    assert "diag_target_positive_full_negative_rate" in candidate_diagnostics.columns
+
+
+def test_engine_no_active_queries_skip_candidate_generation(tmp_path: Path) -> None:
+    df = pd.DataFrame({"a": [0, 1, 0, 1], "label": [0, 1, 0, 1]})
+    data_path = tmp_path / "tiny.csv"
+    out_dir = tmp_path / "out"
+    df.to_csv(data_path, index=False)
+    config = {
+        "run": {"dataset_name": "tiny", "input_csv": str(data_path), "output_dir": str(out_dir), "seed": 0},
+        "preprocess": {"label_column": "label", "categorical_columns": ["a", "label"], "numerical_columns": []},
+        "workload": {
+            "include_oneway": True,
+            "include_2way_cat": False,
+            "include_prefix": False,
+            "include_range": False,
+            "include_mixed": False,
+            "max_queries": 10,
+            "max_terms": 2,
+        },
+        "privacy": {"mode": "dp", "rho_total": 1.0, "delta": 1e-9, "measurement_allocation": {"oneway": 1.0}},
+        "projection": {"project_partitions": True, "clip_nonpartition": True},
+        "init": {"N_syn": "same_as_real", "method": "independent_oneway"},
+        "qdte": {
+            "max_iters": 2,
+            "num_active_targets": 2,
+            "total_candidates_per_iter": 8,
+            "accepted_per_iter": 1,
+            "kappa_noise": 1.0e9,
+            "allow_below_noise_fallback": False,
+            "stop_patience": 1,
+            "log_every": 1,
+        },
+        "runtime": {"use_pmap": False, "scoring_chunk_size": 8, "answer_batch_size": 8, "xla_preallocate": False},
+        "evaluation": {"compute_true_query_error": False, "save_synthetic_csv": False},
+    }
+
+    run_qdte(config)
+
+    runtime_json = orjson.loads((out_dir / "runtime.json").read_bytes())
+    logs = (out_dir / "logs.txt").read_text(encoding="utf-8")
+    assert runtime_json["num_candidates_requested"] == 0
+    assert runtime_json["num_candidates_scored"] == 0
+    assert "No active queries above noise threshold" in logs
+
+
+def test_engine_atom_flow_transport_smoke(tmp_path: Path) -> None:
+    df = pd.DataFrame(
+        {
+            "a": [0, 0, 1, 1, 2, 2, 0, 1],
+            "b": [0, 1, 0, 1, 0, 1, 1, 0],
+            "label": [0, 1, 0, 1, 0, 1, 1, 0],
+        }
+    )
+    data_path = tmp_path / "atom.csv"
+    out_dir = tmp_path / "atom_out"
+    df.to_csv(data_path, index=False)
+    config = {
+        "run": {"dataset_name": "atom", "input_csv": str(data_path), "output_dir": str(out_dir), "seed": 1},
+        "preprocess": {"label_column": "label", "categorical_columns": ["a", "b", "label"], "numerical_columns": []},
+        "workload": {
+            "include_oneway": True,
+            "include_2way_cat": True,
+            "include_prefix": False,
+            "include_range": False,
+            "include_mixed": False,
+            "max_queries": 40,
+            "max_terms": 2,
+            "max_2way_cells": 40,
+        },
+        "privacy": {
+            "mode": "dp",
+            "rho_total": 1.0,
+            "delta": 1e-9,
+            "measurement_allocation": {"oneway": 0.5, "twoway": 0.5},
+        },
+        "projection": {"project_partitions": True, "clip_nonpartition": True},
+        "init": {"N_syn": "same_as_real", "method": "independent_oneway"},
+        "qdte": {
+            "transport_mode": "atom_flow",
+            "atom_flow_update_mode": "batch",
+            "atom_flow_pool_multiplier": 0,
+            "atom_flow_max_pool": 0,
+            "transport_prefix_strategy": "best_advantage",
+            "max_iters": 2,
+            "num_active_targets": 4,
+            "total_candidates_per_iter": 24,
+            "accepted_per_iter": 4,
+            "kappa_noise": 0.0,
+            "lambda_cost": 0.0,
+            "random_candidate_fraction": 0.0,
+            "full_recompute_every": 1,
+            "stop_patience": 2,
+            "min_advantage": 1e-6,
+            "log_every": 1,
+        },
+        "debug": {"recompute_after_batch": True, "assert_batch_loss_decrease": True},
+        "runtime": {"use_pmap": False, "scoring_chunk_size": 24, "answer_batch_size": 16, "xla_preallocate": False},
+        "evaluation": {"compute_true_query_error": False, "save_synthetic_csv": False},
+    }
+
+    metrics = run_qdte(config)
+
+    runtime_json = orjson.loads((out_dir / "runtime.json").read_bytes())
+    timeseries = pd.read_csv(out_dir / "metrics_timeseries.csv")
+    assert metrics["transport_mode"] == "atom_flow"
+    assert metrics["atom_flow_update_mode"] == "batch"
+    assert runtime_json["transport_mode"] == "atom_flow"
+    assert runtime_json["atom_flow_update_mode"] == "batch"
+    assert "atom_flow_edges" in timeseries.columns
+    assert "atom_flow_batch_mode" in timeseries.columns
+    assert timeseries["atom_flow_pool_candidates"].max() > 0
+    assert timeseries["atom_flow_batch_mode"].max() == 1
+    assert runtime_json["last_atom_flow_edges"] > 0
+    assert runtime_json["last_atom_flow_batch_mode"] == 1
+
+
+def test_engine_halfspace_cpu_smoke_with_consistency_projection(tmp_path: Path) -> None:
+    df = pd.DataFrame(
+        {
+            "x": [0, 1, 2, 3, 4, 5, 0, 2, 4, 5],
+            "y": [5, 4, 3, 2, 1, 0, 3, 3, 1, 2],
+            "label": [0, 1, 0, 1, 0, 1, 1, 0, 1, 0],
+        }
+    )
+    data_path = tmp_path / "halfspace.csv"
+    out_dir = tmp_path / "halfspace_out"
+    df.to_csv(data_path, index=False)
+    config = {
+        "run": {"dataset_name": "halfspace", "input_csv": str(data_path), "output_dir": str(out_dir), "seed": 2},
+        "preprocess": {
+            "numerical_bins": 6,
+            "label_column": "label",
+            "categorical_columns": ["label"],
+            "numerical_columns": ["x", "y"],
+        },
+        "workload": {
+            "include_oneway": True,
+            "include_2way_cat": False,
+            "include_prefix": True,
+            "include_range": True,
+            "include_mixed": False,
+            "include_halfspace": True,
+            "halfspace_queries": 5,
+            "max_queries": 50,
+            "max_terms": 2,
+            "range_intervals_per_num_attr": 3,
+            "random_seed": 2,
+        },
+        "privacy": {
+            "mode": "dp",
+            "rho_total": 1.0,
+            "delta": 1e-9,
+            "measurement_allocation": {"oneway": 0.25, "prefix": 0.25, "range": 0.25, "halfspace": 0.25},
+        },
+        "projection": {
+            "project_partitions": True,
+            "clip_nonpartition": True,
+            "prefix_monotonicity": True,
+            "consistency": {"enabled": True, "max_iterations": 30, "tolerance": 1.0e-2},
+        },
+        "init": {"N_syn": "same_as_real", "method": "independent_oneway"},
+        "qdte": {
+            "candidate_backend": "cpu_repair",
+            "transport_mode": "microbatch_greedy",
+            "max_iters": 2,
+            "num_active_targets": 4,
+            "total_candidates_per_iter": 32,
+            "accepted_per_iter": 2,
+            "kappa_noise": 0.0,
+            "lambda_cost": 0.0,
+            "random_candidate_fraction": 0.1,
+            "full_recompute_every": 1,
+            "stop_patience": 2,
+            "min_advantage": 1e-6,
+            "log_every": 1,
+        },
+        "debug": {"recompute_after_batch": True, "assert_batch_loss_decrease": True},
+        "runtime": {"use_pmap": False, "scoring_chunk_size": 32, "answer_batch_size": 16, "xla_preallocate": False},
+        "evaluation": {"compute_true_query_error": False, "save_synthetic_csv": False},
+    }
+
+    metrics = run_qdte(config)
+
+    measurements = orjson.loads((out_dir / "measurements.json").read_bytes())
+    qcat = QueryCatalogue.from_dict(orjson.loads((out_dir / "queries.json").read_bytes()))
+    assert "halfspace" in qcat.families
+    assert metrics["final_incremental_answer_drift"] == 0.0
+    consistency = measurements["projection_diagnostics"]["consistency"]
+    assert consistency["enabled"] is True
+    assert consistency["known_total_count"] == len(df)

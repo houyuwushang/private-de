@@ -22,6 +22,10 @@ class RuntimeStats:
     num_candidate_shortfall: int = 0
     num_directed_candidates: int = 0
     num_random_candidates: int = 0
+    num_planned_random_candidates: int = 0
+    num_fallback_random_candidates: int = 0
+    num_mixture_random_candidates: int = 0
+    num_directed_candidate_shortfall: int = 0
     num_source_filter_attempts: int = 0
     num_source_filter_failures: int = 0
     num_candidates_returned_to_cpu: int = 0
@@ -65,6 +69,10 @@ class RuntimeStats:
             "num_candidate_shortfall": int(self.num_candidate_shortfall),
             "num_directed_candidates": int(self.num_directed_candidates),
             "num_random_candidates": int(self.num_random_candidates),
+            "num_planned_random_candidates": int(self.num_planned_random_candidates),
+            "num_fallback_random_candidates": int(self.num_fallback_random_candidates),
+            "num_mixture_random_candidates": int(self.num_mixture_random_candidates),
+            "num_directed_candidate_shortfall": int(self.num_directed_candidate_shortfall),
             "num_source_filter_attempts": int(self.num_source_filter_attempts),
             "num_source_filter_failures": int(self.num_source_filter_failures),
             "num_candidates_returned_to_cpu": int(self.num_candidates_returned_to_cpu),

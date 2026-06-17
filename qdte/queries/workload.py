@@ -72,6 +72,7 @@ def build_workload(schema: TableSchema, config: dict[str, Any]) -> tuple[QueryCa
     max_2way_cells = int(cfg.get("max_2way_cells", 5000))
     range_per_attr = int(cfg.get("range_intervals_per_num_attr", 64))
     mixed_per_pair = int(cfg.get("mixed_queries_per_pair", 64))
+    halfspace_queries = int(cfg.get("halfspace_queries", cfg.get("mixed_queries_per_pair", 64)))
     random_seed = int(cfg.get("random_seed", 0))
     rng = np.random.default_rng(random_seed)
     builder = QueryBuilder(max_terms=max_terms)
@@ -201,6 +202,36 @@ def build_workload(schema: TableSchema, config: dict[str, Any]) -> tuple[QueryCa
             mark_group(f"mixed:{c_attr}:{n_attr}", "mixed", start, False, math.sqrt(size))
             if _cap_queries(builder, max_queries):
                 break
+
+    if not _cap_queries(builder, max_queries) and bool(cfg.get("include_halfspace", False)) and numerical:
+        start = len(builder.names)
+        max_halfspace_terms = max(1, min(max_terms, len(numerical)))
+        for query_id in range(halfspace_queries):
+            num_terms = int(rng.integers(1, max_halfspace_terms + 1))
+            attrs = [int(x) for x in rng.choice(numerical, size=num_terms, replace=False).tolist()]
+            weights = rng.normal(0.0, 1.0, size=num_terms)
+            weights = np.where(np.abs(weights) < 0.1, np.sign(weights + 1.0e-12) * 0.1, weights)
+            lows = np.asarray([0 for _ in attrs], dtype=np.float64)
+            highs = np.asarray([schema.columns[attr].cardinality - 1 for attr in attrs], dtype=np.float64)
+            min_score = float(np.sum(np.where(weights >= 0.0, weights * lows, weights * highs)))
+            max_score = float(np.sum(np.where(weights >= 0.0, weights * highs, weights * lows)))
+            if max_score <= min_score:
+                threshold = min_score
+            else:
+                threshold = float(rng.uniform(min_score, max_score))
+            terms = [(attr, float(weight)) for attr, weight in zip(attrs, weights.tolist(), strict=True)]
+            builder.add_halfspace(
+                terms,
+                threshold=threshold,
+                name=" + ".join(f"{weight:.3g}*{schema.columns[attr].name}" for attr, weight in terms)
+                + f" <= {threshold:.3g}",
+                group="halfspace",
+                family="halfspace",
+            )
+            if _cap_queries(builder, max_queries):
+                break
+        size = max(1, len(builder.names) - start)
+        mark_group("halfspace", "halfspace", start, False, math.sqrt(size))
 
     qcat = builder.build()
     groups = [g for g in groups if len(g.query_indices) > 0 and int(g.query_indices.max()) < qcat.m]
