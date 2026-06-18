@@ -229,6 +229,18 @@ Run under one frozen commit/config, multiple seeds:
 - `protected_same_row`
 - exact upstream Private-GSD or a clearly labeled compatible wrapper if paper-level comparison is needed.
 
+Private-GSD note:
+
+- For paper-level comparison, prefer running the upstream open-source
+  Private-GSD code through a thin adapter.
+- The existing `pgsd_style_mutate50` variant is only an internal sanity
+  baseline: it uses QDTE's measurement/workload stack and a mutate-only
+  Private-GSD-like budget, so it should not be presented as the upstream
+  Private-GSD result.
+- "Exact" means aligned preprocessing/workload/privacy/row-count/compute
+  settings and the upstream population-level selection procedure, not a
+  reimplementation inside QDTE.
+
 For every run report:
 
 - final measured loss;

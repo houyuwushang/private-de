@@ -69,6 +69,99 @@ def _set_column(rows: jax.Array, attrs: jax.Array, values: jax.Array, mask: jax.
     return rows.at[row_idx, attrs].set(jnp.where(mask, values, rows[row_idx, attrs]))
 
 
+def _halfspace_score_rows(
+    rows: jax.Array,
+    qids: jax.Array,
+    linear_attrs: jax.Array,
+    linear_weights: jax.Array,
+    linear_num_terms: jax.Array,
+) -> jax.Array:
+    return _halfspace_score_prepared_rows(
+        rows,
+        linear_attrs[qids],
+        linear_weights[qids],
+        linear_num_terms[qids],
+    )
+
+
+def _halfspace_score_prepared_rows(
+    rows: jax.Array,
+    q_linear_attrs: jax.Array,
+    q_linear_weights: jax.Array,
+    q_linear_num_terms: jax.Array,
+) -> jax.Array:
+    n = rows.shape[0]
+    row_idx = jnp.arange(n, dtype=jnp.int32)
+    score = jnp.zeros((n,), dtype=jnp.float32)
+    for term in range(q_linear_attrs.shape[1]):
+        attr = q_linear_attrs[:, term]
+        valid = term < q_linear_num_terms
+        xvals = rows[row_idx, jnp.maximum(attr, 0)].astype(jnp.float32)
+        score = score + jnp.where(valid, xvals * q_linear_weights[:, term].astype(jnp.float32), 0.0)
+    return score
+
+
+def _repair_halfspace_rows(
+    key: jax.Array,
+    rows: jax.Array,
+    qids: jax.Array,
+    need_enter: jax.Array,
+    linear_attrs: jax.Array,
+    linear_weights: jax.Array,
+    linear_thresholds: jax.Array,
+    linear_num_terms: jax.Array,
+    cardinalities: jax.Array,
+    mutable_attrs: jax.Array,
+) -> jax.Array:
+    has_any_linear = jnp.any(linear_num_terms[qids] > 0)
+
+    def do_repair(_: None) -> jax.Array:
+        n = rows.shape[0]
+        max_terms = linear_attrs.shape[1]
+        row_idx = jnp.arange(n, dtype=jnp.int32)
+        q_linear_attrs = linear_attrs[qids]
+        q_linear_weights = linear_weights[qids]
+        q_linear_num_terms = linear_num_terms[qids]
+        thresholds = linear_thresholds[qids].astype(jnp.float32)
+        has_linear = q_linear_num_terms > 0
+        new_rows = rows
+
+        for _ in range(max_terms):
+            score = _halfspace_score_prepared_rows(new_rows, q_linear_attrs, q_linear_weights, q_linear_num_terms)
+            needs_fix = has_linear & jnp.where(need_enter, score > thresholds, score <= thresholds)
+            best_gain = jnp.zeros((n,), dtype=jnp.float32)
+            best_attr = jnp.zeros((n,), dtype=jnp.int32)
+            best_value = jnp.zeros((n,), dtype=jnp.int32)
+
+            for term in range(max_terms):
+                attr = q_linear_attrs[:, term]
+                valid = term < q_linear_num_terms
+                safe_attr = jnp.maximum(attr, 0)
+                weight = q_linear_weights[:, term].astype(jnp.float32)
+                card = cardinalities[safe_attr]
+                current = new_rows[row_idx, safe_attr]
+                enter_target = jnp.where(weight > 0.0, jnp.zeros_like(card), card - 1)
+                exit_target = jnp.where(weight > 0.0, card - 1, jnp.zeros_like(card))
+                target = jnp.where(need_enter, enter_target, exit_target).astype(jnp.int32)
+                new_score = score + weight * (target.astype(jnp.float32) - current.astype(jnp.float32))
+                gain = jnp.where(need_enter, score - new_score, new_score - score)
+                improves_best = valid & needs_fix & (card > 1) & (target != current) & (gain > best_gain)
+                best_gain = jnp.where(improves_best, gain, best_gain)
+                best_attr = jnp.where(improves_best, safe_attr, best_attr)
+                best_value = jnp.where(improves_best, target, best_value)
+
+            apply_fix = needs_fix & (best_gain > 0.0)
+            new_rows = _set_column(new_rows, best_attr, best_value, apply_fix)
+
+        score = _halfspace_score_prepared_rows(new_rows, q_linear_attrs, q_linear_weights, q_linear_num_terms)
+        still_satisfies_halfspace = has_linear & (score <= thresholds)
+        fallback_exit = has_linear & (~need_enter) & still_satisfies_halfspace
+        random_rows = _random_mutation_rows(key, new_rows, mutable_attrs, cardinalities)
+        return jnp.where(fallback_exit[:, None], random_rows, new_rows)
+
+    return jax.lax.cond(has_any_linear, do_repair, lambda _: rows, operand=None)
+
+
 def _repair_directed_rows(
     key: jax.Array,
     old_rows: jax.Array,
@@ -79,73 +172,96 @@ def _repair_directed_rows(
     values: jax.Array,
     lows: jax.Array,
     highs: jax.Array,
+    linear_attrs: jax.Array,
+    linear_weights: jax.Array,
+    linear_thresholds: jax.Array,
+    linear_num_terms: jax.Array,
     num_terms: jax.Array,
     cardinalities: jax.Array,
+    mutable_attrs: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
     n = old_rows.shape[0]
     max_terms = attrs.shape[1]
-    keys = jax.random.split(key, max_terms + 1)
+    keys = jax.random.split(key, max_terms + 2)
     q_attrs = attrs[qids]
     q_ops = ops[qids]
     q_values = values[qids]
     q_lows = lows[qids]
     q_highs = highs[qids]
-    q_num_terms = jnp.maximum(num_terms[qids], 1)
     need_enter = residual[qids] > 0
-    break_term = jax.random.randint(keys[0], (n,), minval=0, maxval=max_terms, dtype=jnp.int32) % q_num_terms
-    new_rows = old_rows
+    has_any_ordinary = jnp.any(num_terms[qids] > 0)
 
-    for term in range(max_terms):
-        attr = jnp.maximum(q_attrs[:, term], 0)
-        valid = q_attrs[:, term] >= 0
-        op = q_ops[:, term]
-        value = q_values[:, term]
-        lo = q_lows[:, term]
-        hi = q_highs[:, term]
-        card = cardinalities[attr]
+    def repair_ordinary(rows: jax.Array) -> jax.Array:
+        q_num_terms = jnp.maximum(num_terms[qids], 1)
+        break_term = jax.random.randint(keys[0], (n,), minval=0, maxval=max_terms, dtype=jnp.int32) % q_num_terms
+        new_rows = rows
 
-        enter_low_eq = value
-        enter_high_eq = value + 1
-        enter_low_le = jnp.zeros_like(value)
-        enter_high_le = jnp.minimum(value + 1, card)
-        enter_low_ge = jnp.minimum(jnp.maximum(value, 0), jnp.maximum(card - 1, 0))
-        enter_high_ge = card
-        enter_low_range = jnp.minimum(jnp.maximum(lo, 0), jnp.maximum(card - 1, 0))
-        enter_high_range = jnp.maximum(enter_low_range + 1, jnp.minimum(hi + 1, card))
+        for term in range(max_terms):
+            attr = jnp.maximum(q_attrs[:, term], 0)
+            valid = q_attrs[:, term] >= 0
+            op = q_ops[:, term]
+            value = q_values[:, term]
+            lo = q_lows[:, term]
+            hi = q_highs[:, term]
+            card = cardinalities[attr]
 
-        enter_low = jnp.where(op == OP_EQ, enter_low_eq, enter_low_le)
-        enter_high = jnp.where(op == OP_EQ, enter_high_eq, enter_high_le)
-        enter_low = jnp.where(op == OP_GE, enter_low_ge, enter_low)
-        enter_high = jnp.where(op == OP_GE, enter_high_ge, enter_high)
-        enter_low = jnp.where(op == OP_RANGE, enter_low_range, enter_low)
-        enter_high = jnp.where(op == OP_RANGE, enter_high_range, enter_high)
-        enter_value = _randint_mod(keys[term + 1], (n,), enter_low.astype(jnp.int32), enter_high.astype(jnp.int32))
+            enter_low_eq = value
+            enter_high_eq = value + 1
+            enter_low_le = jnp.zeros_like(value)
+            enter_high_le = jnp.minimum(value + 1, card)
+            enter_low_ge = jnp.minimum(jnp.maximum(value, 0), jnp.maximum(card - 1, 0))
+            enter_high_ge = card
+            enter_low_range = jnp.minimum(jnp.maximum(lo, 0), jnp.maximum(card - 1, 0))
+            enter_high_range = jnp.maximum(enter_low_range + 1, jnp.minimum(hi + 1, card))
 
-        raw = jax.random.randint(
-            keys[term + 1],
-            (n,),
-            minval=0,
-            maxval=jnp.iinfo(jnp.int32).max,
-            dtype=jnp.int32,
-        )
-        eq_break = raw % jnp.maximum(card - 1, 1)
-        eq_break = eq_break + (eq_break >= value)
-        le_break = value + 1 + (raw % jnp.maximum(card - value - 1, 1))
-        ge_break = raw % jnp.maximum(value, 1)
-        range_break = jnp.where(lo > 0, lo - 1, hi + 1)
-        range_break = jnp.clip(range_break, 0, card - 1)
-        break_value = jnp.where(op == OP_EQ, eq_break, le_break)
-        break_value = jnp.where(op == OP_GE, ge_break, break_value)
-        break_value = jnp.where(op == OP_RANGE, range_break, break_value)
+            enter_low = jnp.where(op == OP_EQ, enter_low_eq, enter_low_le)
+            enter_high = jnp.where(op == OP_EQ, enter_high_eq, enter_high_le)
+            enter_low = jnp.where(op == OP_GE, enter_low_ge, enter_low)
+            enter_high = jnp.where(op == OP_GE, enter_high_ge, enter_high)
+            enter_low = jnp.where(op == OP_RANGE, enter_low_range, enter_low)
+            enter_high = jnp.where(op == OP_RANGE, enter_high_range, enter_high)
+            enter_value = _randint_mod(keys[term + 1], (n,), enter_low.astype(jnp.int32), enter_high.astype(jnp.int32))
 
-        can_break = jnp.where(op == OP_EQ, card > 1, value + 1 < card)
-        can_break = jnp.where(op == OP_GE, value > 0, can_break)
-        can_break = jnp.where(op == OP_RANGE, (lo > 0) | (hi + 1 < card), can_break)
-        use_break = (~need_enter) & (break_term == term) & valid & can_break
-        use_enter = need_enter & valid
-        term_value = jnp.where(use_enter, enter_value, break_value)
-        new_rows = _set_column(new_rows, attr, term_value.astype(jnp.int32), use_enter | use_break)
+            raw = jax.random.randint(
+                keys[term + 1],
+                (n,),
+                minval=0,
+                maxval=jnp.iinfo(jnp.int32).max,
+                dtype=jnp.int32,
+            )
+            eq_break = raw % jnp.maximum(card - 1, 1)
+            eq_break = eq_break + (eq_break >= value)
+            le_break = value + 1 + (raw % jnp.maximum(card - value - 1, 1))
+            ge_break = raw % jnp.maximum(value, 1)
+            range_break = jnp.where(lo > 0, lo - 1, hi + 1)
+            range_break = jnp.clip(range_break, 0, card - 1)
+            break_value = jnp.where(op == OP_EQ, eq_break, le_break)
+            break_value = jnp.where(op == OP_GE, ge_break, break_value)
+            break_value = jnp.where(op == OP_RANGE, range_break, break_value)
 
+            can_break = jnp.where(op == OP_EQ, card > 1, value + 1 < card)
+            can_break = jnp.where(op == OP_GE, value > 0, can_break)
+            can_break = jnp.where(op == OP_RANGE, (lo > 0) | (hi + 1 < card), can_break)
+            use_break = (~need_enter) & (break_term == term) & valid & can_break
+            use_enter = need_enter & valid
+            term_value = jnp.where(use_enter, enter_value, break_value)
+            new_rows = _set_column(new_rows, attr, term_value.astype(jnp.int32), use_enter | use_break)
+        return new_rows
+
+    new_rows = jax.lax.cond(has_any_ordinary, repair_ordinary, lambda rows: rows, old_rows)
+
+    new_rows = _repair_halfspace_rows(
+        keys[max_terms + 1],
+        new_rows,
+        qids,
+        need_enter,
+        linear_attrs,
+        linear_weights,
+        linear_thresholds,
+        linear_num_terms,
+        cardinalities,
+        mutable_attrs,
+    )
     return new_rows, jnp.where(need_enter, jnp.int32(1), jnp.int32(2))
 
 
@@ -175,6 +291,10 @@ def _eval_candidate_source_satisfaction(
     values: jax.Array,
     lows: jax.Array,
     highs: jax.Array,
+    linear_attrs: jax.Array,
+    linear_weights: jax.Array,
+    linear_thresholds: jax.Array,
+    linear_num_terms: jax.Array,
     num_terms: jax.Array,
 ) -> jax.Array:
     n = rows.shape[0]
@@ -201,7 +321,28 @@ def _eval_candidate_source_satisfaction(
         cond = jnp.where(op[:, None] == OP_RANGE, (xvals >= lo[:, None]) & (xvals <= hi[:, None]), cond)
         valid = term < q_num_terms
         satisfied = satisfied & jnp.where(valid[:, None], cond, True)
-    return satisfied
+
+    has_any_linear = jnp.any(linear_num_terms[qids] > 0)
+
+    def apply_linear(ordinary_satisfied: jax.Array) -> jax.Array:
+        q_linear_attrs = linear_attrs[qids]
+        q_linear_weights = linear_weights[qids]
+        q_linear_num_terms = linear_num_terms[qids]
+        linear_scores = jnp.zeros((n, draws), dtype=jnp.float32)
+        for term in range(max_terms):
+            attr = q_linear_attrs[:, term]
+            valid = term < q_linear_num_terms
+            xvals = rows[row_idx, draw_idx, jnp.maximum(attr, 0)[:, None]].astype(jnp.float32)
+            linear_scores = linear_scores + jnp.where(
+                valid[:, None],
+                xvals * q_linear_weights[:, term].astype(jnp.float32)[:, None],
+                0.0,
+            )
+        linear_valid = q_linear_num_terms > 0
+        linear_cond = linear_scores <= linear_thresholds[qids].astype(jnp.float32)[:, None]
+        return ordinary_satisfied & jnp.where(linear_valid[:, None], linear_cond, True)
+
+    return jax.lax.cond(has_any_linear, apply_linear, lambda ordinary_satisfied: ordinary_satisfied, satisfied)
 
 
 def _score_rows_dense(
@@ -215,10 +356,36 @@ def _score_rows_dense(
     values: jax.Array,
     lows: jax.Array,
     highs: jax.Array,
+    linear_attrs: jax.Array,
+    linear_weights: jax.Array,
+    linear_thresholds: jax.Array,
+    linear_num_terms: jax.Array,
     lambda_cost: jax.Array,
 ) -> jax.Array:
-    phi_old = eval_records_queries_arrays(old_rows, attrs, ops, values, lows, highs)
-    phi_new = eval_records_queries_arrays(new_rows, attrs, ops, values, lows, highs)
+    phi_old = eval_records_queries_arrays(
+        old_rows,
+        attrs,
+        ops,
+        values,
+        lows,
+        highs,
+        linear_attrs,
+        linear_weights,
+        linear_thresholds,
+        linear_num_terms,
+    )
+    phi_new = eval_records_queries_arrays(
+        new_rows,
+        attrs,
+        ops,
+        values,
+        lows,
+        highs,
+        linear_attrs,
+        linear_weights,
+        linear_thresholds,
+        linear_num_terms,
+    )
     weights = residual.astype(jnp.float32) * inv_variance.astype(jnp.float32)
     enter = phi_new & (~phi_old)
     exit_ = phi_old & (~phi_new)
@@ -238,6 +405,10 @@ def _score_rows_query_blocks(
     values: jax.Array,
     lows: jax.Array,
     highs: jax.Array,
+    linear_attrs: jax.Array,
+    linear_weights: jax.Array,
+    linear_thresholds: jax.Array,
+    linear_num_terms: jax.Array,
     lambda_cost: jax.Array,
     score_query_block_size: int,
     score_query_block_count: int,
@@ -253,8 +424,34 @@ def _score_rows_query_blocks(
         block_values = values[start:stop]
         block_lows = lows[start:stop]
         block_highs = highs[start:stop]
-        phi_old = eval_records_queries_arrays(old_rows, block_attrs, block_ops, block_values, block_lows, block_highs)
-        phi_new = eval_records_queries_arrays(new_rows, block_attrs, block_ops, block_values, block_lows, block_highs)
+        block_linear_attrs = linear_attrs[start:stop]
+        block_linear_weights = linear_weights[start:stop]
+        block_linear_thresholds = linear_thresholds[start:stop]
+        block_linear_num_terms = linear_num_terms[start:stop]
+        phi_old = eval_records_queries_arrays(
+            old_rows,
+            block_attrs,
+            block_ops,
+            block_values,
+            block_lows,
+            block_highs,
+            block_linear_attrs,
+            block_linear_weights,
+            block_linear_thresholds,
+            block_linear_num_terms,
+        )
+        phi_new = eval_records_queries_arrays(
+            new_rows,
+            block_attrs,
+            block_ops,
+            block_values,
+            block_lows,
+            block_highs,
+            block_linear_attrs,
+            block_linear_weights,
+            block_linear_thresholds,
+            block_linear_num_terms,
+        )
         block_weights = weights[start:stop]
         block_inv = inv_variance[start:stop].astype(jnp.float32)
         enter = phi_new & (~phi_old)
@@ -521,6 +718,10 @@ def _generate_score_candidates_pmap(
         values,
         lows,
         highs,
+        linear_attrs,
+        linear_weights,
+        linear_thresholds,
+        linear_num_terms,
         num_terms,
     )
     need_source_sat = ~(residual[directed_qids] > 0)
@@ -540,8 +741,13 @@ def _generate_score_candidates_pmap(
         values,
         lows,
         highs,
+        linear_attrs,
+        linear_weights,
+        linear_thresholds,
+        linear_num_terms,
         num_terms,
         cardinalities,
+        mutable_attrs,
     )
 
     random_row_ids = jax.random.randint(keys[2], (random_per_device,), 0, n_rows, dtype=jnp.int32)
@@ -601,6 +807,10 @@ def _generate_score_candidates_pmap(
             values,
             lows,
             highs,
+            linear_attrs,
+            linear_weights,
+            linear_thresholds,
+            linear_num_terms,
             lambda_cost,
             score_query_block_size,
             score_query_block_count,
@@ -617,6 +827,10 @@ def _generate_score_candidates_pmap(
             values,
             lows,
             highs,
+            linear_attrs,
+            linear_weights,
+            linear_thresholds,
+            linear_num_terms,
             lambda_cost,
         )
     if 0 < local_top_k < per_device_total:

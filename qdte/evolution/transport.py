@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import heapq
 from dataclasses import dataclass, field
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -423,6 +424,253 @@ def choose_directed_group_transport(
         delta_sum=best_delta.astype(np.float32, copy=False),
         batch_advantage=float(best_adv),
         mean_advantage=float(advantages[accepted_indices].mean()),
+        diagnostics=diagnostics,
+    )
+
+
+@partial(jax.jit, static_argnames=("min_group_size", "max_group_size", "allow_negative_steps"))
+def _directed_group_search_jit(
+    deltas: jax.Array,
+    row_ids: jax.Array,
+    edit_cost: jax.Array,
+    local_advantages: jax.Array,
+    residual: jax.Array,
+    inv_variance: jax.Array,
+    seed_locals: jax.Array,
+    lambda_cost: jax.Array,
+    min_advantage: jax.Array,
+    *,
+    min_group_size: int,
+    max_group_size: int,
+    allow_negative_steps: bool,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    d = deltas.astype(jnp.float32)
+    rows = row_ids.astype(jnp.int32)
+    costs = edit_cost.astype(jnp.float32)
+    adv = local_advantages.astype(jnp.float32)
+    residual_f = residual.astype(jnp.float32)
+    inv = inv_variance.astype(jnp.float32)
+    weights = residual_f * inv
+    quad = (d * d) @ inv
+    p = d.shape[0]
+    group_slots = jnp.arange(p, dtype=jnp.int32)
+    neg_inf = jnp.asarray(-jnp.inf, dtype=jnp.float32)
+    min_adv = min_advantage.astype(jnp.float32)
+
+    def group_advantage(delta_sum: jax.Array, cost_sum: jax.Array) -> jax.Array:
+        return (
+            delta_sum @ weights
+            - 0.5 * ((delta_sum * delta_sum) @ inv)
+            - lambda_cost.astype(jnp.float32) * cost_sum
+        ).astype(jnp.float32)
+
+    def run_seed(seed_local: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        seed_local = seed_local.astype(jnp.int32)
+        seed_row = rows[seed_local]
+        group_mask = group_slots == seed_local
+        used_rows = rows == seed_row
+        delta_sum = d[seed_local]
+        cost_sum = costs[seed_local]
+        count = jnp.asarray(1, dtype=jnp.int32)
+        seed_adv = group_advantage(delta_sum, cost_sum)
+        valid_seed_group = count >= jnp.asarray(min_group_size, dtype=jnp.int32)
+        has_negative_member = adv[seed_local] <= min_adv
+        best_adv = jnp.where(valid_seed_group, seed_adv, neg_inf)
+        best_mask = jnp.where(valid_seed_group, group_mask, jnp.zeros_like(group_mask))
+        best_count = jnp.where(valid_seed_group, count, jnp.asarray(0, dtype=jnp.int32))
+        best_has_negative = jnp.where(valid_seed_group, has_negative_member, False)
+        expansion_steps = jnp.asarray(0, dtype=jnp.int32)
+
+        def body(
+            carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
+            _: jax.Array,
+        ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array], None]:
+            (
+                group_mask,
+                used_rows,
+                delta_sum,
+                cost_sum,
+                count,
+                best_adv,
+                best_mask,
+                best_count,
+                best_has_negative,
+            ) = carry
+            current_weight = (residual_f - delta_sum) * inv
+            marginals = d @ current_weight - 0.5 * quad - lambda_cost.astype(jnp.float32) * costs
+            marginals = jnp.where(used_rows, neg_inf, marginals)
+            next_local = jnp.argmax(marginals).astype(jnp.int32)
+            next_margin = marginals[next_local]
+            can_add = jnp.isfinite(next_margin)
+            if not allow_negative_steps:
+                can_add = can_add & (next_margin > min_adv)
+            next_row = rows[next_local]
+            next_one_hot = group_slots == next_local
+            next_row_mask = rows == next_row
+            new_group_mask = jnp.where(can_add, group_mask | next_one_hot, group_mask)
+            new_used_rows = jnp.where(can_add, used_rows | next_row_mask, used_rows)
+            new_delta_sum = jnp.where(can_add, delta_sum + d[next_local], delta_sum)
+            new_cost_sum = jnp.where(can_add, cost_sum + costs[next_local], cost_sum)
+            new_count = jnp.where(can_add, count + jnp.asarray(1, dtype=jnp.int32), count)
+            new_has_negative = jnp.any(jnp.where(new_group_mask, adv <= min_adv, False))
+            candidate_adv = group_advantage(new_delta_sum, new_cost_sum)
+            valid_group = new_count >= jnp.asarray(min_group_size, dtype=jnp.int32)
+            better = valid_group & (candidate_adv > best_adv)
+            out_best_adv = jnp.where(better, candidate_adv, best_adv)
+            out_best_mask = jnp.where(better, new_group_mask, best_mask)
+            out_best_count = jnp.where(better, new_count, best_count)
+            out_best_has_negative = jnp.where(better, new_has_negative, best_has_negative)
+            return (
+                new_group_mask,
+                new_used_rows,
+                new_delta_sum,
+                new_cost_sum,
+                new_count,
+                out_best_adv,
+                out_best_mask,
+                out_best_count,
+                out_best_has_negative,
+            ), None
+
+        initial = (
+            group_mask,
+            used_rows,
+            delta_sum,
+            cost_sum,
+            count,
+            best_adv,
+            best_mask,
+            best_count,
+            best_has_negative,
+        )
+        scanned, _ = jax.lax.scan(body, initial, jnp.arange(max(0, int(max_group_size) - 1), dtype=jnp.int32))
+        _, _, _, _, final_count, best_adv, best_mask, best_count, best_has_negative = scanned
+        expansion_steps = jnp.maximum(final_count - jnp.asarray(1, dtype=jnp.int32), jnp.asarray(0, dtype=jnp.int32))
+        return best_adv, best_mask, best_count, best_has_negative, expansion_steps
+
+    seed_best_adv, seed_best_masks, seed_best_counts, seed_has_negative, seed_expansions = jax.vmap(run_seed)(seed_locals)
+    best_seed = jnp.argmax(seed_best_adv).astype(jnp.int32)
+    best_adv = seed_best_adv[best_seed]
+    best_mask = seed_best_masks[best_seed]
+    best_count = seed_best_counts[best_seed]
+    best_delta = jnp.sum(jnp.where(best_mask[:, None], d, 0.0), axis=0).astype(jnp.float32)
+    positive_groups = jnp.sum(seed_best_adv > 0.0).astype(jnp.int32)
+    negative_member_groups = jnp.sum(seed_has_negative).astype(jnp.int32)
+    expansion_steps = jnp.sum(seed_expansions).astype(jnp.int32)
+    return (
+        best_mask,
+        best_delta,
+        best_adv.astype(jnp.float32),
+        best_count.astype(jnp.int32),
+        positive_groups,
+        negative_member_groups,
+        expansion_steps,
+    )
+
+
+def choose_directed_group_transport_jax(
+    candidates: CandidateBatch,
+    advantages: np.ndarray,
+    residual: np.ndarray,
+    inv_variance: np.ndarray,
+    lambda_cost: float,
+    qcat: QueryCatalogue,
+    max_accept: int,
+    min_advantage: float,
+    seed_count: int = 32,
+    min_group_size: int = 1,
+    max_group_size: int = 0,
+    pool_multiplier: int = 0,
+    max_pool: int = 0,
+    allow_negative_steps: bool = False,
+) -> TransportResult:
+    diagnostics: dict[str, float | int] = {
+        "directed_group_mode": 1,
+        "directed_group_jax_mode": 1,
+        "directed_group_pool_candidates": 0,
+        "directed_group_seed_candidates": 0,
+        "directed_group_groups_evaluated": 0,
+        "directed_group_positive_groups": 0,
+        "directed_group_expansion_steps": 0,
+        "directed_group_best_group_size": 0,
+        "directed_group_accepted_candidates": 0,
+        "directed_group_groups_with_negative_member": 0,
+        "directed_group_sparse_delta": 0,
+    }
+    empty = TransportResult(
+        accepted_indices=np.empty(0, dtype=np.int32),
+        delta_sum=np.zeros_like(residual, dtype=np.float32),
+        batch_advantage=0.0,
+        mean_advantage=0.0,
+        diagnostics=diagnostics,
+    )
+    if max_accept <= 0 or candidates.size == 0:
+        return empty
+
+    pool_indices = _ranked_finite_candidate_pool(advantages, max_accept, pool_multiplier, max_pool)
+    diagnostics["directed_group_pool_candidates"] = int(len(pool_indices))
+    if len(pool_indices) == 0:
+        return empty
+
+    max_size = int(max_group_size) if int(max_group_size) > 0 else int(max_accept)
+    max_size = max(1, min(max_size, int(max_accept), len(pool_indices)))
+    min_size = max(1, min(int(min_group_size), max_size))
+    if int(seed_count) <= 0:
+        num_seeds = len(pool_indices)
+    else:
+        num_seeds = min(int(seed_count), len(pool_indices))
+    diagnostics["directed_group_seed_candidates"] = int(num_seeds)
+    diagnostics["directed_group_groups_evaluated"] = int(num_seeds)
+    if num_seeds <= 0:
+        return empty
+
+    deltas = _candidate_deltas_jax(candidates, pool_indices, qcat).astype(jnp.float32)
+    seed_locals = jnp.arange(num_seeds, dtype=jnp.int32)
+    (
+        best_mask,
+        best_delta,
+        best_adv,
+        best_count,
+        positive_groups,
+        negative_member_groups,
+        expansion_steps,
+    ) = _directed_group_search_jit(
+        deltas,
+        jnp.asarray(candidates.row_ids[pool_indices], dtype=jnp.int32),
+        jnp.asarray(candidates.edit_cost[pool_indices], dtype=jnp.float32),
+        jnp.asarray(advantages[pool_indices], dtype=jnp.float32),
+        jnp.asarray(residual, dtype=jnp.float32),
+        jnp.asarray(inv_variance, dtype=jnp.float32),
+        seed_locals,
+        jnp.asarray(lambda_cost, dtype=jnp.float32),
+        jnp.asarray(min_advantage, dtype=jnp.float32),
+        min_group_size=min_size,
+        max_group_size=max_size,
+        allow_negative_steps=bool(allow_negative_steps),
+    )
+    best_adv_f = float(np.asarray(best_adv))
+    best_count_i = int(np.asarray(best_count))
+    diagnostics["directed_group_positive_groups"] = int(np.asarray(positive_groups))
+    diagnostics["directed_group_expansion_steps"] = int(np.asarray(expansion_steps))
+    diagnostics["directed_group_groups_with_negative_member"] = int(np.asarray(negative_member_groups))
+    diagnostics["directed_group_best_group_size"] = int(best_count_i)
+    if best_count_i <= 0 or best_adv_f <= float(min_advantage):
+        return TransportResult(
+            accepted_indices=np.empty(0, dtype=np.int32),
+            delta_sum=np.zeros_like(residual, dtype=np.float32),
+            batch_advantage=best_adv_f if np.isfinite(best_adv_f) else 0.0,
+            mean_advantage=0.0,
+            diagnostics=diagnostics,
+        )
+
+    mask_np = np.asarray(best_mask, dtype=bool)
+    accepted_indices = pool_indices[np.flatnonzero(mask_np)].astype(np.int32, copy=False)
+    diagnostics["directed_group_accepted_candidates"] = int(len(accepted_indices))
+    return TransportResult(
+        accepted_indices=accepted_indices,
+        delta_sum=np.asarray(best_delta, dtype=np.float32),
+        batch_advantage=best_adv_f,
+        mean_advantage=float(advantages[accepted_indices].mean()) if len(accepted_indices) else 0.0,
         diagnostics=diagnostics,
     )
 

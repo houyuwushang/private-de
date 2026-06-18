@@ -1,5 +1,4924 @@
 # Handoff
 
+## Repository Sync - 2026-06-18
+
+Task:
+
+- Sync the current QDTE research/code state to the GitHub repository so the next
+  work can continue from a clean remote checkpoint.
+
+Changed Files:
+
+- Documentation and experiment notes:
+  - `README.md`
+  - `architecture.md`
+  - `architecture_zh.md`
+  - `docs/HANDOFF.md`
+  - `docs/QDTE_ABLATION_SUMMARY.md`
+  - `docs/QDTE_FINAL_EXPERIMENT_PLAN.md`
+- Configs:
+  - `configs/acs_qdte.yaml`
+  - `configs/adult_qdte.yaml`
+  - `configs/adult_qdte_gpu_highpower.yaml`
+  - `configs/adult_qdte_gpu_highpower_directed_group.yaml`
+  - `configs/smoke.yaml`
+- Core implementation:
+  - `qdte/config_validation.py`
+  - `qdte/eval/metrics.py`
+  - `qdte/evolution/engine.py`
+  - `qdte/evolution/gpu_candidates.py`
+  - `qdte/evolution/transport.py`
+  - `qdte/measurement/measure.py`
+  - `qdte/queries/workload.py`
+- Population driver scripts:
+  - `scripts/population_worker.py`
+  - `scripts/run_population.py`
+- Tests:
+  - `tests/test_config_validation.py`
+  - `tests/test_engine_smoke.py`
+  - `tests/test_gpu_candidates.py`
+  - `tests/test_measurement.py`
+  - `tests/test_metrics.py`
+  - `tests/test_transport.py`
+  - `tests/test_workload.py`
+
+Tests Run:
+
+- `git diff --check`
+  - Result: passed.
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q`
+  - Result: `183 passed in 22.83s`.
+
+Current Status:
+
+- Single-layer QDTE mainline is currently:
+  orthogonal measurement/workload, feasible consistency projection,
+  unweighted objective, and constructive A-style directed edits.
+- Group transport is implemented and useful for measured-loss reduction, but
+  the latest orthogonal smoke comparison keeps standalone A as the best
+  offline true-RMSE result.
+- Adaptive select-measure-generate is intentionally paused. Do not implement a
+  generic exponential-mechanism selection rule until the paper/documented
+  quality function and budget split are added.
+
+Next Recommended Task:
+
+- After the adaptive query-selection definition is written, implement
+  `privacy.measurement_mode=adaptive_select_measure` exactly from that
+  definition, preserving the DP boundary and adding a matching ablation.
+
+## Loss-Scale Comparison Clarification - 2026-06-18
+
+Task:
+
+- Clarify why recent current-measurement runs have unweighted loss around
+  `100+` while earlier notes reported unweighted loss around `21`.
+- Correct the comparison after noticing that the latest A+group run reused an
+  original `mixed` measurement artifact instead of the orthogonal mainline.
+
+Clarification:
+
+- The `21`-level result was not the same experimental condition as the latest
+  A+group comparison.
+- Main `21`-level DP runs:
+  - `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair`:
+    orthogonal mixed workload, `242` queries, unweighted objective,
+    final unweighted loss `21.849774742`, true RMSE `0.002279082`;
+  - `outputs/exp_A_orthogonal_mixed_projaware_varonly16_consistency2000_constructive_pair`:
+    orthogonal mixed workload, `242` queries, projection-aware variance,
+    final unweighted loss `21.917599106`, true RMSE `0.002305222`.
+- Latest current-measurement A+group run:
+  - `outputs/exp_A_original_mixed_plus_group_on_current_measurement_2000`;
+  - original/current mixed workload, `243` queries;
+  - reused `outputs/exp_jaxactive2000_core_single_query` measurement;
+  - variance-weighted objective;
+  - final unweighted loss `111.946766719`, true RMSE `0.003331481`.
+- Therefore the `21` vs `100+` gap is mostly a comparison-context issue:
+  orthogonal grouped measurement/workload plus different objective/variance
+  setting vs the older current mixed measurement artifact.
+- There was also an oracle/exact non-DP probe with losses `21 -> 12`, but that
+  is a separate non-DP sanity check and should not be compared to DP measured
+  runs as a privacy-preserving result.
+
+Corrected Orthogonal A+Group Rerun:
+
+- Output:
+  `outputs/exp_unweightedobj_orthogonal_plus_group_consistency2000_constructive_pair`.
+- Config source:
+  `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair/config_resolved.yaml`.
+- Reused measurement:
+  `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair/measurements.json`.
+- Workload: orthogonal mixed, `242` queries.
+- Objective: `qdte.objective_weighting=unweighted`.
+- Final unweighted loss `20.178445721`.
+- Final true RMSE `0.002313275`.
+- Accepted edits `1041`.
+
+Corrected Orthogonal Pure/Adaptive Group Reruns:
+
+- Pure group output:
+  `outputs/exp_unweightedobj_orthogonal_pure_group_consistency2000`.
+- Edit + adaptive group output:
+  `outputs/exp_unweightedobj_orthogonal_edit_plus_adaptive_group_consistency2000`.
+- Both used:
+  - config source:
+    `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair/config_resolved.yaml`;
+  - reused measurement:
+    `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair/measurements.json`;
+  - workload: orthogonal mixed, `242` queries;
+  - objective: `qdte.objective_weighting=unweighted`;
+  - `max_iters=2000`, `total_candidates_per_iter=256`,
+    `accepted_per_iter=8`, `num_candidates_scored=512000`.
+
+Orthogonal Same-Measurement Comparison:
+
+| Method | Transport | Final unweighted loss | Offline true RMSE | Accepted edits |
+|---|---|---:|---:|---:|
+| A / `constructive_pair` | `constructive_pair` | `21.849774742` | `0.002279082` | `955` |
+| A + group augment | `constructive_pair` + group augment | `20.178445721` | `0.002313275` | `1041` |
+| Pure group | `directed_group`, no positive fill | `18.563489342` | `0.002327521` | `1027` |
+| Edit + adaptive group | positive fill + adaptive group augment | `17.938319349` | `0.002313275` | `1036` |
+
+Interpretation:
+
+- The `100+` loss should not be used as evidence about the orthogonal mainline.
+- Under the intended orthogonal measurement setting, A+group remains in the
+  `20`-level unweighted-loss regime and slightly improves measured loss over A.
+- Pure group and edit+adaptive group reduce measured loss further in the same
+  setting; edit+adaptive group is the best by measured loss in this smoke run.
+- Offline true RMSE does not follow measured loss monotonically:
+  standalone A remains best by true RMSE in this single run, while A+group and
+  edit+adaptive group tie at `0.002313275`.
+- Current read: group transport is real and useful for matching the
+  noisy/projected orthogonal target, but the constructive A story remains
+  cleaner for true utility and for the individual-level directed-edit
+  narrative. Multi-seed results should decide whether group becomes a main
+  method or stays as an ablation/second-paper direction.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Read existing `metrics_final.json`, `workload_summary.json`, and
+  `config_resolved.yaml` files.
+- Ran the corrected orthogonal A+group experiment above.
+- Ran corrected orthogonal pure group and edit+adaptive group experiments.
+- Run `git diff --check` before closing the task.
+
+Current Status:
+
+- Low `21` unweighted loss remains a real result, but it belongs to the
+  orthogonal mixed measurement setting, not the latest current mixed A+group
+  comparison.
+- Corrected orthogonal A+group run confirms the mainline is still around
+  `20` unweighted loss.
+- Corrected orthogonal group runs are complete and show lower measured loss
+  than A/A+group, with slightly worse offline true RMSE than standalone A.
+
+Next Recommended Task:
+
+- Run multi-seed orthogonal experiments for A, A+group, pure group, and
+  edit+adaptive group. Decide the paper narrative from mean/std true utility
+  and measured loss, not a single smoke run.
+
+## Constructive Pair Plus Group Augment - 2026-06-18
+
+Task:
+
+- Answer whether `constructive_pair` and group advantage are mutually exclusive.
+- Implement a fair `constructive_pair + group` combination and compare it under
+  the same current DP measurement artifact.
+
+What Changed:
+
+- Added optional `qdte.constructive_pair_group_augment`.
+- The `constructive_pair` transport now runs the constructive A-style selection
+  first, then can run one directed-group augment on the remaining edit budget.
+- The augment blocks rows already accepted by constructive pair, scores against
+  the virtual residual after the constructive batch, combines the selected
+  deltas, and applies one final QDTE state update.
+- Added adaptive/loss/noise-floor/plateau controls mirroring the directed-group
+  positive-fill augment controls.
+- Added timeseries/runtime/final-metric diagnostics for the constructive-pair
+  group augment path.
+- Added config validation coverage for the new controls.
+
+Changed Files:
+
+- `qdte/evolution/engine.py`
+- `qdte/config_validation.py`
+- `tests/test_config_validation.py`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest tests/test_config_validation.py tests/test_engine_smoke.py tests/test_transport.py -q`
+  - Result: `88 passed in 4.18s`.
+
+Experiment Run:
+
+- Output:
+  `outputs/exp_A_original_mixed_plus_group_on_current_measurement_2000`.
+- Config source:
+  `outputs/exp_A_original_mixed_consistency2000_constructive_pair/config_resolved.yaml`.
+- Reused current measurement:
+  `outputs/exp_jaxactive2000_core_single_query/measurements.json`.
+- Common budget: `max_iters=2000`, `total_candidates_per_iter=256`,
+  `accepted_per_iter=8`, `num_candidates_scored=512000`.
+
+Fair Same-Measurement Comparison:
+
+| Method | Weighted measured loss | Unweighted measured loss | Offline true RMSE | Accepted edits |
+|---|---:|---:|---:|---:|
+| A / `constructive_pair` | `2.254667713750168` | `146.2320195284455` | `0.003346271188083466` | not re-read |
+| A + group augment | `1.9123104370472743` | `111.94676671892095` | `0.003331480966792211` | `1639` |
+| Pure group advantage | `1.880857559037812` | `104.86654506593634` | `0.0032729091274245` | not re-read |
+| Edit + adaptive group | `1.8368689239998532` | `102.95992265611578` | `0.0032482980665601035` | not re-read |
+
+Interpretation:
+
+- `constructive_pair` and group advantage are not algorithmically mutually
+  exclusive.
+- They were previously mutually exclusive only in the engineering shape of the
+  `transport_mode` branches.
+- The combined A+group run improves over A alone on the same measurement:
+  weighted loss `2.2547 -> 1.9123`, unweighted loss `146.23 -> 111.95`, and
+  offline true RMSE `0.003346 -> 0.003331`.
+- The current A+group implementation still does not beat pure group or
+  edit+adaptive group in this smoke setting. This suggests the combination is
+  useful but the group stage is not yet adding more than the standalone group
+  search can find.
+
+Current Status:
+
+- Implementation complete.
+- Smoke comparison complete.
+- DP boundary preserved: the run reused noisy/projected measurements for
+  optimization; exact true answers were computed only as offline evaluation
+  metrics.
+
+Next Recommended Task:
+
+- Compare A, pure group, edit+adaptive group, and A+group over multiple seeds
+  with the same measurement construction and report mean/std. If A+group is not
+  consistently better, keep it as an ablation rather than the main method.
+
+## Original-Candidate Group Advantage Comparison - 2026-06-18
+
+Task:
+
+- Re-check group advantage under the original small candidate budget instead of
+  the high-power GPU budget.
+- Address the concern that million-candidate experiments mainly measure search
+  coverage/GPU throughput rather than algorithmic value.
+
+Setup:
+
+- Base config:
+  `outputs/exp_jaxactive2000_core_single_query/config_resolved.yaml`.
+- Reused the same DP measurement artifact for all runs:
+  `outputs/exp_jaxactive2000_core_single_query/measurements.json`.
+- Common budget:
+  - `max_iters=2000`;
+  - `total_candidates_per_iter=256`;
+  - `accepted_per_iter=8`;
+  - `num_candidates_scored=512000`;
+  - true-query evaluation disabled for speed; measured-loss comparison only.
+
+Results:
+
+- Loss/RMSE metric definitions for this section:
+  - `weighted loss` is `final_measured_loss`, i.e.
+    `0.5 * sum_q residual[q]^2 * inv_variance[q]`;
+  - `std RMSE` is `sqrt(2 * weighted_loss / num_queries)`;
+  - `unweighted loss` is `0.5 * sum_q residual[q]^2`;
+  - `unweighted RMSE` is `sqrt(2 * unweighted_loss / num_queries)`;
+  - `true RMSE` is offline exact-query error against the real data and was
+    computed only after optimization, never used by QDTE selection/scoring.
+- Edit advantage only:
+  - output: `outputs/exp_origcand2000_edit_advantage_current`;
+  - offline true-eval output:
+    `outputs/exp_origcand2000_edit_advantage_current_trueeval`;
+  - transport: `microbatch_greedy`;
+  - final measured loss `7.050950126781752`;
+  - final unweighted measured loss `680.3885696974367`;
+  - final standardized measured RMSE `0.24089938009786793`;
+  - final unweighted residual RMSE `2.3664120358542156`;
+  - offline true-query RMSE `0.004102593779569775`;
+  - accepted edits `1500`.
+- Pure group advantage:
+  - output: `outputs/exp_origcand2000_pure_group_advantage_current`;
+  - offline true-eval output:
+    `outputs/exp_origcand2000_pure_group_advantage_current_trueeval`;
+  - transport: `directed_group`;
+  - `directed_group_positive_fill=false`;
+  - final measured loss `1.880857559037812`;
+  - final unweighted measured loss `104.86654506593634`;
+  - final standardized measured RMSE `0.12441989040295456`;
+  - final unweighted residual RMSE `0.9290312892175134`;
+  - offline true-query RMSE `0.0032729091274245`;
+  - accepted edits `1556`.
+- Edit advantage plus adaptive group repair:
+  - output: `outputs/exp_origcand2000_edit_plus_adaptive_group_current`;
+  - offline true-eval output:
+    `outputs/exp_origcand2000_edit_plus_adaptive_group_current_trueeval`;
+  - transport: `directed_group`;
+  - `directed_group_positive_fill=true`;
+  - `directed_group_positive_fill_augment=true`;
+  - `directed_group_positive_fill_augment_trigger=adaptive`;
+  - final measured loss `1.8368689239998532`;
+  - final unweighted measured loss `102.95992265611578`;
+  - final standardized measured RMSE `0.1229563448910628`;
+  - final unweighted residual RMSE `0.9205469954501121`;
+  - offline true-query RMSE `0.0032482980665601035`;
+  - accepted edits `1741`.
+
+Comparison To Previous Strong 243-Query Smoke Results:
+
+| Method | Weighted loss | Std RMSE | Unweighted loss | Unweighted RMSE | Offline true RMSE | True MAE | Candidates | Accepted |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| New edit advantage | `7.05095` | `0.240899` | `680.389` | `2.36641` | `0.00410259` | `0.00254321` | `512000` | `1500` |
+| New pure group advantage | `1.88086` | `0.124420` | `104.867` | `0.929031` | `0.00327291` | `0.00226749` | `512000` | `1556` |
+| New edit plus adaptive group | `1.83687` | `0.122956` | `102.960` | `0.920547` | `0.00324830` | `0.00218930` | `512000` | `1741` |
+| Old single query | `5.82225` | `0.218906` | `541.649` | `2.11140` | `0.00387935` | `0.00248148` | `512000` | `1461` |
+| Old constructive anneal32 measured-loss best | `1.93274` | `0.126124` | `109.588` | `0.949716` | `0.00329546` | `0.00224280` | `512000` | `1750` |
+| Old bounded best partner | `1.99748` | `0.128219` | `116.462` | `0.979050` | `0.00323497` | `0.00221811` | `520994` | `1169` |
+| Old A original mixed true-RMSE strong | `2.27805` | `0.136929` | `77.1327` | `0.796767` | `0.00272543` | `0.00202058` | `512000` | `1456` |
+
+Interpretation:
+
+- Under the original small candidate budget, group advantage is clearly useful:
+  `1.88` vs `7.05` measured loss against edit advantage only.
+- The combined edit-plus-adaptive-group version is slightly better than pure
+  group advantage on this smoke workload: `1.837` vs `1.881`.
+- By weighted measured loss and standardized measured RMSE, the new adaptive
+  group result is the best among the same 243-query smoke comparisons above.
+- By offline true-query RMSE, some previous constructive variants remain
+  stronger; for example `A_original_mixed` has true RMSE `0.00272543` while the
+  new adaptive group result has true RMSE `0.00324830`. This is expected because
+  QDTE optimizes noisy/projected measurements, not true answers.
+- This changes the prior read from the high-power experiments. The
+  million-candidate setting is useful for throughput and late-stage adult runs,
+  but it can hide the algorithmic value of group advantage because huge
+  candidate coverage already makes many single edits available.
+- For paper ablations, report both:
+  - small-candidate regime: demonstrates group advantage as an algorithmic
+    search improvement;
+  - high-candidate regime: demonstrates scalability and GPU throughput, but is
+    less clean as evidence for group advantage itself.
+
+High-Candidate Context:
+
+- Adult high-power setting uses `1,572,864` candidates per iteration.
+- 500-step positive-fill baseline:
+  - output: `outputs/adult_qdte_gpu_highpower_directed_group_500iter`;
+  - loss `5.436e8 -> 3.765e6`;
+  - final RMS unweighted residual `29.51` counts/query;
+  - rough unweighted raw-noise floor is about `1.922e6`, so final loss is about
+    `1.96x` that scale.
+- 100-step continuation from that checkpoint with adaptive group repair:
+  - output: `outputs/adult_qdte_gpu_highpower_directed_group_continue100_lossgate`;
+  - loss `3.765e6 -> 2.615e6`;
+  - final loss is about `1.36x` the same rough noise-floor scale.
+
+Current Judgment:
+
+- The original-candidate result is the stronger evidence for group advantage.
+- The high-power result is evidence that the implementation can spend large
+  candidate budgets effectively and approach the measurement noise scale, but
+  it should not be used alone to argue the group advantage innovation.
+
+Additional Probes Run:
+
+- Offline true-query evaluation with `max_iters=0` for:
+  - `outputs/exp_origcand2000_edit_advantage_current_trueeval`;
+  - `outputs/exp_origcand2000_pure_group_advantage_current_trueeval`;
+  - `outputs/exp_origcand2000_edit_plus_adaptive_group_current_trueeval`;
+  - `outputs/exp_jaxactive2000_core_single_query_trueeval_current_metrics`;
+  - `outputs/exp_constructive_pair_accept_anneal32_2000_trueeval_current_metrics`;
+  - `outputs/exp_A_original_mixed_consistency2000_trueeval_current_metrics`;
+  - `outputs/exp_cd_consistency_2000_bounded_best_partner_trueeval_current_metrics`.
+- `git diff --check`
+  - Result: passed.
+
+Next Recommended Task:
+
+- Run the original-candidate comparison on multiple seeds and then repeat on
+  adult with `total_candidates_per_iter=4096` to bridge the small smoke setting
+  and the high-power adult setting.
+
+## Directed-Group Search Efficiency Gate - 2026-06-18
+
+Task:
+
+- Optimize directed-group usage for search/evolution efficiency rather than
+  treating GPU power draw as the main success metric.
+- Keep group search in the algorithm; do not remove it just because a dense
+  group augment variant was inefficient.
+
+What Changed:
+
+- Added `qdte.directed_group_positive_fill_augment_max_loss`.
+  - `0` disables the loss gate.
+  - Positive values allow group augment only when current measured loss is at or
+    below that threshold.
+- Updated the high-power directed-group config to use group as late-stage
+  plateau repair:
+  - `directed_group_positive_fill=true`;
+  - `directed_group_positive_fill_augment=true`;
+  - `directed_group_positive_fill_augment_threshold=64`;
+  - `directed_group_positive_fill_augment_max_loss=4000000.0`;
+  - lightweight augment pool remains `seed_count=16`, `max_pool=512`,
+    `max_size=8`.
+- Added efficiency metrics to `metrics_final.json` and `runtime.json`:
+  - `loss_reduction_per_million_candidates`;
+  - `unweighted_loss_reduction_per_second`;
+  - `unweighted_loss_reduction_per_million_candidates`;
+  - `scoring_time_fraction`;
+  - `transport_time_fraction`.
+- Added timeseries diagnostics for the new group loss gate:
+  - `directed_group_positive_fill_augment_loss_gate_passed`.
+
+Changed Files:
+
+- `configs/adult_qdte_gpu_highpower_directed_group.yaml`
+- `qdte/evolution/engine.py`
+- `qdte/config_validation.py`
+- `tests/test_config_validation.py`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest tests/test_transport.py tests/test_config_validation.py tests/test_engine_smoke.py -q`
+  - Result: `87 passed in 4.25s`.
+- `git diff --check`
+  - Result: passed.
+
+Efficiency Experiments:
+
+- 500-step positive-fill baseline:
+  - output: `outputs/adult_qdte_gpu_highpower_directed_group_500iter`;
+  - final measured loss `3.76538e6`;
+  - accepted edits `73371`;
+  - generation time `180.017s`;
+  - transport fraction `0.0499`;
+  - loss reduction per million candidates `686465.24`.
+- 500-step dense-ish early augment, threshold `64`, no loss gate:
+  - output:
+    `outputs/adult_qdte_gpu_highpower_directed_group_lightaugment_500iter`;
+  - final measured loss `4.06679e6`;
+  - interpretation: group fires too early and hurts full-run convergence.
+- 500-step stricter augment, threshold `16`, no loss gate:
+  - output:
+    `outputs/adult_qdte_gpu_highpower_directed_group_lightaugment16_500iter`;
+  - final measured loss `3.93377e6`;
+  - interpretation: too conservative to recover the useful late-stage group
+    effect.
+- 500-step loss-gated augment, threshold `64`, max loss `4.0e6`:
+  - output:
+    `outputs/adult_qdte_gpu_highpower_directed_group_lossgate_500iter`;
+  - final measured loss `3.80631e6`;
+  - accepted edits `73214`;
+  - generation time `180.819s`;
+  - transport fraction `0.0543`;
+  - loss reduction per million candidates `686413.21`;
+  - group gate was closed at logged iterations `1/100/200/300/400` and open
+    by iteration `500`, where it accepted `8` group edits.
+- 100-step continuation from the same 500-step baseline checkpoint, no augment:
+  - output:
+    `outputs/adult_qdte_gpu_highpower_directed_group_continue100_noaugment`;
+  - initial loss `3.76538e6`;
+  - final loss `2.85356e6`;
+  - loss reduction per second `22530.21`;
+  - loss reduction per million candidates `5797.22`;
+  - accepted edits `3001`.
+- 100-step continuation from the same checkpoint, loss-gated group augment:
+  - output:
+    `outputs/adult_qdte_gpu_highpower_directed_group_continue100_lossgate`;
+  - initial loss `3.76538e6`;
+  - final loss `2.61517e6`;
+  - loss reduction per second `27540.87`;
+  - loss reduction per million candidates `7312.86`;
+  - accepted edits `3904`;
+  - transport fraction increased from `0.0431` to `0.0653`, but late-stage
+    search efficiency improved materially.
+
+Current Status:
+
+- GPU power draw is only a hardware health signal. It is not the right metric
+  for algorithm quality.
+- Search/evolution efficiency should be judged by loss reduction per wall time,
+  per candidate, and per transport overhead.
+- Current evidence:
+  - directed group is useful as late-stage plateau repair;
+  - letting group augment fire throughout the run is harmful;
+  - a loss gate removes most of the mid-stage harm and preserves the useful
+    continuation behavior;
+  - on a strict 500-step budget, positive-fill alone is still slightly better
+    than the current gated group (`3.765e6` vs `3.806e6`);
+  - after the 500-step checkpoint, gated group is clearly better over the next
+    100 steps (`2.615e6` vs `2.854e6`).
+
+Next Recommended Task:
+
+- Replace the hand-tuned `4.0e6` loss gate with an adaptive plateau trigger:
+  use recent loss-reduction rate, prefix accepted count, and/or noise-floor
+  ratio so group repair starts when single-edit positive-fill has actually
+  stalled.
+- Improve group construction quality next, not raw GPU utilization. The next
+  useful target is higher late-stage loss reduction per transport second while
+  keeping the group pool small.
+
+## Directed-Group GPU Backend And Positive-Fill Throughput Fix - 2026-06-18
+
+Task:
+
+- Connect `directed_group` to the JAX/GPU transport path.
+- Diagnose why a high-throughput run scored tens of millions of candidates
+  but accepted only `8` edits per iteration.
+- Preserve the QDTE objective invariants and DP boundary.
+
+What Changed:
+
+- Added a JAX-backed directed-group transport path:
+  - `qdte.directed_group_backend: cpu|jax|gpu`;
+  - `gpu` is currently an alias for the JAX implementation.
+- Added `directed_group_positive_fill` in the engine:
+  - when enabled, `directed_group` first accepts a normal positive-advantage
+    nonconflicting batch using the existing prefix objective;
+  - if that positive batch accepts nothing, it falls back to directed-group
+    compensating search;
+  - this fixes the early-stage throughput bug where `accepted_per_iter=1024`
+    was effectively capped by `directed_group_max_size=8`.
+- Added optional `directed_group_positive_fill_augment`:
+  - default is `false`;
+  - when enabled, QDTE accepts the positive prefix, computes a virtual residual,
+    blocks already accepted rows, and then tries one directed-group augment on
+    the remaining candidate pool;
+  - the real QDTE state is still updated once, after the combined transport is
+    selected.
+- Added diagnostics to `metrics_final.json`, `runtime.json`, and
+  `metrics_timeseries.csv` for:
+  - `directed_group_backend`;
+  - `directed_group_positive_fill`;
+  - `directed_group_positive_fill_selected`;
+  - `directed_group_positive_fill_accepted`;
+  - `directed_group_positive_fill_augment_attempted`;
+  - `directed_group_positive_fill_augment_accepted`;
+  - `directed_group_positive_fill_total_accepted`.
+
+Changed Files:
+
+- `qdte/evolution/transport.py`
+- `qdte/evolution/engine.py`
+- `qdte/config_validation.py`
+- `configs/adult_qdte_gpu_highpower_directed_group.yaml`
+- `tests/test_transport.py`
+- `tests/test_config_validation.py`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest tests/test_transport.py tests/test_config_validation.py -q`
+  - Result: `80 passed in 1.25s`.
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest tests/test_transport.py tests/test_config_validation.py tests/test_engine_smoke.py -q`
+  - Result: `87 passed in 4.21s`.
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -c "from qdte.config import load_yaml; from qdte.config_validation import validate_config; cfg=load_yaml('configs/adult_qdte_gpu_highpower_directed_group.yaml'); validate_config(cfg); print(cfg['qdte']['transport_mode'], cfg['qdte']['directed_group_backend'], cfg['qdte']['directed_group_positive_fill'])"`
+  - Result: `directed_group jax True`.
+
+Key Experiments:
+
+- Exact-target smoke JAX directed-group probe:
+  - output: `outputs/exp_oracle_exact_smoke_directed_group_jax_probe`;
+  - started from A-wide loss `21`;
+  - final measured/unweighted loss `12`;
+  - final true-query RMSE `0.00031491832864888683`;
+  - accepted edits `17`;
+  - candidates scored `61952`;
+  - interpretation: JAX backend matches the useful CPU directed-group behavior
+    on the known plateau-breaking probe.
+- Adult DP high-throughput directed-group without positive fill:
+  - output: `outputs/adult_qdte_directed_group_jax_50iter`;
+  - candidates scored `78643200`;
+  - accepted edits `400`;
+  - final measured/unweighted loss `5.06997e+08`;
+  - reason for low acceptance: one directed group per iteration with
+    `directed_group_max_size=8`, so `accepted_per_iter=1024` was not actually
+    reachable.
+  - GPU0 active samples: average power `377.20W`, max power `418.05W`.
+- Adult DP high-throughput directed-group with positive fill:
+  - output: `outputs/adult_qdte_directed_group_jax_positive_fill_50iter`;
+  - candidates scored `78643200`;
+  - accepted edits `27223`;
+  - final measured/unweighted loss `9.40652e+07`;
+  - accepted edits per second `1078.28`;
+  - candidates scored per second `3114989.26`;
+  - GPU0 active samples: average power `345.46W`, max power `401.43W`.
+- Adult DP high-throughput directed-group with positive fill plus augment:
+  - output:
+    `outputs/adult_qdte_directed_group_jax_positive_fill_augment_50iter`;
+  - candidates scored `78643200`;
+  - accepted edits `25131`;
+  - final measured/unweighted loss `1.077e+08`;
+  - transport time `46.28s` out of `69.04s` generation time;
+  - accepted edits per second `364.00`;
+  - GPU0 active samples: average power `146.45W`, max power `262.89W`.
+- Adult DP 10-step no-augment verification after making augment optional:
+  - output:
+    `outputs/adult_qdte_directed_group_jax_positive_fill_noaugment_10iter`;
+  - candidates scored `15728640`;
+  - accepted edits `6458`;
+  - final measured/unweighted loss `3.11243e+08`;
+  - transport time `1.83s` and scoring time `9.23s`;
+  - `directed_group_positive_fill_augment=false` in `runtime.json`.
+- Adult DP high-throughput atom-flow 50-step comparison:
+  - output: `outputs/adult_qdte_atom_flow_50iter`;
+  - candidates scored `78643200`;
+  - accepted edits `26785`;
+  - final measured/unweighted loss `9.59141e+07`;
+  - generation time `27.46s`, scoring time `22.59s`, transport time `4.80s`;
+  - accepted edits per second `975.32`;
+  - candidates scored per second `2863634.88`;
+  - GPU0 active samples: average power `323.30W`, max power `369.60W`.
+- New reusable high-power directed-group config:
+  - `configs/adult_qdte_gpu_highpower_directed_group.yaml`;
+  - same adult DP/workload/GPU-candidate settings as
+    `configs/adult_qdte_gpu_highpower.yaml`;
+  - transport switched to `directed_group`;
+  - `directed_group_backend=jax`;
+  - `directed_group_positive_fill=true`;
+  - `directed_group_positive_fill_augment=false`.
+- Adult DP high-throughput directed-group 500-step validation:
+  - config: `configs/adult_qdte_gpu_highpower_directed_group.yaml`;
+  - output: `outputs/adult_qdte_gpu_highpower_directed_group_500iter`;
+  - power log: `outputs/gpu_power_directed_group_highpower_500iter.csv`;
+  - true-query evaluation disabled for this performance run;
+  - candidates scored `786432000`;
+  - accepted edits `73371`;
+  - initial measured/unweighted loss `5.43624e+08`;
+  - final measured/unweighted loss `3.76538e+06`;
+  - final RMS unweighted residual `29.5129`;
+  - generation time `180.02s`, scoring time `170.66s`, transport time `8.99s`;
+  - candidates scored per second `4368647.77`;
+  - accepted edits per second `407.58`;
+  - final incremental answer drift `0`;
+  - GPU0 all samples: average power `387.37W`, max power `449.36W`;
+  - GPU0 active samples: average power `420.45W`, max power `449.36W`;
+  - samples with power >= `300W`: `338`, average power `427.85W`;
+  - samples with power >= `400W`: `303`, average power `432.17W`.
+
+Current Judgment:
+
+- The `8` accepted edits per iteration result was not a candidate-generation
+  failure. It was a transport bottleneck caused by using plateau-oriented
+  directed-group selection as the only acceptance mechanism.
+- For early-stage optimization where returned top-k edits are already positive,
+  the correct high-throughput behavior is to accept a positive batch first.
+  Directed-group search should mainly act as a fallback for plateau or
+  compensating-edit situations.
+- The GPU utilization goal is now met on the adult high-throughput path:
+  effective active-run power is above `300W` on the 4090.
+- Residual-updated directed-group augment is implemented but is not currently a
+  good default for the high-throughput path. The dense top-k group search makes
+  transport dominate runtime and drops effective GPU power below `300W`.
+- Current recommended high-throughput setting:
+  `directed_group_positive_fill=true` and
+  `directed_group_positive_fill_augment=false`.
+- On the 50-step adult DP comparison, directed-group positive-fill is slightly
+  better than atom-flow under the same high-power candidate/scoring setup:
+  - lower final loss: `9.40652e+07` vs `9.59141e+07`;
+  - higher accepted edits/sec: `1078.28` vs `975.32`;
+  - higher candidates/sec: `3114989.26` vs `2863634.88`;
+  - higher active average GPU power: `345.46W` vs `323.30W`.
+- The 500-step directed-group positive-fill run confirms the performance target:
+  active average GPU power is `420.45W`, well above the requested `300W` floor
+  and close to the `450W` card limit.
+- Interpretation of the final 500-step loss scale:
+  - final loss `3.76538e+06` is `0.5 * sum_q residual_q^2` over `8646`
+    count-valued queries, not a percentage error;
+  - equivalent RMS residual is `29.5129` counts/query;
+  - relative RMS residual is `29.5129 / 45222 = 0.0006526`, about `0.065%`
+    of the row count;
+  - average measurement variance is `444.55`, so average raw noise std is
+    about `21.08` counts; final RMS residual is about `1.40x` that average
+    raw-noise std;
+  - rough raw-noise loss scale `0.5 * num_queries * mean_variance` is
+    `1.92178e+06`, so final loss is about `1.96x` this crude noise scale;
+  - final loss is dominated by `mixed` queries: `68.55%` of total final loss,
+    with mixed-family RMS residual `41.35` over `3019` queries.
+
+Privacy Boundary:
+
+- The adult runs above used `privacy.mode=dp` and did not enable true-query
+  evaluation.
+- Exact-target smoke probes are explicitly non-DP/oracle diagnostics and must
+  not be used as DP paper results.
+
+Next Recommended Task:
+
+- Do not optimize the dense augment path further unless plateau diagnostics show
+  it is needed. If augment becomes important, implement it as a sparse/fused
+  top-k operation instead of re-evaluating dense candidate deltas.
+- Use `configs/adult_qdte_gpu_highpower_directed_group.yaml` for the next longer
+  high-power run. If 500-step behavior remains close to the 50-step result,
+  promote directed-group positive-fill as the default high-throughput QDTE
+  transport and keep atom-flow as a baseline/ablation.
+
+## Non-DP Exact-Target Performance Limit And Similarity Probe - 2026-06-18
+
+Task:
+
+- Test QDTE's performance-limit behavior outside DP by using exact true
+  workload answers as the target.
+- Check whether a low-loss exact-target synthetic dataset simply copies the
+  source dataset.
+
+Setup:
+
+- Base config:
+  `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair/config_resolved.yaml`
+- Common exact-target overrides:
+  - `privacy.mode=oracle`;
+  - `privacy.oracle_variance=1.0`;
+  - `projection.project_partitions=false`;
+  - `projection.clip_nonpartition=false`;
+  - `projection.consistency.enabled=false`;
+  - `projection.uncertainty.enabled=false`;
+  - `qdte.objective_weighting=unweighted`.
+- This is not DP. Exact true query answers are the optimization target.
+
+Zero-Loss Sanity Check:
+
+- Output:
+  `outputs/exp_oracle_exact_real_init_reference`
+- Initialized the synthetic table directly from the encoded real table:
+  `outputs/exp_oracle_exact_real_init_reference/real_encoded.npy`.
+- Result:
+  - final measured/unweighted loss `0`;
+  - true-query MAE `0`;
+  - true-query RMSE `0`;
+  - candidates scored `0`;
+  - accepted edits `0`.
+- Interpretation: zero loss is globally feasible in this exact-target,
+  same-schema, same-row-count setting. Any nonzero result from QDTE is an
+  optimization/search limitation, not an infeasibility floor.
+
+QDTE Exact-Target Results:
+
+- A-style QDTE, 2000 steps:
+  - output `outputs/exp_oracle_exact_smoke_A_2000`;
+  - initial loss `126267`;
+  - final measured/unweighted loss `36`;
+  - true-query MAE `0.00027272727272727263`;
+  - true-query RMSE `0.0005454545454545454`;
+  - max true-query error `0.0020000000000000018`;
+  - candidates scored `512000`;
+  - accepted edits `911`;
+  - wall time `15.428s`.
+- Wide A-style QDTE:
+  - output `outputs/exp_oracle_exact_smoke_A_wide_10000`;
+  - overrides included `total_candidates_per_iter=4096`,
+    `num_active_targets=32`, `candidates_per_target=64`,
+    `accepted_per_iter=16`, `max_iters=10000`, `stop_patience=2000`;
+  - stopped at iter `3990` due patience;
+  - final measured/unweighted loss `21`;
+  - true-query MAE `0.00017355371900826434`;
+  - true-query RMSE `0.0004165977904505306`;
+  - max true-query error `0.0010000000000000009`;
+  - candidates scored `16343040`;
+  - accepted edits `849`;
+  - wall time `1m28.272s`.
+- Directed group probe from the wide result:
+  - output `outputs/exp_oracle_exact_smoke_directed_group_probe`;
+  - started from loss `21`;
+  - final measured/unweighted loss `12`;
+  - true-query MAE `9.917355371900827e-05`;
+  - true-query RMSE `0.00031491832864888683`;
+  - candidates scored `61952`;
+  - accepted edits `17`;
+  - wall time `3.760s`.
+- Stronger directed group probe from the loss-12 result:
+  - output `outputs/exp_oracle_exact_smoke_directed_group_probe2`;
+  - started from loss `12`;
+  - final measured/unweighted loss `10`;
+  - true-query MAE `8.264462809917356e-05`;
+  - true-query RMSE `0.0002874797872880345`;
+  - candidates scored `415744`;
+  - accepted edits `2`;
+  - wall time `51.475s`.
+
+Performance-Limit Interpretation:
+
+- QDTE can drive exact-target loss very close to zero on the smoke workload:
+  `126267 -> 36 -> 21 -> 12 -> 10`.
+- It does not reach the known feasible zero-loss solution under the current
+  search/transport stack.
+- The observed plateau is not only a candidate-count issue:
+  - increasing candidate pool improves `36 -> 21`;
+  - group transport can break a single-edit/constructive-unit plateau and
+    improve `21 -> 12 -> 10`;
+  - later improvements become expensive and sparse.
+- Current evidence: exact-target performance is limited by local search and
+  grouped-edit discovery, not by DP noise or target inconsistency.
+
+Similarity Diagnostic For The Loss-10 Synthetic Dataset:
+
+- Compared:
+  - real encoded table:
+    `outputs/exp_oracle_exact_real_init_reference/real_encoded.npy`;
+  - loss-10 synthetic table:
+    `outputs/exp_oracle_exact_smoke_directed_group_probe2/synthetic_encoded.npy`.
+- Diagnostic output:
+  `outputs/exp_oracle_exact_smoke_directed_group_probe2/row_similarity_to_real.json`
+- Results:
+  - positional exact row matches: `0 / 1000`;
+  - unique real rows: `190`;
+  - unique synthetic rows: `394`;
+  - unique row-set intersection: `141`;
+  - unique row-set Jaccard: `0.3182844243792325`;
+  - multiset exact row overlap: `424 / 1000`;
+  - multiset Jaccard: `0.26903553299492383`;
+  - row-count total variation fraction: `0.576`;
+  - synthetic rows whose value pattern appears somewhere in real:
+    `0.484`;
+  - real rows whose value pattern appears somewhere in synthetic:
+    `0.809`;
+  - synthetic-to-real nearest Hamming distance histogram:
+    `{0: 484, 1: 459, 2: 56, 3: 1, 4: 0, 5: 0}`;
+  - real-to-synthetic nearest Hamming distance histogram:
+    `{0: 809, 1: 191, 2: 0, 3: 0, 4: 0, 5: 0}`;
+  - per-attribute marginal L1 differences:
+    `[0, 0, 0, 0, 0]`.
+- Column-permutation baseline:
+  - independently permuting each real column gives multiset exact row overlap
+    `128 / 1000`;
+  - row-count TV fraction `0.872`;
+  - nearest-Hamming mean `1.198`.
+
+Similarity Interpretation:
+
+- The loss-10 synthetic table is not a one-to-one copy of the source table:
+  positional row matches are zero, row-count TV is high, and the synthetic table
+  has many more unique row patterns than the real table.
+- It still preserves substantial source-like structure:
+  - `424` rows match real row patterns with multiplicity;
+  - `484` synthetic rows have exact row patterns present in the real set;
+  - nearly all remaining synthetic rows are Hamming-distance `1` or `2` from a
+    real row.
+- This is expected in non-DP exact-target fitting and should not be described as
+  privacy-preserving. It is useful as a performance-limit probe, not as a
+  release mechanism.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+New Output Artifacts:
+
+- `outputs/exp_oracle_exact_real_init_reference/`
+- `outputs/exp_oracle_exact_smoke_A_2000/`
+- `outputs/exp_oracle_exact_smoke_A_wide_10000/`
+- `outputs/exp_oracle_exact_smoke_directed_group_probe/`
+- `outputs/exp_oracle_exact_smoke_directed_group_probe2/`
+- `outputs/exp_oracle_exact_smoke_directed_group_probe2/row_similarity_to_real.json`
+
+Tests And Probes Run:
+
+- Oracle exact-target zero-loss sanity check.
+- Oracle exact-target A-style 2000-step run.
+- Oracle exact-target wide A-style run.
+- Directed-group continuation probes from loss `21` and loss `12`.
+- Row-level similarity analysis between the loss-10 synthetic table and the
+  encoded real table.
+- One larger directed-group run was manually interrupted because the
+  Python/NumPy group search was too slow for an exploratory probe.
+- `git diff --check`
+  - Result: passed.
+
+Current Status:
+
+- Exact-target QDTE has a known zero feasible optimum on this smoke workload.
+- Current best generated synthetic loss is `10`, not zero.
+- The best synthetic is not identical to the real table, but it remains strongly
+  source-like at the row-pattern/nearest-neighbor level.
+
+Next Recommended Task:
+
+- If exact-target performance-limit experiments remain important, implement a
+  faster grouped-edit or block-repair search before running larger workloads.
+  The current directed-group path is useful diagnostically but too CPU-heavy for
+  full sweeps.
+
+## QDTE Outside Differential Privacy - 2026-06-18
+
+Question:
+
+- Does QDTE still make sense outside the differential-privacy setting?
+- If the target queries are exact true answers instead of noisy/projected DP
+  measurements, can QDTE reach the theoretical zero-loss limit?
+
+Current Judgment:
+
+- QDTE is not inherently DP-specific. The DP setting supplies a noisy/projected
+  target and variances, but the core algorithm is a query-targeted synthetic
+  dataset compiler:
+  - maintain `residual = target - answer_syn`;
+  - generate directed record edits;
+  - score edits by full-workload edit advantage;
+  - apply accepted edits to move one synthetic dataset toward the query target.
+- Outside DP, the natural target is the exact query answer vector from the real
+  dataset. Then the objective can be viewed as exact workload matching.
+
+When Zero Loss Is Theoretically Achievable:
+
+- If:
+  - the synthetic dataset has the same number of records as the real dataset;
+  - the synthetic schema/domain matches the real encoded schema;
+  - the workload answers are exact counts or rates representable by that record
+    count;
+  - the target query vector is computed from an actual dataset;
+  - the optimization objective uses that exact target directly;
+- then a zero-loss solution exists: the real dataset itself is feasible and
+  exactly matches every query in the workload.
+- This does not mean QDTE will automatically find it; it only means the global
+  optimum is zero.
+
+When Zero Loss May Not Be Achievable:
+
+- If `N_syn != N_real`, exact target rates may not be representable by
+  `N_syn` integer records. The lower bound is then a quantization/integrality
+  floor.
+- If the synthetic schema is coarser than the source schema, some exact query
+  answers may be impossible to realize.
+- If the target vector is inconsistent, for example after arbitrary postprocess
+  constraints or incompatible marginals, no dataset may match all targets.
+- If the objective includes weights, clipping, projection, or transformed
+  targets, the zero-loss statement applies only to the chosen transformed
+  target, not necessarily to original exact answers.
+- If the workload includes queries outside the representable query evaluator,
+  exact matching is impossible in the current implementation.
+
+Algorithmic Guarantee:
+
+- The current QDTE implementation is greedy/local-search style. It does not
+  prove global convergence to zero, even when a zero-loss dataset exists.
+- Practical convergence depends on:
+  - candidate proposal coverage;
+  - whether the edit generator can reach the needed records/values;
+  - transport/acceptance policy;
+  - iteration budget;
+  - local optima and neutral moves;
+  - whether multi-restart or population search is used.
+- Therefore the right non-DP experiment is not just "is zero feasible?", but
+  "how close does QDTE get to zero compared with stronger non-DP fitting
+  baselines under matched compute?"
+
+Why It May Still Be Useful Without DP:
+
+- If privacy is irrelevant and the full source dataset can be released, exact
+  generation is unnecessary because releasing the real data already gives zero
+  workload error.
+- QDTE is useful outside DP when the goal is not release of the original data,
+  but query-targeted compilation:
+  - compress a large dataset into a smaller synthetic dataset;
+  - fit public aggregate constraints into a record-level synthetic table;
+  - generate benchmark data matching selected marginals/ranges;
+  - initialize or refine synthetic data for downstream simulations;
+  - study directed local edit search independent of DP noise.
+- In this framing, QDTE's research value is a directed dataset compiler, while
+  DP is an important application where the target is noisy/projected and the
+  optimization boundary is privacy constrained.
+
+Experiment Recommendation:
+
+- Add a non-DP exact-target mode or config:
+  - `privacy.mode=none` or equivalent;
+  - target is exact true workload answers;
+  - objective weighting should likely start as unweighted;
+  - set `N_syn=N_real` for the first zero-loss feasibility probe.
+- Run:
+  - single-layer A/QDTE with exact targets;
+  - random mutation + edit advantage;
+  - private-GSD-like population baseline without DP noise;
+  - optionally an exact solver or IPF/LP baseline for small domains.
+- Report:
+  - final exact workload loss;
+  - whether it reaches numerical zero;
+  - accepted edits and runtime;
+  - distance to zero under different `N_syn` values.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests And Probes Run:
+
+- Documentation-only discussion update.
+- `git diff --check`
+  - Result: passed.
+
+Current Status:
+
+- The current judgment is that QDTE has a meaningful non-DP interpretation as a
+  query-targeted dataset compiler.
+- Zero loss is globally feasible under same-size, same-domain, exact-target
+  conditions, but current QDTE does not guarantee finding the zero-loss dataset.
+
+Next Recommended Task:
+
+- Implement or verify a clean exact-target non-DP config and run a small
+  zero-loss feasibility probe before claiming non-DP convergence behavior.
+
+## Randomness Semantics For Population Continuation - 2026-06-18
+
+Question:
+
+- Why did the first 10 generations of the 100-generation random-row population
+  run exactly match the earlier 10-generation random-row run?
+
+Answer:
+
+- The match is expected because the 100-generation run was launched as a
+  same-seed/same-measurement continuation, not as an independent random
+  replicate.
+- Population restart seeds are deterministic:
+  - the base seed is `run.seed`;
+  - each individual gets `seed = base_seed + index * population.seed_stride`;
+  - with `run.seed=0` and `seed_stride=1000`, the first generation uses
+    `0, 1000, 2000, ...`.
+- Each QDTE worker creates `np.random.default_rng(run.seed)`, so the same
+  individual seed gives the same synthetic initialization and same candidate
+  proposal stream.
+- `independent_oneway` initialization is random, but it samples from that
+  seeded RNG; therefore it is reproducible.
+- Crossover randomness is also deterministic:
+  `np.random.default_rng(base_seed + 7919)` drives parent selection and row
+  crossover. With the same previous-generation ranking and the same seed, it
+  chooses the same parent pairs and row swaps.
+- The 100-generation run also reused the same DP measurement artifact as the
+  10-generation run. Therefore the target, residual landscape, initial
+  generation seeds, and crossover stream were identical for the first 10
+  generations.
+
+Credibility Boundary:
+
+- The 100-generation result is credible as an extension of the previous
+  trajectory.
+- It is not credible as an independent replicate or evidence of cross-seed
+  robustness.
+- To test algorithmic randomness independently while controlling DP noise, run
+  the same experiment with a new `run.seed` but the same
+  `measurement.reuse_from`.
+- To test total pipeline randomness, run with a new `run.seed` and a fresh DP
+  measurement.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests And Probes Run:
+
+- Inspected:
+  - `scripts/run_population.py`;
+  - `qdte/evolution/engine.py`;
+  - `qdte/evolution/initialization.py`;
+  - `qdte/queries/workload.py`.
+
+Current Status:
+
+- The earlier 100-generation experiment should be labeled explicitly as
+  same-seed/same-measurement continuation.
+
+Next Recommended Task:
+
+- If population-level evolution remains of interest, run at least one
+  `run.seed=1` replicate reusing the same measurement artifact to separate
+  algorithmic randomness from DP-noise randomness.
+
+## A-Style Random-Row Outer Population 100-Generation Continuation - 2026-06-18
+
+Task:
+
+- Extend the A-style inner + random-row outer population experiment from `10`
+  generations to `100` generations.
+- Requested settings:
+  - `population.size=48`;
+  - `population.inner_iters=100`;
+  - random-row crossover;
+  - `population.generations=100`.
+
+Important Credibility Note:
+
+- This run intentionally reused the previous 10-generation DP measurement
+  artifact:
+  `outputs/pop48_gen10_A_orthogonal_random_row/measurement`.
+- It also kept the same base `run.seed=0` and `population.seed_stride=1000`.
+- Therefore the first 10 generations are expected to reproduce the previous
+  10-generation run exactly. This run is a same-seed/same-measurement
+  continuation, not an independent random replicate.
+- Credible interpretation:
+  - answers whether the same random trajectory improves when extended to 100
+    generations;
+  - preserves the DP boundary because optimization still uses only the reused
+    noisy/projected measurements.
+- Not credible interpretation:
+  - does not prove random-row outer evolution is robust across seeds;
+  - should not be counted as a multi-seed ablation.
+
+Experiment:
+
+- Output:
+  `outputs/pop48_gen100_A_orthogonal_random_row`
+- Base config:
+  `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair/config_resolved.yaml`
+- Important overrides:
+  - `measurement.reuse_from=outputs/pop48_gen10_A_orthogonal_random_row/measurement`;
+  - `population.generations=100`;
+  - `population.size=48`;
+  - `population.elite_count=4`;
+  - `population.inner_iters=100`;
+  - `population.evaluate_individuals=false`;
+  - `population.parallel.enabled=true`;
+  - `population.parallel.gpu_devices=0,1`;
+  - `population.parallel.workers_per_gpu=24`;
+  - `population.crossover.enabled=true`;
+  - `population.crossover.mode=random_row`;
+  - `population.crossover.children=44`;
+  - `population.crossover.parent_pool=16`;
+  - `population.crossover.fraction=0.5`;
+  - `evaluation.compute_true_query_error=false` during optimization.
+
+Result:
+
+- Wall time: `8m02.911s`.
+- Peak sampled GPU memory:
+  - GPU0 `11204 MiB`;
+  - GPU1 `10965 MiB`.
+- Output size: `1.2G`.
+- Best measured/unweighted loss: `16.92483773235196`.
+- Best appeared at generation `70`.
+- Best individual:
+  - kind `crossover`;
+  - slot `10`;
+  - index `3370`;
+  - seed `3370000`;
+  - output
+    `outputs/pop48_gen100_A_orthogonal_random_row/generation_0070/individual_010`;
+  - random-row crossover swapped `519` rows;
+  - subsequent inner QDTE scored `25600` candidates and accepted `154` edits.
+
+Generation Checkpoints:
+
+- gen `0`: global best `177.1397391796481`, accepted edits `38019`;
+- gen `1`: global best `22.3917516708743`, accepted edits `11310`;
+- gen `2`: global best `19.34641327861661`, accepted edits `8840`;
+- gen `6`: global best `17.701817417181672`, accepted edits `8428`;
+- gen `10`: still `17.701817417181672`, accepted edits `8015`;
+- gen `20`: global best `17.626083517111482`, accepted edits `7540`;
+- gen `21`: global best `17.225997829474153`, accepted edits `7364`;
+- gen `65`: global best `17.147170925177278`, accepted edits `7331`;
+- gen `70`: global best `16.92483773235196`, accepted edits `7242`;
+- gen `99`: still `16.92483773235196`, accepted edits `7484`.
+
+Offline True-Query Evaluation:
+
+- Evaluation output:
+  `outputs/eval_pop48_A_orthogonal_random_row_gen100_best_true_rmse`
+- Evaluation reused:
+  `outputs/pop48_gen100_A_orthogonal_random_row/measurement`.
+- Evaluation loaded:
+  `outputs/pop48_gen100_A_orthogonal_random_row/generation_0070/individual_010/synthetic_encoded.npy`.
+- Evaluation set `qdte.max_iters=0`.
+- The evaluation log confirms `Candidates scored: 0` and
+  `Accepted edits: 0`.
+- Result:
+  - measured/unweighted loss `16.92483773235196`;
+  - true-query MAE `0.0018305785123966943`;
+  - true-query RMSE `0.0023275212935440198`;
+  - true-query max error `0.006999999999999999`.
+- Hash checks:
+  - source best synthetic and evaluation synthetic hashes match:
+    `afe3d29a4975ad4b29f4278e591f285ae19d6c5665dd7be94c4530bb9079c410`;
+  - source measurement `queries.json` and evaluation `queries.json` hashes
+    match:
+    `9728cdce2c813b9a6a46f72a3083eba56d1097056dece460777056959daffb25`.
+
+Comparison:
+
+- Single-layer A:
+  - measured/unweighted loss `21.849774742163362`;
+  - true-query MAE `0.0017644628099173555`;
+  - true-query RMSE `0.0022790820248584868`.
+- A + random-row outer, 10-generation same-seed run:
+  - measured/unweighted loss `17.701817417181672`;
+  - true-query MAE `0.0018057851239669425`;
+  - true-query RMSE `0.0023096992756204545`.
+- A + random-row outer, 100-generation same-seed continuation:
+  - measured/unweighted loss `16.92483773235196`;
+  - true-query MAE `0.0018305785123966943`;
+  - true-query RMSE `0.0023275212935440198`.
+- A + context-aware outer, 100-generation run:
+  - measured/unweighted loss `17.358035469092073`;
+  - true-query MAE `0.001822314049586777`;
+  - true-query RMSE `0.0023363813228902543`.
+
+Interpretation:
+
+- Extending the same random-row trajectory from 10 to 100 generations reduced
+  measured/projected loss from `17.701817417181672` to
+  `16.92483773235196`.
+- Offline true-query RMSE got worse over that same extension:
+  `0.0023096992756204545` to `0.0023275212935440198`.
+- The result supports the current concern: the outer population loop is
+  continuing to fit the noisy/projected target, but this is not translating into
+  better true-query accuracy on this workload.
+- Unless held-out or multi-seed experiments show a true-error gain, the outer
+  population loop should stay out of the main algorithm narrative and be kept as
+  an ablation/negative result.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests And Probes Run:
+
+- A-style random-row 100-generation same-seed continuation as described above.
+- Offline `qdte.max_iters=0` true-query evaluation of the best generation-70
+  synthetic table.
+- `jq` inspection of:
+  - `outputs/pop48_gen100_A_orthogonal_random_row/population_summary.json`;
+  - `outputs/eval_pop48_A_orthogonal_random_row_gen100_best_true_rmse/metrics_final.json`;
+  - reference `metrics_final.json` files for single-layer A, random-row 10-gen,
+    and context-aware population.
+- `sha256sum` checks for source/evaluation synthetic and query catalogues.
+- `git diff --check`
+  - Result: passed.
+
+Current Status:
+
+- The requested 100-generation random-row outer population run is complete.
+- The experiment is reliable as a same-seed/same-measurement continuation.
+- It is not an independent random replicate.
+- The observed pattern is lower measured loss but worse true-query RMSE.
+
+Next Recommended Task:
+
+- Treat the population layer as a candidate ablation rather than the main QDTE
+  story unless independent seeds or a held-out/DP-valid validation workload show
+  a real true-error improvement.
+- If further checking is desired, run `run.seed=1` and `run.seed=2` with the
+  same reused measurement to isolate algorithmic randomness from DP-noise
+  randomness.
+
+## A-Style Inner With Random-Row Outer Population - 2026-06-18
+
+Task:
+
+- Run the best current A-style single-layer QDTE method inside the outer
+  population loop with random row crossover.
+- Requested settings:
+  - `population.generations=10`;
+  - `population.size=48`;
+  - `population.inner_iters=100`;
+  - random crossover.
+
+Environment Note:
+
+- Installed system `jq` for JSON result inspection:
+  `sudo -n apt-get update && sudo -n apt-get install -y jq`.
+
+Experiment:
+
+- Output:
+  `outputs/pop48_gen10_A_orthogonal_random_row`
+- Base config:
+  `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair/config_resolved.yaml`
+- Important overrides:
+  - `population.generations=10`;
+  - `population.size=48`;
+  - `population.elite_count=4`;
+  - `population.inner_iters=100`;
+  - `population.crossover.enabled=true`;
+  - `population.crossover.mode=random_row`;
+  - `population.crossover.children=44`;
+  - `population.crossover.parent_pool=16`;
+  - `population.crossover.fraction=0.5`;
+  - `population.parallel.enabled=true`;
+  - `population.parallel.gpu_devices=0,1`;
+  - `population.parallel.workers_per_gpu=24`;
+  - true-query evaluation disabled during optimization for speed.
+
+Result:
+
+- Wall time: `real 92.58s`.
+- Peak sampled GPU memory:
+  - GPU0 `11204 MiB`;
+  - GPU1 `10965 MiB`.
+- Output size: `116M`.
+- Best measured/unweighted loss: `17.701817417181672`.
+- Best appeared at generation `6`.
+- Best individual:
+  - kind `crossover`;
+  - slot `29`;
+  - index `317`;
+  - seed `317000`;
+  - output
+    `outputs/pop48_gen10_A_orthogonal_random_row/generation_0006/individual_029`;
+  - parent indices `[242, 249]`;
+  - random-row crossover swapped `495` rows;
+  - subsequent inner QDTE scored `25600` candidates and accepted `197` edits.
+
+Generation Checkpoints:
+
+- gen `0`: best/global best `177.1397391796481`, accepted edits `38019`;
+- gen `1`: best/global best `22.3917516708743`, accepted edits `11310`;
+- gen `2`: best/global best `19.34641327861661`, accepted edits `8840`;
+- gen `3`: best/global best `18.47868957523221`, accepted edits `8775`;
+- gen `5`: best/global best `18.183885479010286`, accepted edits `8462`;
+- gen `6`: best/global best `17.701817417181672`, accepted edits `8428`;
+- gen `9`: still `17.701817417181672`, accepted edits `8165`.
+
+Offline True-Query Evaluation:
+
+- Evaluation output:
+  `outputs/eval_pop48_A_orthogonal_random_row_best_true_rmse`
+- Evaluation reused the random-row population measurement artifact, loaded the
+  generation-6 best synthetic table, and set `qdte.max_iters=0`.
+- Exact true answers were used only for offline evaluation.
+- Evaluation result:
+  - measured/unweighted loss `17.701817417181672`;
+  - true-query MAE `0.0018057851239669425`;
+  - true-query RMSE `0.0023096992756204545`;
+  - true-query max error `0.006999999999999999`;
+  - candidates scored `0`;
+  - accepted edits `0`.
+
+Comparison Against Current Reference Runs:
+
+- Single-layer A:
+  - output
+    `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair`;
+  - measured/unweighted loss `21.849774742163362`;
+  - true-query MAE `0.0017644628099173555`;
+  - true-query RMSE `0.0022790820248584868`.
+- A-style outer loop with context-aware crossover:
+  - output `outputs/pop48_gen100_A_orthogonal_context_aware`;
+  - measured/unweighted loss `17.358035469092073`;
+  - offline true-query MAE `0.001822314049586777`;
+  - offline true-query RMSE `0.0023363813228902543`;
+  - best crossover accepted `0` context-aware donor edits, so the winning path
+    mostly behaved like a clone plus short inner continuation.
+- A-style outer loop with random-row crossover:
+  - output `outputs/pop48_gen10_A_orthogonal_random_row`;
+  - measured/unweighted loss `17.701817417181672`;
+  - offline true-query MAE `0.0018057851239669425`;
+  - offline true-query RMSE `0.0023096992756204545`;
+  - winning crossover actually swapped rows (`495`) and then improved through
+    `197` accepted inner QDTE edits.
+
+Interpretation:
+
+- Random-row outer evolution improves the measured/projected objective relative
+  to the single-layer A run.
+- It does not improve offline exact-workload true RMSE over single-layer A in
+  this run. It is slightly better than the context-aware population run on true
+  RMSE, while slightly worse on measured loss.
+- The current evidence still suggests that the outer loop can fit the
+  noisy/projected target more strongly, but this does not automatically
+  translate into lower true-query RMSE.
+- If the paper keeps the outer loop, it should be framed as an optional
+  exploration layer unless a held-out or multi-seed experiment shows a real
+  generalization gain.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests And Probes Run:
+
+- `jq` inspection of
+  `outputs/pop48_gen10_A_orthogonal_random_row/population_summary.json`.
+- `jq` comparison of `metrics_final.json` for:
+  - `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair`;
+  - `outputs/eval_pop48_A_orthogonal_context_best_true_rmse`;
+  - `outputs/eval_pop48_A_orthogonal_random_row_best_true_rmse`.
+- Parsed `outputs/pop48_gen10_A_orthogonal_random_row/gpu_mem.csv` to confirm
+  peak sampled GPU memory.
+- `git diff --check`
+  - Result: passed.
+
+Current Status:
+
+- The requested A + random-row outer population run is complete.
+- The run result is reliable for measured/projected objective comparison.
+- The true-query RMSE number is reliable only as offline exact-workload
+  evaluation of a fixed synthetic table, not as a DP-safe optimization signal.
+
+Next Recommended Task:
+
+- Before investing further in the population layer, run a multi-seed comparison
+  of single-layer A, A + random-row population, and A + context-aware population
+  with a held-out workload. The decision criterion should include held-out
+  true-query MAE/RMSE or a DP-valid validation workload, not measured loss alone.
+
+## Best A-Style Inner With Outer Population Loop - 2026-06-18
+
+Task:
+
+- Verify whether the outer population loop is still weak when applied to the
+  best current single-layer QDTE method.
+- The motivating concern was that the previous population smoke used the weak
+  default `configs/smoke.yaml` inner settings, not the best A-style inner
+  method.
+
+Best Single-Layer Baseline:
+
+- Baseline output:
+  `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair`
+- Config:
+  `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair/config_resolved.yaml`
+- Key settings:
+  - orthogonal mixed workload;
+  - `projection.consistency.method=local_table_feasible_jax`;
+  - `qdte.transport_mode=constructive_pair`;
+  - `qdte.objective_weighting=unweighted`;
+  - `qdte.max_iters=2000`;
+  - `qdte.stop_patience=2000`.
+- Single-layer result:
+  - final measured/unweighted loss `21.849774742163362`;
+  - true query RMSE `0.0022790820248584868`;
+  - candidates scored `512000`;
+  - accepted edits `955`.
+
+Population Experiment:
+
+- Output:
+  `outputs/pop48_gen100_A_orthogonal_context_aware`
+- Base config:
+  `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair/config_resolved.yaml`
+- Overrides:
+  - `population.generations=100`;
+  - `population.size=48`;
+  - `population.elite_count=4`;
+  - `population.inner_iters=100`;
+  - `population.crossover.enabled=true`;
+  - `population.crossover.mode=context_aware`;
+  - `population.crossover.children=44`;
+  - `population.crossover.parent_pool=16`;
+  - `population.crossover.candidates=512`;
+  - `population.parallel.enabled=true`;
+  - `population.parallel.gpu_devices=0,1`;
+  - `population.parallel.workers_per_gpu=24`;
+  - true-query evaluation disabled for speed.
+
+Results:
+
+- Final best measured/unweighted loss: `17.358035469092073`.
+- Best appeared at generation `2`.
+- Wall time: `real 477.92s`.
+- Peak sampled GPU memory:
+  - GPU0 `11204 MiB`;
+  - GPU1 `10965 MiB`.
+- Output size: `1.3G`.
+
+Offline True-Query Evaluation:
+
+- The population run disabled `evaluation.compute_true_query_error` for speed,
+  so RMSE was computed afterward as offline evaluation only.
+- Evaluation output:
+  `outputs/eval_pop48_A_orthogonal_context_best_true_rmse`
+- Evaluation command reused the same measurement artifact, loaded the best
+  synthetic table from generation `2`, and set `qdte.max_iters=0`.
+- Comparison:
+  - single-layer A measured/unweighted loss:
+    `21.849774742163362`;
+  - population best measured/unweighted loss:
+    `17.358035469092073`;
+  - single-layer A true-query MAE:
+    `0.0017644628099173555`;
+  - population best true-query MAE:
+    `0.001822314049586777`;
+  - single-layer A true-query RMSE:
+    `0.0022790820248584868`;
+  - population best true-query RMSE:
+    `0.0023363813228902543`;
+  - both had true-query max error `0.006999999999999999`.
+- Interpretation:
+  - the outer population loop improved measured/projected objective;
+  - it did not improve offline true-query RMSE in this run;
+  - this is consistent with slightly stronger fitting to the noisy/projected
+    target rather than guaranteed improvement of the real query answers.
+
+Reliability Check:
+
+- `outputs/eval_pop48_A_orthogonal_context_best_true_rmse/config_resolved.yaml`
+  has `qdte.max_iters=0`, `evaluation.compute_true_query_error=true`, and
+  `measurement.reuse_from=outputs/pop48_gen100_A_orthogonal_context_aware/measurement`.
+- The evaluation log confirms:
+  - initialized from
+    `outputs/pop48_gen100_A_orthogonal_context_aware/generation_0002/individual_038/synthetic_encoded.npy`;
+  - `Candidates scored: 0`;
+  - `Accepted edits: 0`;
+  - exact true query answers were computed only for offline evaluation.
+- Hash checks:
+  - source best synthetic and evaluation synthetic hashes match:
+    `a85eb43d8eb7dfd6cea92b7815bce7af70e91fb12e909c2e9e5a927ea6880a15`;
+  - source measurement `queries.json` and evaluation `queries.json` hashes
+    match:
+    `9728cdce2c813b9a6a46f72a3083eba56d1097056dece460777056959daffb25`.
+- Therefore this RMSE is reliable as an offline exact-workload evaluation of
+  that fixed synthetic table. It is not a DP-safe optimization signal and it is
+  not a held-out-workload RMSE.
+
+Generation Checkpoints:
+
+- gen `0`: best/global best `177.1397391796481`;
+- gen `1`: best/global best `18.719519996679963`;
+- gen `2`: best/global best `17.358035469092073`;
+- gen `3`: unchanged, generation accepted edits `77`;
+- gen `5`: unchanged, generation accepted edits `0`;
+- gen `10`: unchanged;
+- gen `20`: unchanged;
+- gen `50`: unchanged;
+- gen `99`: unchanged.
+
+Important Interpretation:
+
+- This corrects the previous conclusion:
+  - the outer loop is not intrinsically worse;
+  - when attached to the best A-style inner method, it improves measured loss
+    from `21.849774742163362` to `17.358035469092073`.
+- However, the useful improvement happens almost entirely in the first two
+  generations.
+- After generation `5`, the population has converged to a zero-positive-edit
+  plateau and the remaining generations are mostly wasted compute.
+- The best individual is labeled `crossover`, but the context-aware crossover
+  accepted `0` donor rows:
+  - parent losses were `18.719519996679963` and `22.689061069525422`;
+  - the child reached `17.358035469092073` through `8` subsequent inner QDTE
+    edits.
+- Therefore this result supports the outer loop as parallel multi-start /
+  clone-and-continue over a strong inner method, not yet as evidence that
+  donor-row recombination itself is the key mechanism.
+
+Current Judgment:
+
+- The earlier poor population result was mostly a configuration mismatch.
+- The strongest story remains:
+  1. single-layer QDTE / A-style directed edit evolution is the core algorithm;
+  2. outer population evolution can improve it as an optional parallel search
+     layer;
+  3. the current outer layer needs stagnation-aware early stopping / restart
+     allocation because 100 generations are unnecessary here.
+- The paper can mention the outer layer as a scalable wrapper or ablation, but
+  it should not replace the single-layer directed edit narrative.
+
+Next Recommended Task:
+
+- Add stagnation-aware population control:
+  - stop generations once global best has not improved for a configurable
+    patience;
+  - reallocate zero-positive-edit clones to fresh restarts or high-temperature
+    mutations;
+  - keep compact output only for elites and checkpoints.
+- Optionally run `random_row` with the same A-style inner settings if we want to
+  separate "population size" from "context-aware safety" in the final ablation.
+
+## Population Loop Interpretation And Failure Analysis - 2026-06-18
+
+Question:
+
+- The outer population loop appears to add little value.
+- Analyze why the two-level loop is not obviously better than the single-layer
+  QDTE algorithm.
+- Decide whether the paper still needs an outer-loop narrative.
+
+Key Clarification:
+
+- The latest 48-population smoke experiments were not run with the strongest
+  single-layer A configuration.
+- They used `configs/smoke.yaml`, whose inner QDTE path is the default
+  `microbatch_greedy` style setting.
+- Existing single-layer A-style smoke results are much stronger under different
+  inner settings:
+  - `outputs/exp_unweightedobj_original_consistency2000_constructive_pair`:
+    final measured/unweighted loss `56.984528037698944`;
+  - `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair`:
+    final measured/unweighted loss `21.849774742163362`;
+  - `outputs/exp_constructiveA2000_constructive_pair`:
+    final measured loss `2.2138641508483943` under its older weighted objective
+    setting.
+- Therefore the population smoke losses around `1431` are not comparable to the
+  strongest single-layer A results. This is a configuration mismatch, not proof
+  that the outer loop is intrinsically worse.
+
+Same-Config Check:
+
+- A continuous single-chain run on the same `configs/smoke.yaml` objective:
+  - output: `outputs/single_smoke_10000_continuous`;
+  - command used `qdte.max_iters=10000` and `qdte.stop_patience=100`;
+  - stopped at iteration `1414` after no positive edits;
+  - final measured/unweighted loss `1470.3388388952399`;
+  - candidates scored `361984`;
+  - accepted edits `1794`.
+- Under this same weak inner setting, population did help measured loss:
+  - 48-pop `random_row`: `1447.1932299932623`;
+  - 48-pop `context_aware`: `1431.6937743028784`.
+- However, the improvement is very inefficient relative to the much larger
+  population budget.
+
+Why The Outer Loop Is Weak Right Now:
+
+- The current outer loop mostly redistributes the same inner local search:
+  it does not add a fundamentally new edit generator.
+- The best context-aware crossover child accepted `0` donor rows during the
+  crossover construction; its improvement came from `3` subsequent inner QDTE
+  edits. That means the best "crossover" event was effectively clone-and-continue.
+- Context-aware crossover becomes too conservative near a plateau:
+  once donor replacements have no positive measured edit advantage, it imports
+  nothing.
+- Random-row crossover explores more aggressively, but it is mostly destructive
+  and requires the inner loop to repair the damage.
+- After generation `0`, the current 48-pop setup uses `4` elite clones plus `44`
+  crossover children, leaving no fresh random restart slots. Diversity can
+  collapse into variants of the same few parents.
+- The worker budget is fixed per individual per generation. Once individuals
+  hit a zero-positive-edit plateau, many workers spend full budgets confirming
+  no local edit exists instead of being reassigned to more exploratory states.
+- Each generation resets QDTE's local scheduling/debt state. This can make the
+  loop less coherent than one continuous optimizer when long-horizon query
+  pressure matters.
+
+Current Judgment:
+
+- The outer loop should not be the core paper narrative yet.
+- The defensible core remains the single-dataset, individual-edit-level
+  directed evolution / edit-advantage method.
+- The population loop is currently best described as an optional engineering
+  layer for parallel multi-start, robustness, and search-space probing.
+- It becomes a paper-level contribution only if it improves the strongest
+  single-layer A configuration under equal or clearly reported compute budgets.
+
+Recommended Next Experiments:
+
+- Re-run population with the actual A-style inner settings, not default smoke
+  microbatch settings.
+- Compare:
+  - single-layer A with the same total candidate budget;
+  - A + random restarts;
+  - A + context-aware safe donor import;
+  - A + random-row crossover.
+- Add a stagnation-aware outer policy:
+  - keep global elites;
+  - reserve some slots for fresh restarts or high-temperature random mutation;
+  - stop spending full inner budgets on clones with zero positive edits;
+  - allocate more workers to genuinely improving or diverse states.
+- Add compact output retention before large reruns.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests / Checks Run:
+
+- Parsed existing population and single-layer metrics.
+- Ran same-config continuous single-chain smoke:
+  `outputs/single_smoke_10000_continuous`.
+- Ran offline true-query evaluation for the A-style population best:
+  `outputs/eval_pop48_A_orthogonal_context_best_true_rmse`.
+
+Next Recommended Task:
+
+- Decide whether to pause the outer-loop line as optional engineering, or run
+  one A-style population experiment to test whether the loop still helps when
+  the inner algorithm is the best known QDTE variant.
+
+## Population-48 Random vs Context-Aware Crossover Smoke - 2026-06-18
+
+Task:
+
+- Compare `random_row` crossover and `context_aware` crossover with large
+  parallel population search.
+- Use `48` concurrently evolving datasets, inner QDTE budget `100`, and outer
+  generation count `100`.
+
+Shared Setup:
+
+- Config: `configs/smoke.yaml`.
+- `population.size=48`.
+- `population.elite_count=4`.
+- `population.generations=100`.
+- `population.inner_iters=100`.
+- `qdte.stop_patience=100` so the inner budget is not cut short by the smoke
+  config's default patience `15`.
+- `population.crossover.enabled=true`.
+- `population.crossover.children=44`.
+- `population.crossover.parent_pool=16`.
+- `population.crossover.fraction=0.5`.
+- `population.crossover.candidates=512`.
+- `population.crossover.max_edits=0`, so context-aware max edits is inferred
+  from the crossover fraction.
+- `population.parallel.enabled=true`.
+- `population.parallel.gpu_devices=0,1`.
+- `population.parallel.workers_per_gpu=24`.
+- Evaluation true-query metrics and synthetic CSV output disabled.
+
+Results:
+
+- `random_row`:
+  - output: `outputs/pop48_gen100_random_row_smoke`;
+  - wall time: `real 170.84s`;
+  - peak sampled GPU memory: GPU0 `11094 MiB`, GPU1 `10965 MiB`;
+  - best measured/unweighted loss: `1447.1932299932623`;
+  - best generation: `69`;
+  - output size: `1.1G`.
+- `context_aware`:
+  - output: `outputs/pop48_gen100_context_aware_smoke`;
+  - wall time: `real 156.51s`;
+  - peak sampled GPU memory: GPU0 `11190 MiB`, GPU1 `10965 MiB`;
+  - best measured/unweighted loss: `1431.6937743028784`;
+  - best generation: `16`;
+  - output size: `1.3G`.
+
+Selected Generation Checkpoints:
+
+- `random_row` global best:
+  - gen `0`: `3712.289897860685`;
+  - gen `1`: `1775.3290577730322`;
+  - gen `2`: `1538.6653405031348`;
+  - gen `5`: `1469.4965012869025`;
+  - gen `10`: `1454.4163795313025`;
+  - gen `20`: `1450.6496506532812`;
+  - gen `50`: `1449.5913811525488`;
+  - gen `69`: `1447.1932299932623`;
+  - gen `99`: `1447.1932299932623`.
+- `context_aware` global best:
+  - gen `0`: `3712.289897860685`;
+  - gen `1`: `1756.7928494826942`;
+  - gen `2`: `1527.5099216303015`;
+  - gen `5`: `1457.1753493150854`;
+  - gen `10`: `1439.7126308282996`;
+  - gen `16`: `1431.6937743028784`;
+  - gen `20`: `1431.6937743028784`;
+  - gen `50`: `1431.6937743028784`;
+  - gen `99`: `1431.6937743028784`.
+
+Interpretation:
+
+- Under this 48-population smoke budget, `context_aware` beat `random_row` by
+  `15.4994556903839` measured/unweighted loss units.
+- `context_aware` also reached its best state much earlier, generation `16`
+  instead of generation `69`.
+- The best context-aware individual was labeled `crossover`, but its actual
+  crossover step accepted `0` donor rows:
+  - parent losses were `1434.2934223016882` and `1434.048078139701`;
+  - the child then improved to `1431.6937743028784` through `3` inner QDTE
+    edits.
+- Therefore the current win should be interpreted carefully:
+  - context-aware crossover is acting as a conservative gate that avoids
+    harmful donor-row imports;
+  - many "crossover" children are effectively copied from a strong parent and
+    then get a fresh inner-QDTE local search seed;
+  - this still supports the usefulness of measured-objective gated population
+    evolution, but it does not yet prove that donor-row recombination itself is
+    the source of the gain.
+
+Current Judgment:
+
+- Large parallel population does help the outer loop compared with the earlier
+  size-2 smoke (`1460.0758429369116` best), because both 48-population variants
+  found better states.
+- `context_aware` is currently the better crossover mode for this smoke setting.
+- The next algorithmic question is whether to explicitly formalize this as
+  "safe donor import / clone-and-continue when no positive donor edit exists",
+  rather than presenting it as ordinary random crossover.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests / Checks Run:
+
+- `random_row` 48-population, 100-generation smoke as described above.
+- `context_aware` 48-population, 100-generation smoke as described above.
+
+Next Recommended Task:
+
+- Add a compact output-retention option before repeating this on larger
+  workloads; the two smoke runs wrote about `2.4G` combined.
+- Run a smaller Adult highpower version using the measured safe capacity:
+  `population.size=6`, `workers_per_gpu=3`, or aggressive
+  `population.size=8`, `workers_per_gpu=4`.
+
+## Persistent GPU-Parallel Population Workers - 2026-06-18
+
+Task:
+
+- Change the multi-dataset population runner from serial execution to GPU
+  parallel execution.
+- Avoid making the two-level evolution story slower than single-dataset QDTE.
+
+Implementation:
+
+- `scripts/run_population.py` now supports `population.parallel`:
+  - `population.parallel.enabled`;
+  - `population.parallel.gpu_devices`, either `auto`, a comma string such as
+    `0,1`, or a list;
+  - `population.parallel.workers_per_gpu`;
+  - `population.parallel.workers`, where `0` means auto from GPU slots.
+- Parallel execution uses a persistent GPU worker pool:
+  - one long-lived worker process is started per GPU slot;
+  - each worker is bound with `CUDA_VISIBLE_DEVICES`;
+  - tasks are sent over stdin as config paths;
+  - QDTE stdout/stderr for each task is redirected to that task's
+    `worker_stdout.log`;
+  - the worker's protocol stdout stays clean and returns task status;
+  - JAX is imported once per worker and reused across generations.
+- Added `scripts/population_worker.py` as the persistent worker entrypoint.
+- The population runner still preserves the DP boundary:
+  - measurement/projection is done once;
+  - worker tasks use `measurement.reuse_from`;
+  - parent selection and crossover are driven by measured objective and
+    projected/noisy target only.
+
+Why Persistent Workers:
+
+- A naive subprocess-per-individual parallel runner works functionally, but
+  repeated Python/JAX startup dominates small generation phases.
+- Persistent workers keep GPU contexts and JIT caches alive across generations,
+  which is necessary for 2000-generation experiments.
+
+Smoke / Timing Results:
+
+- Persistent parallel wiring smoke:
+  - command used `population.generations=3`, `population.size=2`,
+    `population.inner_iters=2`, `population.parallel.enabled=true`,
+    `population.parallel.gpu_devices=0,1`, and context-aware crossover;
+  - passed;
+  - best measured/unweighted loss reached `50742.21461038973`, matching the
+    previous non-parallel wiring behavior.
+- Persistent parallel 100-step probe:
+  - command used `population.generations=2`, `population.size=2`,
+    `population.inner_iters=100`, two GPU workers, and context-aware crossover;
+  - passed in `real 4.73s`;
+  - best measured/unweighted loss was `1859.067646106162`.
+- Persistent parallel 2000-generation smoke:
+  - command used `population.generations=2000`, `population.size=2`,
+    `population.elite_count=1`, `population.inner_iters=100`,
+    `population.parallel.enabled=true`, `population.parallel.gpu_devices=0,1`,
+    `population.parallel.workers_per_gpu=1`, and context-aware crossover;
+  - output directory:
+    `outputs/population_parallel_persistent_2000_inner100_smoke`;
+  - completed in `real 102.95s`;
+  - earlier serial run of the same logical setting took `real 144.71s`;
+  - best measured/unweighted loss was identical:
+    `1460.0758429369116`;
+  - best individual again appeared at generation `73`;
+  - output size was `817M`.
+
+Current Performance Judgment:
+
+- GPU-parallel population execution now works and gives a real speedup for the
+  long 2000-generation smoke.
+- The speedup is not yet close to 2x because every generation still performs
+  synchronized phases, parent table reads, crossover construction in the main
+  process, metrics/output writes, and many plateaued workers stop after only
+  `qdte.stop_patience=15` iterations.
+- For larger inner QDTE budgets or larger datasets, the useful fraction of GPU
+  work should increase and the parallel speedup should be more meaningful.
+- Current 24GB guidance:
+  - use `workers_per_gpu=1` by default;
+  - try more than one worker per GPU only when `runtime.xla_preallocate=false`
+    and measured per-worker VRAM is comfortably below available memory;
+  - for Adult/ACS high-throughput configs, start with one worker per GPU and
+    `population.size` equal to the number of GPU slots.
+
+Changed Files:
+
+- `scripts/run_population.py`
+- `scripts/population_worker.py`
+- `qdte/config_validation.py`
+- `tests/test_config_validation.py`
+- `README.md`
+- `docs/QDTE_FINAL_EXPERIMENT_PLAN.md`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m py_compile scripts/run_population.py scripts/population_worker.py qdte/config_validation.py`
+  - passed
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest tests/test_config_validation.py -q`
+  - `70 passed`
+- Persistent parallel 3-generation smoke as described above.
+- Persistent parallel 2-generation, 100-step probe as described above.
+- Persistent parallel 2000-generation, 100-step smoke as described above.
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest -q`
+  - `180 passed`
+- `git diff --check`
+  - passed after this handoff update.
+
+Next Recommended Task:
+
+- Add compact output retention for long population runs so final experiments do
+  not write hundreds of MB per smoke-scale run.
+- Compare persistent parallel `context_aware` crossover against persistent
+  parallel `random_row` crossover under equal candidate budget.
+
+## Single-GPU Population Capacity Probe - 2026-06-18
+
+Task:
+
+- Determine how many population workers can run concurrently on one 24GB GPU.
+- Clarify that two GPUs with one worker each is not the maximum useful
+  population parallelism.
+
+Method:
+
+- Used `population.parallel.enabled=true` with a single visible GPU:
+  `CUDA_VISIBLE_DEVICES=0`.
+- Set `population.parallel.gpu_devices=0`.
+- Set `population.parallel.workers_per_gpu` equal to `population.size`, so all
+  population individuals run concurrently on one 24GB card.
+- Used `runtime.xla_preallocate=false`.
+- Monitored GPU memory with `nvidia-smi`.
+
+Smoke Workload Capacity:
+
+- Config: `configs/smoke.yaml`
+- Per run:
+  - `population.generations=1`;
+  - `population.inner_iters=20`;
+  - `population.crossover.enabled=false`;
+  - no true-query evaluation or synthetic CSV output.
+- Results:
+  - `1` worker: peak `979 MiB`, passed;
+  - `2` workers: peak `1418 MiB`, passed;
+  - `4` workers: peak `2299 MiB`, passed;
+  - `8` workers: peak `4058 MiB`, passed;
+  - `12` workers: peak `5816 MiB`, passed;
+  - `16` workers: peak `7575 MiB`, passed;
+  - `24` workers: peak `11094 MiB`, passed;
+  - `32` workers: peak `14612 MiB`, passed;
+  - `40` workers: peak `18131 MiB`, passed;
+  - `48` workers: peak `21650 MiB`, passed;
+  - `56` workers: peak `24072 MiB`, failed with JAX
+    `RESOURCE_EXHAUSTED`.
+- Interpretation:
+  - smoke is too small to represent final experiments;
+  - for this tiny workload, one 24GB card can run `48` concurrent population
+    workers, while `56` is over the memory boundary.
+
+Adult Highpower Capacity:
+
+- Config: `configs/adult_qdte_gpu_highpower.yaml`
+- Per run:
+  - `population.generations=1`;
+  - `population.inner_iters=1`;
+  - `population.crossover.enabled=false`;
+  - no true-query evaluation or synthetic CSV output.
+- Results:
+  - `1` worker: peak `6043 MiB`, passed;
+  - `2` workers: peak `11066 MiB`, passed;
+  - `3` workers: peak `16092 MiB`, passed;
+  - `4` workers: peak `21115 MiB`, passed;
+  - `5` workers: sampled peak `22042 MiB`, failed with JAX
+    `RESOURCE_EXHAUSTED` while allocating an additional `2.97 GiB`.
+- Interpretation:
+  - for the current Adult high-throughput config, the observed hard limit on a
+    24GB 4090 is `4` concurrent population workers per GPU;
+  - `5` is not safe because transient JAX allocations exceed remaining memory;
+  - recommended stable setting is `3` workers per 24GB GPU for long runs;
+  - use `4` only for short probes or when accepting lower headroom.
+
+Current Recommendation:
+
+- For final highpower population experiments on two 24GB GPUs:
+  - conservative: `population.size=6`,
+    `population.parallel.gpu_devices=0,1`,
+    `population.parallel.workers_per_gpu=3`;
+  - aggressive: `population.size=8`,
+    `population.parallel.gpu_devices=0,1`,
+    `population.parallel.workers_per_gpu=4`;
+  - do not use `workers_per_gpu=5` for the current Adult highpower config.
+- If we want more population workers per GPU, reduce per-worker memory first:
+  lower `qdte.total_candidates_per_iter`, lower `qdte.gpu_return_top_k`, reduce
+  query block sizes, or use a smaller candidate backend configuration.
+
+Outputs:
+
+- Smoke capacity runs: `outputs/parallel_capacity_smoke`
+- Adult highpower capacity runs: `outputs/parallel_capacity_adult_highpower`
+
+Tests / Checks Run:
+
+- Capacity scans above completed.
+- No source-code change was made after this probe; only this handoff section
+  was added.
+
+## Generational Population Loop And 2000-Generation Smoke - 2026-06-18
+
+Task:
+
+- Add a real multi-generation population loop.
+- Run inner QDTE with `population.inner_iters=100`.
+- Probe a `2000` generation smoke run on one 24GB GPU.
+- Clarify practical population-size limits.
+
+Implementation:
+
+- `scripts/run_population.py` now supports `population.generations`.
+- `population.generations=1` preserves the previous one-shot behavior:
+  independent restarts, optional crossover children, then final elite ranking.
+- `population.generations>1` runs repeated generations:
+  - generation `0` initializes `population.size` restart individuals;
+  - later generations refill `population.size` slots using previous-generation
+    elite clones, optional crossover children, and fresh restarts;
+  - every individual reruns inner QDTE for `population.inner_iters` maximum
+    iterations using the same measured target through `measurement.reuse_from`;
+  - context-aware crossover still shares donor rows only, then rescoring is
+    done against the recipient dataset's own residual and edit advantage.
+- `qdte/config_validation.py` now validates that
+  `population.generations > 0`.
+
+Important Semantics:
+
+- `population.inner_iters=100` is a maximum, not necessarily exactly 100
+  accepted/scored iterations. Existing `qdte.stop_patience` still applies; in
+  the smoke config it is `15`, so plateaued individuals stop after 15
+  no-improvement iterations.
+- Current implementation runs population individuals sequentially on the
+  selected GPU. Therefore peak VRAM is dominated by one QDTE individual's
+  candidate/query buffers, not by `population.size` itself. Larger populations
+  mostly cost wall time and disk output unless we later add true concurrent
+  population evaluation.
+
+Smoke Runs:
+
+- Multi-generation wiring smoke:
+  - command used `population.generations=3`, `population.size=2`,
+    `population.inner_iters=2`, and context-aware crossover;
+  - passed;
+  - best measured/unweighted loss improved from generation `0`
+    `103064.22812769201` to generation `2` `50742.21461038973`.
+- Single-GPU 100-step probe:
+  - command used `CUDA_VISIBLE_DEVICES=0`, `population.generations=2`,
+    `population.size=2`, `population.inner_iters=100`, context-aware crossover;
+  - passed in `real 3.31s`;
+  - best measured/unweighted loss after two generations was
+    `1859.067646106162`;
+  - observed GPU0 memory peak was `636 MiB` on the smoke workload.
+- Full requested smoke:
+  - command used `CUDA_VISIBLE_DEVICES=0`, `population.generations=2000`,
+    `population.size=2`, `population.elite_count=1`,
+    `population.inner_iters=100`, `population.crossover.mode=context_aware`,
+    `population.crossover.children=1`,
+    `population.crossover.candidates=512`,
+    `population.crossover.max_edits=64`,
+    `evaluation.compute_true_query_error=false`,
+    and `evaluation.save_synthetic_csv=false`;
+  - output directory:
+    `outputs/population_generations_2000_inner100_smoke`;
+  - completed in `real 144.71s`;
+  - wrote `2000` generation directories and used `797M` disk;
+  - observed GPU0 memory peak was `636 MiB`;
+  - best individual was a context-aware crossover child from generation `73`;
+  - best measured/unweighted loss was `1460.0758429369116`;
+  - generation checkpoints:
+    - generation `0`: best `3918.973403222428`;
+    - generation `1`: best `1859.067646106162`;
+    - generation `2`: best `1573.1067181429053`;
+    - generation `5`: best `1501.0721922716284`;
+    - generation `10`: best `1466.7009421190405`;
+    - generation `50`: best `1460.7796772321844`;
+    - generation `73`: best/global best `1460.0758429369116`;
+    - generation `1999`: still `1460.0758429369116`.
+
+Judgment:
+
+- For this smoke workload, outer generations help early but plateau quickly.
+  After roughly generation `73`, additional generations did not improve the
+  measured objective.
+- This is consistent with the current inner edit-advantage search reaching a
+  local plateau where candidate generation finds no positive-advantage edits.
+- The next useful population experiment is not simply more generations; it is
+  comparing random-row crossover, context-aware crossover, larger crossover
+  candidate pools, and possibly a more exploratory fallback when the positive
+  edit rate reaches zero.
+
+24GB Population-Size Guidance:
+
+- With the current sequential wrapper, one 24GB GPU can use large
+  `population.size` values from a memory perspective, because individuals are
+  evaluated one after another.
+- On the smoke workload, peak observed GPU memory was only `636 MiB`; the
+  practical limit was wall time and disk.
+- A reasonable current single-GPU experimental range is:
+  - smoke: `population.size=2` to `16`;
+  - larger Adult/ACS-style high-throughput configs: start with
+    `population.size=2` to `4`, then increase only after measuring per-run
+    VRAM and wall time;
+  - avoid very large population sizes until output retention is compacted,
+    because `2000` generations with `population.size=2` already wrote `797M`.
+- If we later implement concurrent population evaluation, population size will
+  need a stricter VRAM formula based on candidate count, query count, sparse
+  delta buffers, and table size.
+
+Changed Files:
+
+- `scripts/run_population.py`
+- `qdte/config_validation.py`
+- `tests/test_config_validation.py`
+- `README.md`
+- `docs/QDTE_FINAL_EXPERIMENT_PLAN.md`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest tests/test_config_validation.py -q`
+  - `69 passed`
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m py_compile scripts/run_population.py qdte/config_validation.py`
+  - passed
+- 3-generation population smoke as described above.
+- 2-generation, 100-step, single-GPU probe as described above.
+- 2000-generation, 100-step, single-GPU smoke as described above.
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest -q`
+  - `179 passed`
+- `git diff --check`
+  - passed after this handoff update.
+
+Next Recommended Task:
+
+- Run the same `population.generations` experiment with `random_row` crossover
+  and compare against context-aware crossover under equal candidate budget.
+- Add optional compact output retention for long generation runs, because
+  storing every generation's full artifacts is unnecessary for final sweeps.
+
+## Context-Aware Population Crossover Direction - 2026-06-18
+
+Question:
+
+- Clarify the current population-level flow.
+- Discuss whether random row crossover undermines QDTE's edit-advantage logic.
+- Consider a context-aware crossover design.
+
+Current Implementation Clarification:
+
+- Historical note: this section described the wrapper before
+  `population.generations` was implemented. The current implementation is
+  summarized in the section above.
+- At that time, the flow was:
+  - measure/project once;
+  - run `P` independent QDTE restart individuals for `population.inner_iters`;
+  - rank these parents by measured objective;
+  - optionally generate row-level random crossover children from ranked parents;
+  - run each child for `population.crossover.inner_iters` from the crossed
+    table via `init.encoded_npy`;
+  - rank parents and children together and output elites.
+- Repeated generations where elites seed the next generation through
+  clone/crossover/restart have since been implemented through
+  `population.generations>1`.
+
+Judgment:
+
+- Random row crossover is useful as a minimal population-search wiring smoke,
+  but it is not the most natural final QDTE crossover.
+- The raw crossover operation itself is not edit-advantage gated. It may worsen
+  the measured objective before the child receives inner QDTE repair.
+- Elitism prevents the best measured parent from being lost if parents and
+  children are ranked together, so it cannot worsen the selected measured
+  objective when extra compute is allowed. This does not imply better true
+  offline error or better equal-compute performance.
+- For the paper's algorithmic story, a context-aware crossover is more aligned
+  with QDTE.
+
+Preferred Context-Aware Crossover:
+
+- Treat crossover as cross-parent row replacement candidates:
+  - parent A supplies the current table and old rows;
+  - parent B supplies donor rows;
+  - a crossover edit is `A[i] -> B[j]`;
+  - compute `delta = phi(B[j]) - phi(A[i])`;
+  - score it with the same QDTE edit advantage:
+    `delta @ residual - 0.5 * ||delta||^2 - lambda_cost * cost`
+    under the configured objective weights;
+  - accept only positive-advantage non-conflicting row replacements.
+- This makes crossover context-aware because it only imports rows from another
+  elite dataset when that import helps the current parent's measured residual.
+- It preserves the QDTE insight: residuals define a direction field and edits
+  are accepted by exact measured-objective improvement.
+
+Next Recommended Implementation:
+
+- Implemented an optional `context_aware` crossover mode in
+  `scripts/run_population.py`:
+  - generate random donor row pairs from elite parent pairs;
+  - score them with existing QDTE candidate scoring;
+  - apply top non-conflicting positive replacements to form a child;
+  - run short inner QDTE repair from that child;
+  - compare against the current random row crossover.
+- Candidate pool semantics:
+  - each dataset/individual maintains its own candidate scoring context,
+    residual, answer vector, and measured objective;
+  - context-aware crossover shares donor rows across parent datasets, not
+    already-scored advantages;
+  - each donor replacement is rescored against the recipient dataset's
+    residual.
+- Interpretation:
+  - random row crossover remains a useful search-space expansion ablation;
+  - context-aware crossover is the QDTE-aligned version because crossover edits
+    are accepted only through the recipient dataset's edit advantage;
+  - it may still fail to beat random crossover under equal compute because it
+    filters through the current local residual direction, while random
+    crossover can inject larger disruptive moves for the inner QDTE loop to
+    repair.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+- `scripts/run_population.py`
+- `qdte/config_validation.py`
+- `tests/test_config_validation.py`
+- `README.md`
+- `docs/QDTE_FINAL_EXPERIMENT_PLAN.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest tests/test_config_validation.py -q`
+  - `68 passed`
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/envs/qdte/bin/python scripts/run_population.py --config configs/smoke.yaml --run.output_dir outputs/population_context_crossover_smoke --population.size 2 --population.elite_count 1 --population.inner_iters 2 --population.evaluate_individuals false --population.crossover.enabled true --population.crossover.mode context_aware --population.crossover.children 1 --population.crossover.fraction 0.5 --population.crossover.candidates 512 --population.crossover.max_edits 64 --population.crossover.inner_iters 2 --evaluation.compute_true_query_error false --evaluation.save_synthetic_csv false --runtime.xla_preallocate false --runtime.log_measurement_groups false --qdte.log_every 1 --qdte.candidate_diagnostics false`
+  - passed;
+  - parents had final measured losses `103064.22812769201` and
+    `104595.27962576662`;
+  - context-aware child scored `511` donor-row candidates, found `277`
+    positive candidates, selected and accepted `64` edits, with batch advantage
+    `23863.69140625`;
+  - child initial measured loss was `79200.5`;
+  - after two inner QDTE iterations, child final measured/unweighted loss was
+    `71737.88779669191`, better than both parents in this wiring smoke.
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m py_compile scripts/run_population.py qdte/evolution/engine.py qdte/config_validation.py`
+  - passed
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest -q`
+  - `178 passed`
+- `git diff --check`
+  - passed after this handoff update.
+
+Next Recommended Task:
+
+- Compare single-layer QDTE, random-restart elite selection, random-row
+  crossover, and context-aware crossover under an equal total candidate budget.
+- If population search remains useful, implement repeated generations where
+  elites seed the next round instead of the current one-shot parents plus
+  crossover children wrapper.
+
+## Population-Level Evolution Design Discussion - 2026-06-18
+
+Task:
+
+- Discuss how to add an outer population-level evolutionary layer on top of the
+  current single-dataset QDTE generator.
+
+Design Direction:
+
+- Treat population evolution as DP post-processing over one fixed measured
+  artifact:
+  - schema;
+  - query catalogue;
+  - workload groups;
+  - projected target;
+  - objective weights, currently `objective_weighting=unweighted`;
+  - measurement metadata.
+- Do not remeasure real data inside the population loop.
+- Do not use offline true answers for selection, crossover, restart, stopping,
+  or hyperparameter choice.
+
+Recommended Two-Level Structure:
+
+- Inner layer:
+  - current single-dataset QDTE;
+  - residual-directed row edits;
+  - constructive pair / transport;
+  - exact measured-objective edit advantage.
+- Outer layer:
+  - maintain a population of synthetic datasets, each with its own `X_syn`,
+    `answer_syn`, `residual`, loss, RNG stream, and age/stall counters;
+  - run short inner QDTE phases for each individual;
+  - rank individuals by measured objective only;
+  - keep elites;
+  - refill the population with elite clones, independent restarts, and
+    row/block crossover between elite parents.
+
+Preferred Initial Implementation:
+
+- Start with a simple island/elite wrapper and simple row-level crossover
+  before implementing more complicated recombination:
+  - population size `P`;
+  - elite count `E`;
+  - inner phase budget in candidate evaluations, not only iterations;
+  - clone top elites;
+  - random-restart the worst individuals;
+  - optionally crossover two strong parents by swapping random row subsets,
+    then continue inner QDTE from the child table.
+- Use equal total candidate-evaluation budget when comparing against inner-only
+  QDTE, because population search otherwise wins by spending more compute.
+
+Crossover Notes:
+
+- Row-level crossover is the safest first crossover:
+  - choose two parent synthetic tables with the same row count and schema;
+  - choose a public/random subset of row indices or blocks;
+  - child rows come from parent A outside the mask and parent B inside the mask;
+  - recompute `answer_syn`, residual, and measured loss for the child.
+- It is simple and valid DP post-processing.
+- It may not always improve because row mixtures can break marginal structure;
+  therefore clone+restart should be the first baseline, with crossover as an
+  ablation.
+
+Key Comparison Variants:
+
+- Inner-only QDTE under the same total candidate budget.
+- Random-restart ensemble: run several independent single-layer QDTE instances
+  and keep the best measured objective at the end.
+- Population QDTE without crossover: elite selection plus clone/restart.
+- Population QDTE with row/block crossover.
+- Population random mutation / upstream Private-GSD baseline.
+
+Current Recommendation:
+
+- Initial implementation status:
+  - measured-target reuse boundary is implemented through
+    `measurement.reuse_from`;
+  - `init.encoded_npy` lets `run_qdte` start from an externally supplied encoded
+    synthetic table;
+  - `scripts/run_population.py` implements a first population-level
+    random-restart/elite wrapper over one shared measurement artifact;
+  - `scripts/run_population.py` now supports minimal row-level random
+    crossover children via `population.crossover.enabled=true`;
+  - inter-generation clone/restart cycles and more structured block crossover
+    are not implemented yet.
+- Continue in two stages:
+  1. add inter-generation clone/restart phases if the random-restart/crossover
+     wrapper is useful;
+  2. add structured row-block crossover as a separate ablation.
+- This keeps the innovation centered on directed inner edits while allowing a
+  fair Private-GSD-style population comparison.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+- `qdte/measurement/measure.py`
+- `qdte/evolution/engine.py`
+- `qdte/config_validation.py`
+- `scripts/run_population.py`
+- `tests/test_config_validation.py`
+- `tests/test_engine_smoke.py`
+- `README.md`
+- `docs/QDTE_FINAL_EXPERIMENT_PLAN.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest tests/test_config_validation.py tests/test_engine_smoke.py -q`
+  - `74 passed`
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/envs/qdte/bin/python scripts/run_population.py --config configs/smoke.yaml --run.output_dir outputs/population_smoke --population.size 2 --population.elite_count 1 --population.inner_iters 2 --population.evaluate_individuals false --evaluation.compute_true_query_error false --evaluation.save_synthetic_csv false --runtime.xla_preallocate false --runtime.log_measurement_groups false --qdte.log_every 1 --qdte.candidate_diagnostics false`
+  - passed;
+  - reused `outputs/population_smoke/measurement/measurements.json`;
+  - wrote `outputs/population_smoke/population_summary.json`;
+  - best individual was `individual_000`, final measured/unweighted loss
+    `103064.22812769201`.
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/envs/qdte/bin/python scripts/run_population.py --config configs/smoke.yaml --run.output_dir outputs/population_crossover_smoke --population.size 2 --population.elite_count 1 --population.inner_iters 2 --population.evaluate_individuals false --population.crossover.enabled true --population.crossover.children 1 --population.crossover.fraction 0.5 --population.crossover.inner_iters 2 --evaluation.compute_true_query_error false --evaluation.save_synthetic_csv false --runtime.xla_preallocate false --runtime.log_measurement_groups false --qdte.log_every 1 --qdte.candidate_diagnostics false`
+  - passed;
+  - generated one row-level random crossover child;
+  - child used parents `(0, 1)`, swapped `512` rows, and continued for `2`
+    inner QDTE iterations from `init.encoded_npy`;
+  - best individual was the crossover child, final measured/unweighted loss
+    `91603.75887876698`.
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest -q`
+  - `178 passed`
+- `git diff --check`
+  - passed after this handoff update.
+
+Next Recommended Task:
+
+- Add inter-generation clone/restart if we want population evolution beyond
+  one-shot random-restart plus crossover child generation, then add structured
+  row-block crossover as a separate ablation.
+
+## Single-Layer Closeout Defaults And Private-GSD Baseline Clarification - 2026-06-18
+
+Task:
+
+- Close out immediate single-layer QDTE cleanup before formal multi-seed and
+  large-dataset experiments.
+- Clarify what "exact Private-GSD baseline" means, given that upstream
+  open-source Private-GSD code is available.
+
+Changes:
+
+- Set main experiment configs to use `qdte.objective_weighting: unweighted`:
+  - `configs/smoke.yaml`;
+  - `configs/adult_qdte.yaml`;
+  - `configs/adult_qdte_gpu_highpower.yaml`;
+  - `configs/acs_qdte.yaml`.
+- Updated README and architecture docs to state that unweighted objective is
+  the current single-layer QDTE mainline.
+- Updated final experiment/ablation docs to clarify the Private-GSD baseline
+  wording.
+
+Private-GSD Baseline Clarification:
+
+- Yes, the preferred paper-level Private-GSD baseline should use the upstream
+  open-source implementation directly, via a thin adapter.
+- "Exact baseline" does not mean rewriting Private-GSD inside QDTE.
+- It means the comparison should preserve the upstream algorithm's intended
+  population-level mutation/selection procedure and align public inputs as much
+  as possible:
+  - preprocessing/binning;
+  - workload/statistic definitions, or a clearly documented closest supported
+    statistic interface;
+  - privacy budget/noise setting;
+  - synthetic row count;
+  - seeds;
+  - compute budget/wall time/candidate evaluations where applicable.
+- Existing internal variants such as `pgsd_style_mutate50` are useful sanity
+  baselines, but they are not an upstream Private-GSD result because they use
+  QDTE's measurement/workload stack and a simplified mutate-only procedure.
+
+Current Status:
+
+- Single-layer QDTE is now configured around the simpler post-projection
+  objective: directly fit the feasible projected target with unweighted raw
+  residuals.
+- Multi-seed and large-dataset runs are intentionally deferred to formal
+  experiments.
+- Outer population evolution remains unimplemented and optional.
+
+Changed Files:
+
+- `configs/smoke.yaml`
+- `configs/adult_qdte.yaml`
+- `configs/adult_qdte_gpu_highpower.yaml`
+- `configs/acs_qdte.yaml`
+- `README.md`
+- `architecture.md`
+- `architecture_zh.md`
+- `docs/QDTE_FINAL_EXPERIMENT_PLAN.md`
+- `docs/QDTE_ABLATION_SUMMARY.md`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python - <<'PY' ...`
+  - loaded and validated all YAML configs under `configs/`;
+  - confirmed all four main configs set `objective_weighting=unweighted`.
+- `git diff --check`
+  - passed.
+
+Next Recommended Task:
+
+- Before formal runs, add or keep a thin adapter script that invokes upstream
+  Private-GSD from `/home/qianqiu/my_life/baseline/private-de/private-gsd` and
+  writes results into the same summary table format as QDTE.
+
+## Single-Layer Versus Outer Population Evolution - 2026-06-18
+
+Question:
+
+- Whether the two-level evolution framework has already been implemented:
+  GPU-parallel evolution of several synthetic datasets, dataset-level
+  crossover/recombination, measured-loss driven elite selection, and continued
+  inner QDTE evolution.
+- Whether the single-dataset evolution layer is now conceptually complete.
+
+Current Code Status:
+
+- The outer population layer is not yet implemented as a first-class algorithm.
+- Current code has:
+  - one `QDTEState` per `run_qdte` invocation;
+  - one synthetic table evolved by residual-directed candidate generation,
+    edit advantage, and transport;
+  - robustness scripts that launch multiple independent runs/variants;
+  - internal Private-GSD-style random mutation ablations.
+- Current code does not yet have:
+  - a population of multiple `QDTEState` objects inside one run;
+  - GPU-batched evolution of several synthetic tables as parallel individuals;
+  - row/block crossover between synthetic datasets;
+  - elite selection and refill/restart inside a shared measured-target run;
+  - a reusable measured-target artifact consumed by many population
+    individuals.
+
+Single-Layer Judgment:
+
+- The single-dataset QDTE generation story is now mostly complete:
+  - feasible consistency-projected DP target;
+  - orthogonal workload construction to reduce measurement sensitivity;
+  - residual-directed local edit construction;
+  - exact local measured-loss edit advantage;
+  - constructive pair / transport-style multi-edit acceptance;
+  - GPU fused candidate generation/scoring, including halfspace support;
+  - unweighted objective as the current main post-projection generation
+    objective;
+  - measured, unweighted, per-family, heldout, and offline true-error metrics.
+- Remaining single-layer work is mostly experimental validation and packaging,
+  not a missing core mechanism:
+  - multi-seed/full-scale confirmation;
+  - main config/experiment defaults aligned to `objective_weighting=unweighted`;
+  - final ablation matrix cleanup;
+  - exact upstream Private-GSD comparison if needed.
+
+Outer-Layer Interpretation:
+
+- Adding an outer population loop would make the method a genuine two-level
+  evolutionary framework.
+- The likely narrative would be:
+  - inner layer: individual/table-row-level directed evolution from residuals;
+  - outer layer: dataset-population selection/crossover/restart over synthetic
+    tables using the same measured objective.
+- This should be treated as an extension or next build, not something already
+  completed.
+- It should be implemented as DP post-processing over one fixed measured target:
+  no remeasurement of real data, and no offline true metrics for elite
+  selection, crossover, restart, stopping, or hyperparameter choice.
+
+Minimal Implementation Plan:
+
+- First expose or wrap a generator entry point that consumes an already measured
+  target artifact:
+  - schema;
+  - query catalogue;
+  - workload groups;
+  - projected target;
+  - objective weights;
+  - measurement metadata.
+- Then add an outer population driver:
+  - initialize `P` synthetic tables;
+  - run short inner QDTE phases per individual;
+  - score by measured/unweighted objective only;
+  - keep elites;
+  - refill with elite clones, random restarts, and row/block crossover;
+  - compare against inner-only QDTE under equal total candidate evaluations and
+    equal wall time.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Documentation-only status update:
+  - `git diff --check`
+
+Next Recommended Task:
+
+- If we want the two-level algorithm in the paper, implement the measured-target
+  reuse boundary first, then the outer population driver.
+- If we want to keep the contribution focused, keep the outer population loop as
+  an optional extension and make the single-dataset directed evolution the main
+  algorithm.
+
+## Unweighted Objective Ablation - 2026-06-18
+
+Task:
+
+- Add and test an optimization mode that does not use inverse-variance weights
+  after consistency projection.
+- Answer whether QDTE can optimize raw residuals against the feasible projected
+  target instead of optimizing standardized residuals.
+
+Implementation:
+
+- Added `qdte.objective_weighting`:
+  - `variance` keeps the previous behavior and uses
+    `measurements.inv_variances`;
+  - `unweighted` sets optimization-time `variance=1`, `inv_variance=1`,
+    and `sigma=1` for measured loss, edit advantage, active-query selection,
+    candidate scoring, transport, and debt updates.
+- Measurement variances are still stored and reported separately as
+  `measurement_*` metrics.
+- Final metrics/runtime now report:
+  - `objective_weighting`;
+  - `objective_variance_*`;
+  - `objective_inv_variance_*`;
+  - `measurement_variance_*`;
+  - `measurement_inv_variance_*`.
+- This preserves the QDTE objective invariant because the configured objective
+  still computes
+  `measured_loss = 0.5 * sum_q residual[q]^2 * inv_variance[q]`; in
+  unweighted mode `inv_variance[q]=1`.
+- DP boundary is unchanged: in `privacy.mode=dp`, optimization still uses only
+  noisy/projected measurements. Exact true answers are only used for offline
+  evaluation metrics.
+
+Clarification:
+
+- Consistency projection makes the measured answers feasible/consistent, but it
+  does not generally prove that every query has identical post-projection
+  variance.
+- Projection can create query-dependent effective variance and cross-query
+  covariance, especially with clipping, active feasible constraints, and
+  overlapping query scopes.
+- Still, if the algorithmic goal is to match the feasible projected target as a
+  deterministic object, unweighted optimization is a meaningful ablation and
+  may be the cleaner objective for the post-projection generation stage.
+
+Smoke Experiments:
+
+- Both runs used `constructive_pair`, `max_iters=2000`,
+  `stop_patience=2000`, `local_table_feasible_jax`, and
+  `qdte.objective_weighting=unweighted`.
+- `projection.uncertainty.enabled=false` because variance estimates are ignored
+  by this objective and the projected target is unchanged.
+
+| Workload | Run | Queries | Final objective loss | Final unweighted loss | Final true RMSE | Accepted edits |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Original mixed | Raw variance weighted | `243` | `2.318852357` | `75.859848591` | `0.002727697` | `1458` |
+| Original mixed | Projection-aware variance weighted | `243` | `8.176284459` | `124.201921078` | `0.002725433` | `1493` |
+| Original mixed | Unweighted objective | `243` | `56.984528038` | `56.984528038` | `0.002698117` | `1365` |
+| Orthogonal mixed | Raw variance weighted | `242` | `3.976314087` | `47.040555620` | `0.002338149` | `942` |
+| Orthogonal mixed | Projection-aware variance weighted | `242` | `4.215038075` | `21.917599106` | `0.002305222` | `1033` |
+| Orthogonal mixed | Unweighted objective | `242` | `21.849774742` | `21.849774742` | `0.002279082` | `955` |
+
+Family-Level Smoke Results:
+
+| Workload family | Run | Family queries | Final family unweighted loss | Family true RMSE |
+| --- | --- | ---: | ---: | ---: |
+| `mixed` | Raw variance weighted | `45` | `62.692866258` | `0.004242641` |
+| `mixed` | Projection-aware variance weighted | `45` | `103.767566613` | `0.004297286` |
+| `mixed` | Unweighted objective | `45` | `25.594648771` | `0.004123106` |
+| `orthogonal_kway_mixed` | Raw variance weighted | `44` | `15.726940881` | `0.002969542` |
+| `orthogonal_kway_mixed` | Projection-aware variance weighted | `44` | `7.194050800` | `0.002705214` |
+| `orthogonal_kway_mixed` | Unweighted objective | `44` | `5.096493732` | `0.002730301` |
+
+Current Judgment:
+
+- The unweighted objective is worth keeping.
+- In these smoke runs, it gives the best total true RMSE on both original mixed
+  and orthogonal mixed.
+- For the orthogonal family itself, it improves raw residual fit but is slightly
+  worse than projection-aware variance weighting by family true RMSE; this
+  needs multi-seed confirmation.
+- This suggests objective weighting is a real hyperparameter/design axis, not
+  just a reporting choice.
+- Current mainline decision:
+  - use `qdte.objective_weighting=unweighted` as the default experimental
+    narrative for the generation stage after feasible consistency projection;
+  - keep inverse-variance and projection-aware variance weighting as ablations,
+    not as the main algorithm path, unless multi-seed/full-scale experiments
+    overturn this smoke-run pattern.
+- Rationale:
+  - it directly optimizes the feasible projected target;
+  - it is simpler to explain than choosing a diagonal variance approximation
+    after a biased feasible projection;
+  - current smoke evidence is better on both raw residual loss and total true
+    RMSE.
+
+Changed Files:
+
+- `qdte/evolution/engine.py`
+- `qdte/config_validation.py`
+- `tests/test_engine_smoke.py`
+- `tests/test_config_validation.py`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Documentation-only judgment update:
+  - `git diff --check`
+  - no code tests rerun for this note.
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest tests/test_config_validation.py tests/test_engine_smoke.py -q`
+  - `69 passed`
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest -q`
+  - `173 passed`
+- `git diff --check`
+  - passed after this documentation update.
+
+Experiment Outputs:
+
+- `outputs/exp_unweightedobj_original_consistency2000_constructive_pair/`
+- `outputs/exp_unweightedobj_orthogonal_consistency2000_constructive_pair/`
+
+Next Recommended Task:
+
+- Run a multi-seed objective-weighting sweep:
+  - `variance` with raw Gaussian variance;
+  - `variance` with projection-aware diagonal variance;
+  - `unweighted`;
+  - optionally tempered weights `inv_variance^alpha` for
+    `alpha in {0.25, 0.5, 0.75}`.
+- Report total true RMSE, family true RMSE, unweighted measured loss, weighted
+  measured loss, and accepted edit counts together.
+
+## Raw Variance Versus Projection-Aware Variance - 2026-06-18
+
+Task:
+
+- Clarify how `variance-only` differs from the earlier weighted loss that
+  directly divided by Gaussian variance.
+
+Clarification:
+
+- Both methods use the same weighted-loss form:
+  `measured_loss = 0.5 * sum_q residual[q]^2 / variance[q]`.
+- The difference is which variance is used.
+- Earlier/raw variance:
+  - `variance[q] = sigma_group(q)^2` from the Gaussian mechanism;
+  - this is the variance before clipping/consistency/feasible projection;
+  - it ignores that projection changes marginal uncertainty and correlates
+    query errors.
+- Projection-aware variance-only:
+  - target remains the same feasible projected target `P(y)`;
+  - no bias is subtracted;
+  - bootstrap estimates a diagonal approximation to
+    `Var(P(center + Gaussian noise))[q]`;
+  - `variance[q]` is replaced by this effective post-projection variance.
+
+Observed Smoke Results:
+
+| Workload | Weighting | Final weighted loss | Final unweighted loss | Final true RMSE |
+| --- | --- | ---: | ---: | ---: |
+| Original mixed | Raw Gaussian variance | `2.318852357` | `75.859848591` | `0.002727697` |
+| Original mixed | Projection-aware variance-only | `8.176284459` | `124.201921078` | `0.002725433` |
+| Orthogonal mixed | Raw Gaussian variance | `3.976314087` | `47.040555620` | `0.002338149` |
+| Orthogonal mixed | Projection-aware variance-only | `4.215038075` | `21.917599106` | `0.002305222` |
+
+Interpretation:
+
+- Weighted loss is not directly comparable across raw variance and
+  projection-aware variance-only, because the denominator changes.
+- On original random mixed:
+  - true RMSE is essentially unchanged;
+  - unweighted measured loss is worse under projection-aware variance.
+- On orthogonal mixed:
+  - projection-aware variance-only is better by both unweighted measured loss
+    and true RMSE.
+- Current empirical judgment:
+  - for the orthogonal workload, projection-aware variance-only is better than
+    raw Gaussian variance;
+  - for original mixed, it is not clearly better;
+  - therefore the strongest current setting remains orthogonal workload plus
+    projection-aware variance-only.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Documentation-only update; run `git diff --check` before closing.
+
+Next Recommended Task:
+
+- In multi-seed experiments, report raw Gaussian variance and
+  projection-aware variance-only side by side, using true RMSE and unweighted
+  residual metrics as the fair comparison axes.
+
+## Debias-Reproject Judgment Clarification - 2026-06-18
+
+Task:
+
+- Clarify whether debias+reproject is a new bias estimator or just a feasibility
+  repair, and how it compares with the Gaussian/oracle bias diagnostic.
+
+Clarification:
+
+- `debias + reproject` is not a new bias estimator.
+- The bias estimate is still the same plug-in bootstrap estimate:
+  `b_hat = mean_i(P(P(y) + noise_i)) - P(y)`.
+- Reprojection only does:
+  `target = P(P(y) - alpha * b_hat)`.
+- Therefore it should not be presented as a principled exact debias method.
+  It is a diagnostic/ablation that answers:
+  "If direct debias fails because it leaves the feasible region, does putting
+  it back into the feasible region help?"
+
+Current Evidence:
+
+- Direct plug-in debias is worse than variance-only:
+  - final true RMSE: `0.002326633` vs `0.002305222`;
+  - final target error L2: `35.871482769` vs `35.026265157`;
+  - negative targets: 6.
+- Full debias + reproject fixes infeasibility and lowers measured loss:
+  - negative targets: 0;
+  - weighted loss: `3.800782531`;
+  - but final target error L2 is still worse than variance-only:
+    `35.452127117` vs `35.026265157`;
+  - true RMSE is effectively tied/slightly worse than variance-only:
+    `0.002307014` vs `0.002305222`.
+- Alpha 0.5 debias + reproject is the only promising row in this smoke run:
+  - final target error L2: `34.988361178`, slightly better than
+    variance-only;
+  - final true RMSE: `0.002261792`, best in this four-way comparison.
+- The plug-in bias itself is not accurate against the oracle MC diagnostic:
+  - plug-in/oracle cosine: `-0.028660775`;
+  - plug-in minus oracle bias L2: `13.960717541`.
+
+Judgment:
+
+- Full plug-in debias + reproject is conceptually clumsy and should not be the
+  main method.
+- It is useful as a negative/control ablation because it shows feasibility
+  matters.
+- The only potentially useful route is partial feasible debias:
+  shrink the questionable plug-in correction (`alpha < 1`) and reproject to
+  keep the target realizable.
+- The mainline should remain variance-only unless an alpha sweep across seeds
+  shows partial feasible debias is consistently better.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Documentation-only update; run `git diff --check` before closing.
+
+Next Recommended Task:
+
+- Run multi-seed alpha sweep before treating partial debias as anything more
+  than a promising ablation.
+
+## Debias Variant Explanation And Current Interpretation - 2026-06-18
+
+Task:
+
+- Explain how the current debias variants are computed.
+- Clarify why reprojecting after debias is not a route to unbiasedness.
+- Clarify why biased feasible projection can still outperform an unbiased
+  equality-only consistency projection.
+
+Debias Variants:
+
+- Variance-only:
+  - noisy measurement: `y = true_answers + noise`;
+  - feasible projection: `p = P(y)`;
+  - optimized target: `target = p`;
+  - bootstrap only estimates post-projection diagonal variances for weights.
+- Plug-in debias:
+  - center: `c = p` when `projection.uncertainty.center=projected`;
+  - bootstrap samples: `z_i = c + noise_i`;
+  - projected samples: `p_i = P(z_i)`;
+  - plug-in bias: `b_hat = mean_i(p_i) - c`;
+  - optimized target: `target = p - alpha * b_hat`;
+  - with `alpha=1`, this is full plug-in debias.
+- Debias then reproject:
+  - optimized target before feasibility repair:
+    `target_raw = p - alpha * b_hat`;
+  - final target: `target = P(target_raw)`;
+  - this is a biased feasible variant, not an unbiased estimator.
+- Oracle-bias diagnostic:
+  - offline only, using true answers `t`;
+  - samples: `z_i = t + noise_i`;
+  - oracle MC bias: `b_oracle = mean_i(P(z_i)) - t`;
+  - used only to compare plug-in bias with true Monte Carlo bias in analysis.
+
+Why Reproject:
+
+- Direct plug-in debias can produce negative query targets or violate local
+  table feasibility.
+- Synthetic-data query answers cannot realize negative counts or infeasible
+  cross-scope marginals.
+- Reprojection maps the debiased vector back into the feasible answer set that
+  QDTE can approximately fit.
+- Reprojection reintroduces bias. It should be understood as a lower-MSE
+  feasible post-processing heuristic, not as unbiased correction.
+
+Why Biased Feasible Projection Can Beat Unbiased Equality Projection:
+
+- Unbiasedness alone controls the mean of an estimator, not its finite-sample
+  squared error or optimization usefulness.
+- Feasible projection can lower MSE by reducing variance enough to offset
+  added bias:
+  `MSE = variance + bias^2`.
+- Equality-only unbiased projection can preserve an unbiased target while still
+  leaving the query vector outside the feasible synthetic-data answer set or
+  with inconsistent local edit directions.
+- QDTE optimizes a finite synthetic dataset. If the target is unbiased but not
+  feasible/easy to realize, the residual field can be harder to follow and the
+  final measured loss/true RMSE can be worse.
+- Nonnegative/local-table projection is biased, but it gives a feasible target
+  and a cleaner optimization geometry. This is consistent with the expert
+  claim that biased feasible projection can have lower overall query error.
+
+Current Interpretation:
+
+- The current plug-in bias estimate is not reliable as exact debias:
+  `plugin/oracle bias cosine ~= -0.029` on the orthogonal smoke run.
+- Projection-aware variance-only can perform well because it keeps the feasible
+  target `P(y)` and only changes weighting by post-projection uncertainty.
+- Partial debias plus reproject is promising because it applies a conservative
+  bias correction while preserving feasibility.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Documentation-only update; run `git diff --check` before closing the task.
+
+Current Status:
+
+- Debias variants and the biased-feasible-versus-unbiased-equality distinction
+  are documented.
+
+Next Recommended Task:
+
+- Run the planned `debias_alpha` sweep with `reproject_debiased_target=true`
+  over multiple seeds before deciding whether partial feasible debias should
+  enter the main method.
+
+## Oracle Bias Diagnostic And Debias-Reproject Ablation - 2026-06-18
+
+Task:
+
+- Add offline true/oracle projection-bias diagnostics for analysis only.
+- Add debias controls:
+  - `projection.uncertainty.debias_alpha`;
+  - `projection.uncertainty.reproject_debiased_target`.
+- Run orthogonal 2000-step smoke ablations comparing variance-only,
+  plug-in debias, full debias+reproject, and partial debias+reproject.
+
+Implementation:
+
+- `qdte/measurement/measure.py`
+  - Keeps the plug-in bootstrap bias vector in memory as
+    `Measurements.projection_uncertainty_bias`.
+  - Does not write this vector to `measurements.json`.
+  - Adds `projection.uncertainty.debias_alpha`, default `1.0`.
+  - Adds `projection.uncertainty.reproject_debiased_target`, default `false`.
+  - If `debias_target=true`, the target update is now:
+    `target = projected - debias_alpha * plugin_bias`.
+  - If `reproject_debiased_target=true`, the debiased target is passed through
+    the same configured feasible projection again.
+- `qdte/evolution/engine.py`
+  - Adds evaluation-only `evaluation.oracle_projection_bias`.
+  - When enabled and exact true answers are already being computed for offline
+    evaluation, it estimates:
+    `oracle_bias ~= mean_i P(true_answers + Gaussian_noise_i) - true_answers`.
+  - Writes aggregate diagnostics to `oracle_projection_bias.json` and scalar
+    summaries into `metrics_final.json`.
+  - This does not feed into measurement, target construction, candidate
+    generation, scoring, stopping, transport, or hyperparameter selection.
+- `qdte/config_validation.py`
+  - Validates `debias_alpha in [0, 1]`.
+  - Validates `evaluation.oracle_projection_bias.num_samples > 1`.
+
+New Config Keys:
+
+- `projection.uncertainty.debias_alpha`: partial plug-in debias strength.
+- `projection.uncertainty.reproject_debiased_target`: enforce feasibility after
+  debias.
+- `evaluation.oracle_projection_bias.enabled`: enable offline oracle-bias
+  diagnostics.
+- `evaluation.oracle_projection_bias.num_samples`: Monte Carlo samples.
+- `evaluation.oracle_projection_bias.seed`: optional diagnostic seed.
+
+Smoke Setup:
+
+- Base config: `configs/smoke.yaml`.
+- Workload: orthogonal mixed enabled, original mixed disabled.
+- Projection: `local_table_feasible_jax`.
+- Projection uncertainty:
+  - `bootstrap_diagonal`;
+  - `num_samples=16`;
+  - `center=projected`;
+  - `min_raw_variance_fraction=0.05`.
+- QDTE:
+  - `variant=constructive_pair`;
+  - `max_iters=2000`;
+  - `stop_patience=2000`.
+- Oracle diagnostic:
+  - `evaluation.oracle_projection_bias.enabled=true`;
+  - `num_samples=16`;
+  - `seed=4242`.
+
+Output Directories:
+
+- `outputs/exp_biasdiag_orthogonal_varonly16_consistency2000_constructive_pair`
+- `outputs/exp_biasdiag_orthogonal_plugindebias16_consistency2000_constructive_pair`
+- `outputs/exp_biasdiag_orthogonal_debias_reproject16_consistency2000_constructive_pair`
+- `outputs/exp_biasdiag_orthogonal_debias_alpha05_reproject16_consistency2000_constructive_pair`
+
+Main Results:
+
+| Run | Final weighted loss | Final unweighted loss | Final true RMSE | Orthogonal-family true RMSE | Accepted edits |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Variance-only | `4.215038075` | `21.917599106` | `0.002305222` | `0.002705214` | 1033 |
+| Plug-in debias | `6.047716294` | `28.502779504` | `0.002326633` | `0.002540580` | 1014 |
+| Full debias + reproject | `3.800782531` | `19.334146917` | `0.002307014` | `0.002486326` | 1032 |
+| Alpha 0.5 debias + reproject | `3.920276457` | `21.148945220` | `0.002261792` | `0.002504541` | 1014 |
+
+Target Feasibility:
+
+| Run | Pre-reproject min target | Pre-reproject negatives | Final min target | Final negatives |
+| --- | ---: | ---: | ---: | ---: |
+| Variance-only | `0.0` | 0 | `0.0` | 0 |
+| Plug-in debias | `-1.035898853` | 6 | `-1.035898853` | 6 |
+| Full debias + reproject | `-1.035898853` | 6 | `0.0` | 0 |
+| Alpha 0.5 debias + reproject | `-0.517949427` | 6 | `0.0` | 0 |
+
+Oracle Bias Diagnostics:
+
+| Metric | Value |
+| --- | ---: |
+| Oracle MC bias L2 | `10.460274952` |
+| Oracle MC bias Linf | `1.991957664` |
+| Plug-in bias L2 | `8.950830765` |
+| Plug-in bias Linf | `1.489848614` |
+| Plug-in minus oracle bias L2 | `13.960717541` |
+| Plug-in minus oracle bias Linf | `2.293832310` |
+| Plug-in/oracle bias cosine | `-0.028660775` |
+
+Target Error Against True Answers:
+
+| Run | Observed projected target error L2 | Final optimized target error L2 |
+| --- | ---: | ---: |
+| Variance-only | `35.026265157` | `35.026265157` |
+| Plug-in debias | `35.026265157` | `35.871482769` |
+| Full debias + reproject | `35.026265157` | `35.452127117` |
+| Alpha 0.5 debias + reproject | `35.026265157` | `34.988361178` |
+
+Interpretation:
+
+- Direct plug-in debias is not a reliable exact bias correction:
+  - it creates negative optimized targets;
+  - it increases final target error L2;
+  - its bias vector is almost orthogonal to the oracle MC bias
+    (`cosine ~= -0.029`);
+  - the plug-in/oracle difference L2 is larger than either bias vector alone.
+- Reprojecting after debias fixes feasibility:
+  - negative targets go from 6 to 0;
+  - measured loss improves strongly.
+- Full debias + reproject gets the best measured loss, but not the best true
+  RMSE.
+- Alpha 0.5 debias + reproject is the best true-RMSE row in this smoke run:
+  `0.002261792`.
+- This suggests partial feasible debias may be a useful ablation, but the
+  current plug-in bias should not be presented as a mathematically exact
+  correction.
+
+Current Judgment:
+
+- Mainline remains projection-aware variance plus orthogonal measurement.
+- Debias should be reported as a controlled ablation:
+  - direct plug-in debias is unsafe;
+  - full debias + reproject is feasible and lowers measured loss;
+  - partial debias + reproject is currently the most promising debias variant
+    by true RMSE on this seed.
+- The oracle bias diagnostic is valuable for analysis, but must remain
+  evaluation-only.
+
+Changed Files:
+
+- `qdte/measurement/measure.py`
+- `qdte/evolution/engine.py`
+- `qdte/config_validation.py`
+- `tests/test_measurement.py`
+- `tests/test_engine_smoke.py`
+- `tests/test_config_validation.py`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m py_compile qdte/measurement/measure.py qdte/config_validation.py qdte/evolution/engine.py tests/test_measurement.py tests/test_config_validation.py tests/test_engine_smoke.py`
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest -q tests/test_measurement.py tests/test_config_validation.py tests/test_engine_smoke.py::test_engine_smoke_outputs`
+  - `78 passed in 2.88s`
+- `/home/qianqiu/.anaconda3/envs/qdte/bin/python -m pytest -q`
+  - `171 passed in 10.58s`
+- `git diff --check`
+  - passed.
+- Four 2000-step orthogonal smoke ablations listed above.
+
+Current Status:
+
+- Oracle bias diagnostics are implemented and tested.
+- Debias-alpha and debias-reproject variants are implemented and tested.
+- Smoke evidence now supports testing partial feasible debias further, rather
+  than using direct plug-in debias.
+
+Next Recommended Task:
+
+- Run a small alpha sweep under orthogonal workload:
+  - `debias_alpha in {0.0, 0.25, 0.5, 0.75, 1.0}`;
+  - always with `reproject_debiased_target=true`;
+  - multiple seeds.
+- Keep direct `debias_target=true` without reproject as a negative/control
+  ablation.
+
+## Exact Bias Versus Feasible Reprojection - 2026-06-18
+
+Task:
+
+- Clarify whether we should compute exact projection bias, and what
+  "debias then reproject" means.
+
+Clarification:
+
+- The exact bias of a projection estimator is:
+  `b(t) = E_noise[P(t + noise)] - t`,
+  where `P` is the configured weighted projection operator and `t` is the
+  unknown true query-answer vector.
+- This exact bias depends on the unknown true answer `t`. Therefore it cannot
+  be used inside `privacy.mode=dp` optimization, active query selection,
+  candidate generation, scoring, stopping, or hyperparameter selection.
+- It can be computed or approximated only as an offline diagnostic in smoke
+  experiments where exact true answers are available for evaluation.
+- The observed clipped negative amount from one noisy realization is not the
+  same as statistical bias. Even for scalar clipping at zero,
+  `P(y)=max(y,0)`, the bias is a function of `t/sigma`, not just the observed
+  negative part of `y`.
+
+Meaning Of "Debias Then Reproject":
+
+- Current plug-in debias does:
+  `target = P(noisy) - estimated_bias`.
+- This can make the optimized target infeasible, for example producing
+  negative query counts.
+- "Debias then reproject" would do:
+  `target = P(P(noisy) - estimated_bias)`.
+- This is not an unbiased estimator. It is a biased feasible post-processing
+  variant intended to test whether the current debias failure is mainly caused
+  by infeasible targets.
+- This does not contradict the earlier point that exact unbiasedness is
+  generally impossible when we require nonnegative feasible outputs under
+  two-sided Gaussian/discrete-Gaussian noise.
+
+Current Recommendation:
+
+- Add an offline oracle-bias diagnostic:
+  - compute true query answers `t` only for evaluation;
+  - repeatedly draw fresh Gaussian noise according to the measured variances;
+  - apply the exact configured projection operator;
+  - estimate `E[P(t + noise)] - t`;
+  - compare this oracle bias with the current plug-in bootstrap bias.
+- Keep this diagnostic outside the DP optimization path.
+- For optimization ablations, test:
+  - variance-only;
+  - plug-in debias;
+  - plug-in debias then reproject;
+  - partial debias then reproject.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Documentation-only clarification.
+
+Current Status:
+
+- Exact bias is useful for diagnosis and paper analysis, but not available as a
+  valid DP optimization signal.
+- Reprojection after debias is a feasible biased variant, not a route to exact
+  unbiasedness.
+
+Next Recommended Task:
+
+- Implement oracle-bias diagnostics in the evaluation path only, then compare
+  oracle bias with current plug-in bootstrap bias on the smoke workload.
+
+## Debias Interpretation And Concern - 2026-06-18
+
+Task:
+
+- Clarify why `projection-aware variance + debias_target=false` can outperform
+  `debias_target=true`, even though the feasible projection is biased by
+  nonnegativity/lower-bound constraints.
+
+Current Finding:
+
+- The current debias implementation is a plug-in bootstrap correction, not an
+  exact mathematical removal of projection bias.
+- It estimates:
+  `bias ~= mean(project(center + Gaussian noise)) - center`,
+  where `center` is usually the already projected target.
+- If `debias_target=true`, the optimized target is changed to:
+  `target_projected := projected - bias`.
+- This is useful as an ablation, but it can move the target outside the
+  feasible answer region that synthetic data can realize.
+
+Observed Diagnostics:
+
+| Run | Min target after debias/variance | Negative targets | Bias L2 | Bias Linf |
+| --- | ---: | ---: | ---: | ---: |
+| Var-only original mixed | `0.0` | 0 | `14.795448557` | `5.459616661` |
+| Debias original mixed | `-3.420611858` | 9 | `14.795448557` | `5.459616661` |
+| Var-only orthogonal mixed | `0.0` | 0 | `8.950830753` | `1.489848614` |
+| Debias orthogonal mixed | `-1.035898805` | 6 | `8.950830753` | `1.489848614` |
+
+Interpretation:
+
+- The "negative amount clipped away" in one noisy realization is not the same
+  object as statistical bias.
+- The true bias of a projection/clipping estimator is
+  `E[project(true + noise)] - true`, which depends on the unknown true answer.
+- Even for simple coordinate-wise clipping at zero, the bias depends on
+  `true/sigma`; it cannot be exactly recovered from one noisy draw.
+- For the current local-table feasible projection, the situation is more
+  coupled:
+  - projection is weighted by per-query variances;
+  - constraints share mass across overlapping query scopes;
+  - lower-bound activity in one query can change neighboring queries;
+  - post-projection errors are correlated, while the current bootstrap only
+    keeps a diagonal variance approximation.
+- Therefore the current plug-in debias can subtract a boundary-bias estimate
+  and create negative query targets. QDTE then tries to fit a target outside
+  the feasible synthetic-data answer set, which can increase measured residual
+  and hurt true RMSE.
+
+Current Judgment:
+
+- Keeping the feasible projected target and only replacing the raw variances by
+  projection-aware effective variances is the more defensible mainline right
+  now.
+- `debias_target=true` should remain an ablation until we have a better
+  constrained debias method, such as:
+  - partial debias with shrinkage factor `alpha`;
+  - debias then reproject;
+  - boundary-aware debias that never creates negative targets;
+  - offline oracle simulation to estimate actual projection MSE/bias under
+    repeated noise draws.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Read current `measurements.json` files and counted negative optimized
+  targets for var-only and debias runs.
+
+Current Status:
+
+- The surprising result is explainable: the current debias correction can make
+  the optimization target infeasible, while variance-only keeps the target
+  feasible and improves weighting.
+
+Next Recommended Task:
+
+- Add an ablation for `debias_alpha in {0.0, 0.25, 0.5, 1.0}` or
+  `debias_then_reproject`, and report target infeasibility diagnostics together
+  with loss/RMSE.
+
+## Current Method Judgment - 2026-06-18
+
+Task:
+
+- Record the current judgment after clarifying the unweighted-loss scale.
+
+Judgment:
+
+- The `21.9` unweighted loss in the orthogonal variance-only run is not high:
+  it corresponds to RMS raw residual `0.4256` counts over `242` measured
+  queries.
+- The strongest current mainline is:
+  - orthogonal grouped measurement/workload construction;
+  - feasible consistency projection;
+  - projection-aware bootstrap diagonal variance;
+  - `debias_target=false`;
+  - constructive A-style directed edit generation.
+- The main reason is that this setting currently gives the best total offline
+  true RMSE in the smoke comparison:
+  - raw orthogonal: `0.002338149`;
+  - projection-aware variance-only orthogonal: `0.002305222`;
+  - projection-aware debias orthogonal: `0.002326633`.
+- `debias_target=true` should not be part of the main method yet. It improves
+  the orthogonal family fit in one run, but it hurts original mixed badly and
+  introduces a large plug-in correction whose stability is not established.
+- The orthogonal measurement construction is a real methodological signal:
+  it lowers effective noise by measuring query groups with lower sensitivity,
+  and the current results suggest it improves true utility, not only measured
+  loss.
+- The remaining uncertainty is statistical, not conceptual: this is still a
+  smoke/single-seed result, so the next decision must come from multi-seed
+  comparisons.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Documentation-only update; run `git diff --check` before closing the task.
+
+Current Status:
+
+- Current mainline candidate is selected for follow-up experiments.
+- Debias remains an ablation.
+
+Next Recommended Task:
+
+- Run multi-seed experiments comparing raw variance, projection-aware
+  variance-only, and projection-aware debias under the orthogonal workload.
+
+## Unweighted Loss Scale Clarification - 2026-06-18
+
+Task:
+
+- Clarify the expected scale of `final_unweighted_measured_loss` after the
+  projection-aware variance-only experiment.
+
+Result:
+
+- `unweighted_measured_loss = 0.5 * sum_q residual[q]^2`, without dividing by
+  query variance.
+- Therefore it is a total over all measured queries, not a per-query number.
+- For the current orthogonal variance-only run:
+  - queries: `242`;
+  - final unweighted loss: `21.917599106`;
+  - final RMS raw residual:
+    `sqrt(2 * 21.917599106 / 242) = 0.425602141`;
+  - final weighted loss: `4.215038075`;
+  - effective variance mean: `5.492176549`.
+- A one-standard-deviation Gaussian residual field would have:
+  - expected weighted loss around `0.5 * 242 = 121`;
+  - expected unweighted loss around
+    `0.5 * sum_q variance[q] = 664.553362` under the projection-aware
+    effective variances.
+- So `21.9` unweighted loss is not high in this setting. It means the average
+  raw residual to the projected/noisy target is well below one count.
+
+Important Distinction:
+
+- Previous low numbers such as `2-8` were usually weighted measured losses.
+- Recent numbers such as `21.9`, `47.0`, `75.9`, or `124.2` are total
+  unweighted measured losses, so they are on a different scale.
+- Family-level unweighted loss can also be much smaller because it is computed
+  over fewer queries. For example the orthogonal-family unweighted loss in the
+  variance-only run is `7.194050800` over `44` queries.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Read existing `metrics_final.json`, `metrics_timeseries.csv`, and
+  `measurements.json` files from the current smoke outputs.
+
+Current Status:
+
+- Loss-scale interpretation is documented.
+- The main comparison should continue to report weighted loss, unweighted loss,
+  RMS unweighted residual, and offline true RMSE together.
+
+Next Recommended Task:
+
+- Add a small table/report helper that prints per-query RMS residual and
+  one-sigma Gaussian reference scales automatically for future experiments.
+
+## Projection-Aware Variance-Only Ablation - 2026-06-17
+
+Task:
+
+- Run the projection-aware bootstrap experiment again with
+  `projection.uncertainty.debias_target=false`.
+- Purpose: separate the effect of post-projection variance reweighting from the
+  effect of plug-in target debiasing.
+
+Setup:
+
+- Base config: `configs/smoke.yaml`.
+- Variant: `constructive_pair`.
+- Projection:
+  - `projection.consistency.enabled=true`;
+  - `projection.consistency.method=local_table_feasible_jax`;
+  - `projection.uncertainty.enabled=true`;
+  - `projection.uncertainty.method=bootstrap_diagonal`;
+  - `projection.uncertainty.num_samples=16`;
+  - `projection.uncertainty.center=projected`;
+  - `projection.uncertainty.debias_target=false`;
+  - `projection.uncertainty.min_raw_variance_fraction=0.05`.
+- QDTE:
+  - `max_iters=2000`;
+  - `stop_patience=2000`;
+  - `candidate_diagnostics=false`.
+
+Runs:
+
+- Original mixed:
+  `outputs/exp_A_original_mixed_projaware_varonly16_consistency2000_constructive_pair`
+- Orthogonal mixed:
+  `outputs/exp_A_orthogonal_mixed_projaware_varonly16_consistency2000_constructive_pair`
+
+Result Summary:
+
+| Run | Queries | Final weighted loss | Final unweighted loss | Final true RMSE | Accepted edits |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Raw original mixed | 243 | `2.318852357` | `75.859848591` | `0.002727697` | 1458 |
+| Var-only original mixed | 243 | `8.176284459` | `124.201921078` | `0.002725433` | 1493 |
+| Debias original mixed | 243 | `21.724461768` | `338.082179345` | `0.002886751` | 1496 |
+| Raw orthogonal mixed | 242 | `3.976314087` | `47.040555620` | `0.002338149` | 942 |
+| Var-only orthogonal mixed | 242 | `4.215038075` | `21.917599106` | `0.002305222` | 1033 |
+| Debias orthogonal mixed | 242 | `6.047716294` | `28.502779504` | `0.002326633` | 1014 |
+
+Family Results:
+
+| Run | Family | Family queries | Family weighted loss | Family unweighted loss | Family true RMSE |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Raw original | `mixed` | 45 | `1.102442674` | `62.692866258` | `0.004242641` |
+| Var-only original | `mixed` | 45 | `4.353294583` | `103.767566613` | `0.004297286` |
+| Debias original | `mixed` | 45 | `14.320789789` | `298.303156475` | `0.004756282` |
+| Raw orthogonal | `orthogonal_kway_mixed` | 44 | `1.048462780` | `15.726940881` | `0.002969542` |
+| Var-only orthogonal | `orthogonal_kway_mixed` | 44 | `1.423972166` | `7.194050800` | `0.002705214` |
+| Debias orthogonal | `orthogonal_kway_mixed` | 44 | `1.159312102` | `5.482202860` | `0.002540580` |
+
+Bootstrap Diagnostics:
+
+| Run | Raw variance mean | Effective variance mean | Effective/raw variance mean | Bias L2 | Bias Linf |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Original mixed | `19.629629583` | `7.979536403` | `0.497178636` | `14.795448557` | `5.459616661` |
+| Orthogonal mixed | `14.504132184` | `5.492176564` | `0.476856508` | `8.950830753` | `1.489848614` |
+
+Interpretation:
+
+- The original mixed degradation mostly comes from target debiasing, not from
+  variance reweighting:
+  - raw original true RMSE: `0.002727697`;
+  - var-only original true RMSE: `0.002725433`;
+  - debias original true RMSE: `0.002886751`.
+- Orthogonal mixed benefits from projection-aware variance even without
+  debiasing:
+  - raw orthogonal true RMSE: `0.002338149`;
+  - var-only orthogonal true RMSE: `0.002305222`;
+  - debias orthogonal true RMSE: `0.002326633`.
+- The family-level picture is slightly different:
+  - debias gives the best orthogonal-family fit among these three runs
+    (`0.002540580` family RMSE);
+  - var-only gives the best total true RMSE (`0.002305222`).
+- Current best default candidate for the main method is therefore:
+  orthogonal workload plus projection-aware bootstrap variance, with
+  `debias_target=false`.
+- Plug-in debias should remain an ablation, because its estimated bias can be
+  large and unstable on overlapping random mixed predicates.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Original mixed variance-only smoke run:
+  `scripts/run_ablation.py --config configs/smoke.yaml --variant constructive_pair ... --projection.uncertainty.debias_target false --qdte.max_iters 2000`
+- Orthogonal mixed variance-only smoke run:
+  `scripts/run_ablation.py --config configs/smoke.yaml --variant constructive_pair ... --workload.include_orthogonal_kway_mixed true --projection.uncertainty.debias_target false --qdte.max_iters 2000`
+- `git diff --check`
+  - passed.
+
+Current Status:
+
+- Projection-aware variance-only is implemented and has been smoke-tested on
+  both original mixed and orthogonal mixed workloads.
+- The DP boundary is preserved: these optimization runs use projected/noisy
+  measurements and variances; true answers are only reported as offline metrics.
+
+Next Recommended Task:
+
+- Run multi-seed comparisons for:
+  - raw variance;
+  - projection-aware variance-only;
+  - projection-aware variance plus debias;
+  - original mixed versus orthogonal mixed.
+- Treat `debias_target=true` as an exploratory ablation rather than the main
+  setting until it is stable across seeds.
+
+## Projection-Aware Experiment Interpretation - 2026-06-17
+
+Task:
+
+- Re-explain the projection-aware bootstrap/debias experiment results in a
+  clearer way.
+
+How To Read The Four Runs:
+
+- `raw original mixed`:
+  - original random overlapping `mixed` workload;
+  - old/raw variance weights after projection;
+  - no projection-aware bootstrap variance;
+  - no debias target.
+- `raw orthogonal mixed`:
+  - new `orthogonal_kway_mixed` workload;
+  - old/raw variance weights after projection;
+  - no projection-aware bootstrap variance;
+  - no debias target.
+- `projection-aware original mixed`:
+  - original random overlapping `mixed` workload;
+  - bootstrap-estimated post-projection diagonal variance;
+  - plug-in debias target enabled.
+- `projection-aware orthogonal mixed`:
+  - `orthogonal_kway_mixed` workload;
+  - bootstrap-estimated post-projection diagonal variance;
+  - plug-in debias target enabled.
+
+Metric Interpretation:
+
+- `weighted loss` uses the run's active weights. It is useful for understanding
+  the objective being optimized, but is not directly comparable when we change
+  the variance model.
+- `unweighted loss` is raw squared residual against that run's measured target.
+  It is easier to interpret than weighted loss, but targets can still differ if
+  `debias_target=true`.
+- `true RMSE` is the most important quality metric in these smoke comparisons.
+  It is computed only offline for evaluation.
+
+Simplified Result:
+
+| Run | What changed | True RMSE | Main reading |
+| --- | --- | ---: | --- |
+| Raw original mixed | baseline workload/weights | `0.002727697` | baseline |
+| Raw orthogonal mixed | orthogonal workload only | `0.002338149` | large improvement |
+| Projection-aware original mixed | bootstrap variance + debias on original mixed | `0.002886751` | worse than baseline |
+| Projection-aware orthogonal mixed | bootstrap variance + debias on orthogonal mixed | `0.002326633` | slightly best total RMSE |
+
+Family-Level Reading:
+
+| Family | Raw unweighted loss | Projection-aware unweighted loss | Raw family true RMSE | Projection-aware family true RMSE |
+| --- | ---: | ---: | ---: | ---: |
+| Original `mixed` | `62.692866` | `298.303156` | `0.004242641` | `0.004756282` |
+| `orthogonal_kway_mixed` | `15.726941` | `5.482203` | `0.002969542` | `0.002540580` |
+
+Interpretation:
+
+- The orthogonal workload itself is robustly helpful:
+  - raw original mixed true RMSE: `0.002727697`;
+  - raw orthogonal mixed true RMSE: `0.002338149`.
+- Projection-aware bootstrap plus debias is not universally helpful:
+  - it hurts original random mixed;
+  - it slightly helps orthogonal mixed.
+- The likely reason is that the plug-in bias estimate is much larger and less
+  stable for overlapping random mixed predicates:
+  - original mixed `bias_linf ~= 5.46`;
+  - orthogonal mixed `bias_linf ~= 1.49`.
+- Therefore the immediate conclusion should not be "projection-aware debias is
+  solved". The better conclusion is:
+  - orthogonal mixed gives a cleaner projected measurement target;
+  - projection-aware correction appears compatible with orthogonal mixed;
+  - random overlapping mixed is fragile under the same correction.
+
+Important Caveat:
+
+- The current projection-aware run combines two interventions:
+  - bootstrap variance replacement;
+  - target debiasing.
+- Since both were enabled at once, this experiment cannot tell which part
+  caused the original mixed degradation. The next ablation must split:
+  - `debias_target=false`;
+  - `debias_target=true`;
+  - different `min_raw_variance_fraction` values.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Not yet run for this documentation-only interpretation.
+
+Next Recommended Task:
+
+- Run projection-aware variance-only experiments, especially
+  `projection.uncertainty.debias_target=false`, before deciding whether debias
+  should be part of the main method.
+
+## Projection-Aware Bootstrap Variance And Debias - 2026-06-17
+
+Task:
+
+- Implement option 4 from the projection-bias discussion:
+  projection-aware post-projection diagonal variance estimation, with optional
+  plug-in bias correction.
+- Keep the existing raw-variance behavior configurable and unchanged by
+  default.
+
+Implementation:
+
+- Added `projection.uncertainty` config:
+  - `enabled`: default `false`;
+  - `method`: currently `bootstrap_diagonal`;
+  - `num_samples`: number of parametric bootstrap samples;
+  - `center`: `projected` or `noisy`;
+  - `debias_target`: if true, subtracts the estimated projection bias from the
+    optimized target;
+  - `min_variance`: absolute variance floor;
+  - `min_raw_variance_fraction`: optional regularization floor relative to raw
+    pre-projection variance.
+- Refactored measurement projection into `_apply_configured_projection(...)` so
+  the exact same projection operator can be reused by bootstrap samples.
+- Bootstrap procedure:
+  - choose center, usually `target_projected`;
+  - draw `center + N(0, raw_variances)`;
+  - re-run the configured projection;
+  - estimate diagonal variance from projected bootstrap samples;
+  - optionally estimate bias as `mean(projected_bootstrap) - center` and set
+    `target_projected := target_projected - bias`.
+- This uses only noisy/projected measurements, public variances, public
+  workload/schema constraints, and post-processing randomness. It does not use
+  exact true answers for optimization, so it respects the DP boundary.
+
+Changed Files:
+
+- `qdte/measurement/measure.py`
+- `qdte/config_validation.py`
+- `tests/test_measurement.py`
+- `tests/test_config_validation.py`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -m py_compile qdte/measurement/measure.py qdte/config_validation.py tests/test_measurement.py tests/test_config_validation.py`
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -m pytest -q tests/test_measurement.py tests/test_config_validation.py`
+  - `73 passed in 1.76s`
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -m pytest -q`
+  - `167 passed in 10.39s`
+
+Smoke Experiment Setup:
+
+- Base config: `configs/smoke.yaml`.
+- Variant: `constructive_pair`.
+- Projection:
+  - `projection.consistency.enabled=true`;
+  - `projection.consistency.method=local_table_feasible_jax`;
+  - `projection.uncertainty.enabled=true`;
+  - `projection.uncertainty.method=bootstrap_diagonal`;
+  - `projection.uncertainty.num_samples=16`;
+  - `projection.uncertainty.center=projected`;
+  - `projection.uncertainty.debias_target=true`;
+  - `projection.uncertainty.min_raw_variance_fraction=0.05`.
+- QDTE:
+  - `max_iters=2000`;
+  - `stop_patience=2000`;
+  - `candidate_diagnostics=false`.
+
+Smoke Experiment Results:
+
+| Run | Queries | Final weighted loss | Final unweighted loss | Final true RMSE | Accepted edits |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Raw original mixed | 243 | `2.318852357` | `75.859848591` | `0.002727697` | 1458 |
+| Raw orthogonal mixed | 242 | `3.976314087` | `47.040555620` | `0.002338149` | 942 |
+| Projection-aware debias original mixed | 243 | `21.724461768` | `338.082179345` | `0.002886751` | 1496 |
+| Projection-aware debias orthogonal mixed | 242 | `6.047716294` | `28.502779504` | `0.002326633` | 1014 |
+
+Family Results:
+
+| Run | Family | Family queries | Family weighted loss | Family unweighted loss | Family true RMSE |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Raw original | `mixed` | 45 | `1.102442674` | `62.692866258` | `0.004242641` |
+| Raw orthogonal | `orthogonal_kway_mixed` | 44 | `1.048462780` | `15.726940881` | `0.002969542` |
+| Projection-aware original | `mixed` | 45 | `14.320789789` | `298.303156475` | `0.004756282` |
+| Projection-aware orthogonal | `orthogonal_kway_mixed` | 44 | `1.159312102` | `5.482202860` | `0.002540580` |
+
+Bootstrap Diagnostics:
+
+| Run | Raw variance mean | Effective variance mean | Effective/raw variance mean | Bias L2 | Bias Linf |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Projection-aware original | `19.629629583` | `7.979536403` | `0.497178636` | `14.795448557` | `5.459616661` |
+| Projection-aware orthogonal | `14.504132184` | `5.492176564` | `0.476856508` | `8.950830753` | `1.489848614` |
+
+Interpretation:
+
+- The implemented option 4 is functional and passes tests.
+- Naive plug-in debias plus bootstrap variance is not uniformly better:
+  - it worsens original random mixed in both true RMSE and unweighted measured
+    loss;
+  - it slightly improves orthogonal mixed total true RMSE
+    (`0.002338149 -> 0.002326633`) and strongly improves orthogonal family
+    unweighted loss (`15.726940881 -> 5.482202860`).
+- The debias estimate is much larger for original mixed (`bias_linf ~= 5.46`)
+  than for orthogonal mixed (`bias_linf ~= 1.49`), which suggests the plug-in
+  bias correction may be unstable for overlapping random mixed predicates.
+- The orthogonal workload remains the cleaner story: projection-aware
+  uncertainty strengthens its family-level fit, while random mixed becomes more
+  fragile under the same correction.
+- Performance caveat: the current bootstrap implementation reruns the full
+  configured projection per sample. With `local_table_feasible_jax` and
+  `num_samples=16`, startup cost is noticeably high. This is correct but not
+  yet optimized.
+
+Current Status:
+
+- Option 4 exists as configurable code and has a first smoke comparison.
+- Default behavior remains unchanged unless `projection.uncertainty.enabled`
+  is set.
+
+Next Recommended Task:
+
+- Split the ablation into:
+  - bootstrap variance only, `debias_target=false`;
+  - bootstrap variance plus debias, `debias_target=true`;
+  - lower/higher `min_raw_variance_fraction`;
+  - raw variance and unweighted scoring baselines.
+- If projection-aware uncertainty remains promising, optimize performance by
+  caching projection matrices/constraints or implementing active-set
+  linearized covariance for `local_table_feasible_jax`.
+
+## Projection Bias And Weighted Objective Caveat - 2026-06-17
+
+Task:
+
+- Clarify whether inverse-variance weighting remains statistically correct
+  after consistency/feasibility projection.
+
+Key Point:
+
+- The clean weighted least-squares interpretation assumes a measurement model:
+  - `target = true_answer + zero_mean_noise`;
+  - known covariance/variance;
+  - residuals are standardized by that uncertainty.
+- After projection, the target is:
+  - `target_projected = projection(target_noisy)`.
+- If the projection is a linear equality projection onto a constraint subspace
+  containing the true answers, then it can remain unbiased:
+  - `E[P(target_noisy)] = P(true_answer) = true_answer`;
+  - but the covariance becomes `P Sigma P^T`, generally correlated and not the
+    original diagonal variance.
+- If the projection includes nonlinear operations such as clipping,
+  non-negativity, or active-set feasibility constraints, then
+  `target_projected` can be biased:
+  - `E[projection(true_answer + noise)] != true_answer`;
+  - the bias is strongest near active boundaries such as zero cells.
+
+Implication:
+
+- The current objective is best interpreted as a quasi-likelihood /
+  confidence-weighted residual objective against the projected target, not a
+  fully exact likelihood for the post-projection estimator.
+- Simply "subtracting the mean bias" is not currently available because the
+  bias depends on the unknown true answer and on which constraints become
+  active. Estimating it from exact true answers would violate the DP boundary.
+- A more statistically complete post-projection objective would need one of:
+  - local active-set linearization to estimate post-projection covariance;
+  - bootstrap/simulation using only noisy/projected measurements to approximate
+    projection bias and covariance;
+  - a full constrained measurement model that treats projection as part of the
+    likelihood.
+
+Current Status:
+
+- Current code still uses the original per-query variances as diagonal weights
+  after projection.
+- This is defensible as an optimization heuristic and confidence weighting, but
+  should not be oversold as an exact post-projection likelihood when nonlinear
+  feasible projection is enabled.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `git diff --check`
+
+Next Recommended Task:
+
+- Add a projection-aware weighting ablation:
+  - current raw inverse variance;
+  - unweighted;
+  - optionally local active-set covariance/diagonal variance if exposed by the
+    projection solver.
+
+## Why Weighted Loss Divides By Noise Variance - 2026-06-17
+
+Task:
+
+- Clarify why the measured objective divides squared residuals by noise
+  variance, and why this does not mean larger noise is better.
+
+Explanation:
+
+- The DP measurement target is a noisy observation, not ground truth:
+  - `y[q] = true_answer[q] + noise[q]`;
+  - `noise[q] ~ N(0, variance[q])`.
+- If a synthetic answer `mu[q] = answer_syn[q]` is evaluated against this
+  observation under the Gaussian measurement model, the negative log likelihood
+  contains:
+  - `0.5 * (y[q] - mu[q])^2 / variance[q]`;
+  - plus `0.5 * log(variance[q])`, which is constant with respect to `mu[q]`
+    during a fixed QDTE run.
+- QDTE therefore uses the weighted least-squares part:
+  - `measured_loss = 0.5 * sum_q residual[q]^2 / variance[q]`.
+- Intuition:
+  - the loss penalizes residuals in units of standard deviations, not raw count
+    units;
+  - a residual of `5` is severe if `noise_std=1`;
+  - a residual of `5` is weak evidence if `noise_std=50`.
+- This prevents QDTE from overfitting highly noisy measurements. High-noise
+  queries are less reliable directional signals, so their residuals should have
+  less influence on active-query selection and edit scoring.
+
+Important Caveat:
+
+- Within one fixed run, the optimizer cannot make noise larger to reduce loss;
+  variances are fixed by the DP measurement mechanism before optimization.
+- Across different measurement designs, weighted measured loss is not a pure
+  quality metric. A high-noise design can have smaller weighted residual terms
+  for the same raw residual, while also containing less useful information.
+- For cross-design comparison, report:
+  - weighted measured loss, to understand the objective being optimized;
+  - unweighted measured loss, to inspect raw residual magnitude;
+  - offline true MAE/RMSE or common heldout true RMSE, to judge synthetic data
+    quality.
+- If one wants a full likelihood comparison across designs with different
+  variances, the omitted `0.5 * log(variance[q])` constants matter. They are
+  irrelevant for edit ranking within a fixed run but matter conceptually when
+  comparing noise mechanisms.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Not yet run for this documentation-only clarification.
+
+Next Recommended Task:
+
+- When presenting experiments, explicitly label weighted measured loss as a
+  standardized residual objective, not as raw fitting error. Pair it with
+  unweighted measured loss and heldout true error.
+
+## Family Loss And Orthogonal Workload Innovation Note - 2026-06-17
+
+Task:
+
+- Clarify the meaning of family loss.
+- Explain why unweighted measured loss is much larger than weighted measured
+  loss.
+- Record that the orthogonal mixed family improvement is a candidate
+  innovation point.
+
+Explanation:
+
+- `family loss` is not a new objective. It is the same residual loss computed
+  on a subset of measured queries grouped by workload family:
+  - `oneway`;
+  - `twoway`;
+  - `prefix`;
+  - `range`;
+  - `mixed`;
+  - `orthogonal_kway_mixed`.
+- For a family query index set `F`:
+  - weighted family loss is
+    `0.5 * sum_{q in F} residual[q]^2 * inv_variance[q]`;
+  - unweighted family loss is
+    `0.5 * sum_{q in F} residual[q]^2`;
+  - family true RMSE is an offline evaluation metric against exact true
+    answers, and is not used by DP optimization.
+- Family losses decompose where the remaining residual comes from. They are
+  useful because total loss can hide that one workload family improved while
+  another family dominates the aggregate.
+
+Why Unweighted Loss Is Much Larger:
+
+- The current weighted loss divides squared residuals by the noise variance:
+  - `0.5 * residual[q]^2 / variance[q]`.
+- In the smoke DP setup, common noise variances are much larger than `1`:
+  - oneway/twoway `noise_std ~= 3.162`, variance `~= 10`;
+  - prefix/range `noise_std ~= 4.47` to `7.30`, variance `~= 20` to `53`;
+  - original mixed `noise_std ~= 5.48` to `8.66`, variance `~= 30` to `75`;
+  - orthogonal mixed `noise_std ~= 3.873`, variance `~= 15`.
+- Therefore weighted loss is often one order of magnitude smaller than
+  unweighted loss because each squared count residual is scaled by roughly
+  `1/10` to `1/75`.
+- This is a unit change: unweighted loss measures raw count residuals, while
+  weighted loss measures standardized residuals in noise units.
+
+Innovation Note:
+
+- The matched-count diagnostic shows that orthogonal mixed is especially strong
+  at the family level:
+  - original `mixed` final unweighted family loss: `62.692866258`;
+  - `orthogonal_kway_mixed` final unweighted family loss: `15.726940881`;
+  - original `mixed` family true RMSE: `0.004242641`;
+  - `orthogonal_kway_mixed` family true RMSE: `0.002969542`.
+- This should not be lost in the paper narrative. It supports a separate
+  measurement/workload-design contribution:
+  - construct orthogonal mixed query groups, especially disjoint range bins, so
+    group sensitivity stays `1`;
+  - lower measurement noise improves the usable projected target;
+  - QDTE then has a cleaner directional residual signal for evolution.
+- The caveat is that original random `mixed` predicates and
+  `orthogonal_kway_mixed` partition predicates are not identical query sets, so
+  final claims should include:
+  - matched query-count comparisons;
+  - common heldout workload evaluation;
+  - family-level weighted and unweighted diagnostics.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Not yet run for this documentation-only clarification.
+
+Next Recommended Task:
+
+- In the experiment summary/report table, always include total metrics and
+  family-level metrics for measured-loss variants:
+  - weighted measured loss;
+  - unweighted measured loss;
+  - RMS unweighted residual;
+  - offline true RMSE.
+
+## Matched A Unweighted Loss Diagnostic Run - 2026-06-17
+
+Task:
+
+- Re-run the matched original mixed vs orthogonal mixed A-scheme comparison
+  after adding unweighted measured-loss diagnostics.
+- Check whether orthogonal mixed's higher weighted measured loss is caused by
+  stricter inverse-variance weighting rather than larger absolute residuals.
+
+Setup:
+
+- Base config: `configs/smoke.yaml`.
+- Variant: `constructive_pair`.
+- Projection:
+  - `projection.consistency.enabled=true`;
+  - `projection.consistency.method=local_table_feasible_jax`;
+  - `projection.consistency.max_scope_cells=200000`;
+  - `projection.consistency.max_dense_constraint_cells=20000000`.
+- QDTE:
+  - `max_iters=2000`;
+  - `stop_patience=2000`;
+  - `log_every=200`;
+  - `candidate_diagnostics=false`.
+
+Runs:
+
+- Original mixed:
+  - output:
+    `outputs/exp_A_matched45_original_mixed_unweighteddiag_consistency2000_constructive_pair/`;
+  - total queries: `243`;
+  - mixed family queries: `45`.
+- Orthogonal mixed:
+  - output:
+    `outputs/exp_A_matched45_orthogonal_mixed_unweighteddiag_consistency2000_constructive_pair/`;
+  - total queries: `242`;
+  - orthogonal mixed family queries: `44`;
+  - `orthogonal_kway_mixed_range_bins=2`;
+  - `orthogonal_kway_mixed_scopes_per_order=6`.
+
+Total Results:
+
+| Run | Queries | Final weighted loss | Final unweighted loss | RMS standardized residual | RMS unweighted residual | Final true RMSE | Candidates scored | Accepted edits |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Original mixed | 243 | `2.318852357` | `75.859848591` | `0.138149211` | `0.790165105` | `0.002727697` | 512000 | 1458 |
+| Orthogonal mixed | 242 | `3.976314087` | `47.040555620` | `0.181279066` | `0.623510162` | `0.002338149` | 35072 | 942 |
+
+Mixed-Family Results:
+
+| Run | Family queries | Final weighted family loss | Final unweighted family loss | Family RMS unweighted residual | Family true RMSE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Original `mixed` | 45 | `1.102442674` | `62.692866258` | `1.669236236` | `0.004242641` |
+| `orthogonal_kway_mixed` | 44 | `1.048462780` | `15.726940881` | `0.845494500` | `0.002969542` |
+
+Interpretation:
+
+- The total weighted loss is higher for the orthogonal mixed run:
+  - `2.318852357 -> 3.976314087`.
+- The total unweighted measured residual loss is lower for the orthogonal mixed
+  run:
+  - `75.859848591 -> 47.040555620`.
+- Offline true RMSE is also lower:
+  - `0.002727697 -> 0.002338149`.
+- Therefore this run supports the hypothesis that the higher total weighted
+  loss mostly reflects stricter inverse-variance weighting / standardized
+  residuals, not worse absolute residual fit.
+- At the mixed-family level, orthogonal mixed is better under both weighted and
+  unweighted measured loss, but the family predicates are not identical between
+  original random mixed and orthogonal partition mixed.
+
+Weighting Note:
+
+- `inv_variance = 1 / variance` is a model-based default from Gaussian
+  measurement likelihood / weighted least squares, not an arbitrary constant.
+- It can still be studied as an algorithmic design choice. A natural ablation
+  is `weight[q] = inv_variance[q]^alpha`, where:
+  - `alpha=1` is the current statistically calibrated objective;
+  - `alpha=0` is unweighted residual optimization;
+  - `0 < alpha < 1` tempers aggressive variance weighting.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Experiment commands:
+  - `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_ablation.py --config configs/smoke.yaml --variant constructive_pair --run.output_dir outputs/exp_A_matched45_original_mixed_unweighteddiag_consistency2000 --projection.consistency.enabled true --projection.consistency.method local_table_feasible_jax --projection.consistency.max_scope_cells 200000 --projection.consistency.max_dense_constraint_cells 20000000 --qdte.max_iters 2000 --qdte.stop_patience 2000 --qdte.log_every 200 --qdte.candidate_diagnostics false --evaluation.save_synthetic_csv false --runtime.xla_preallocate false`
+  - `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_ablation.py --config configs/smoke.yaml --variant constructive_pair --run.output_dir outputs/exp_A_matched45_orthogonal_mixed_unweighteddiag_consistency2000 --workload.include_mixed false --workload.include_orthogonal_kway_mixed true --workload.orthogonal_kway_mixed_orders 2 --workload.orthogonal_kway_mixed_scopes_per_order 6 --workload.orthogonal_kway_mixed_range_bins 2 --workload.max_queries 400 --privacy.measurement_allocation.orthogonal_kway_mixed 0.20 --projection.consistency.enabled true --projection.consistency.method local_table_feasible_jax --projection.consistency.max_scope_cells 200000 --projection.consistency.max_dense_constraint_cells 20000000 --qdte.max_iters 2000 --qdte.stop_patience 2000 --qdte.log_every 200 --qdte.candidate_diagnostics false --evaluation.save_synthetic_csv false --runtime.xla_preallocate false`
+
+Next Recommended Task:
+
+- Add a scoring-weight tempering ablation, e.g. `score_weight_alpha`, and run
+  `alpha in {0, 0.5, 1}` to test whether calibrated weighting or tempered
+  weighting gives better true heldout RMSE for QDTE.
+
+## Unweighted Measured Loss Diagnostics - 2026-06-17
+
+Task:
+
+- Add an unweighted measured-loss diagnostic so experiments can show whether a
+  higher weighted measured loss is caused by larger absolute residuals or by
+  stricter inverse-variance weights.
+- Clarify that QDTE is not using backpropagation, but `edit_advantage` is the
+  closed-form one-step reduction of the weighted residual loss.
+
+Implementation:
+
+- Added metric helpers:
+  - `unweighted_measured_loss(residual) = 0.5 * sum_q residual[q]^2`;
+  - `rms_unweighted_residual(residual) = sqrt(mean_q residual[q]^2)`.
+- Added final metrics:
+  - `initial_unweighted_measured_loss`;
+  - `final_unweighted_measured_loss`;
+  - `unweighted_measured_loss_reduction`;
+  - `initial_rms_unweighted_residual`;
+  - `final_rms_unweighted_residual`.
+- Added timeseries columns:
+  - `unweighted_measured_loss`;
+  - `rms_unweighted_residual`.
+- Added family-level unweighted loss and RMS residual fields.
+- Added logs:
+  - per-logged-iteration `unweighted_loss=...`;
+  - final `Final unweighted measured loss: ...`.
+- Optimization behavior is unchanged. Candidate scoring still uses the original
+  weighted `edit_advantage` objective.
+
+Interpretation:
+
+- For a candidate edit, `answer_syn` changes by `delta`, so residual changes
+  from `r` to `r - delta`.
+- The weighted loss reduction is:
+  - `0.5 * sum_q (r[q]^2 - (r[q] - delta[q])^2) * inv_variance[q]`;
+  - equivalently
+    `delta @ (residual * inv_variance) - 0.5 * ((delta * delta) @ inv_variance)`.
+- This is exactly the current `edit_advantage` before subtracting
+  `lambda_cost * edit_cost`.
+- Therefore the loss definition matters even without gradients: it determines
+  which discrete edit has the highest expected objective decrease.
+
+Changed Files:
+
+- `qdte/eval/metrics.py`
+- `qdte/evolution/engine.py`
+- `tests/test_metrics.py`
+- `tests/test_engine_smoke.py`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -m py_compile qdte/eval/metrics.py qdte/evolution/engine.py tests/test_metrics.py tests/test_engine_smoke.py`
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -m pytest -q tests/test_metrics.py tests/test_engine_smoke.py`
+  - `7 passed in 3.60s`
+- `git diff --check`
+
+Next Recommended Task:
+
+- Re-run the matched original mixed vs orthogonal mixed A-scheme experiment and
+  compare both `final_measured_loss` and `final_unweighted_measured_loss`.
+- If needed, add a separate ablation where scoring uses unweighted
+  `inv_variance = 1` to test whether weighted scoring itself changes
+  optimization quality.
+
+## Weighted Loss Affects Discrete Optimization - 2026-06-17
+
+Task:
+
+- Clarify whether the loss definition matters when QDTE is not trained by
+  backpropagation.
+
+Explanation:
+
+- QDTE is not a gradient/backpropagation method, but the measured objective
+  still affects optimization directly through the discrete edit score.
+- Candidate edits are ranked by edit advantage:
+  - `delta[q] = phi_q(x_new) - phi_q(x_old)`;
+  - `edit advantage = delta @ (residual * inv_variance) - 0.5 * ((delta * delta) @ inv_variance) - lambda_cost * edit_cost`.
+- This formula is exactly the one-step decrease of the weighted measured loss
+  up to edit cost. Therefore changing `inv_variance` changes which candidate
+  edits look beneficial.
+- Noise scale also affects active query selection because active priorities use
+  standardized residuals such as `abs(residual) / sigma` and noise-threshold
+  tests such as `abs(residual) > kappa_noise * sigma`.
+- Therefore the weighted loss is not just a reporting metric. It participates
+  in:
+  - active query selection;
+  - candidate generation for residual/weighted compilers;
+  - candidate scoring and acceptance;
+  - query debt/collateral-damage accounting;
+  - stopping behavior when no query is above the noise threshold.
+- An unweighted objective is possible as an ablation, but it would be a
+  different algorithmic choice: it would treat noisy high-variance measurements
+  as equally reliable as low-variance measurements.
+
+Current Status:
+
+- This clarification is now documented.
+- No source code changed.
+
+Tests Run:
+
+- `git diff --check`
+
+Next Recommended Task:
+
+- If this remains uncertain, add an ablation that scores edits with
+  `inv_variance = 1` while keeping the DP target fixed, then compare true
+  heldout RMSE and measured loss under the original weighted metric.
+
+## Measured Loss And Noise Variance Interpretation - 2026-06-17
+
+Task:
+
+- Clarify whether and how DP measurement noise affects QDTE measured loss.
+
+Explanation:
+
+- QDTE measured loss is:
+  - `residual[q] = target_projected[q] - answer_syn[q]`;
+  - `measured_loss = 0.5 * sum_q residual[q]^2 * inv_variance[q]`.
+- The inverse-variance weight is used because the noisy/projected target is a
+  measurement with known uncertainty, not an exact answer. Under independent
+  Gaussian measurement noise, this is the weighted least-squares / maximum
+  likelihood objective:
+  - `0.5 * (target_projected[q] - answer_syn[q])^2 / variance[q]`.
+- Using an unweighted squared loss would implicitly assume all query
+  measurements have equal variance. That is only equivalent when all variances
+  are the same up to a constant.
+- Intuitively, the weighted loss measures residuals in units of noise standard
+  deviations:
+  - a residual of `5` against `noise_std=10` is weak evidence of mismatch;
+  - a residual of `5` against `noise_std=1` is strong evidence of mismatch.
+- DP noise affects `measured_loss` in two ways:
+  - it changes the optimized target through `target_noisy` and
+    `target_projected`;
+  - it changes the per-query weight through
+    `inv_variance[q] = 1 / variance[q]`.
+- Lower-sensitivity group measurement has smaller noise variance, so the same
+  absolute residual is penalized more heavily in measured loss.
+- Therefore measured losses from different measurement designs are not always
+  directly comparable unless the query set and variances are comparable.
+- Offline true MAE/RMSE are computed only for evaluation and are the better
+  way to compare whether a new measurement scheme improves actual synthetic
+  quality in DP experiments.
+
+Current Status:
+
+- This interpretation is now documented.
+- No source code changed.
+
+Tests Run:
+
+- Not run; documentation-only clarification.
+
+Next Recommended Task:
+
+- For future measurement-scheme comparisons, report both weighted measured
+  loss and unweighted true/target residual metrics, preferably on a common
+  held-out query set.
+
+## Matched-Count A Scheme Orthogonal Mixed Pilot - 2026-06-17
+
+Task:
+
+- Re-run the A scheme comparison after matching the number of mixed-like
+  measured queries.
+- The concern was that the previous orthogonal mixed run used `88` mixed-like
+  queries versus `45` original mixed queries, which could itself provide more
+  information.
+
+Setup:
+
+- Base config: `configs/smoke.yaml`.
+- Variant: `constructive_pair`.
+- Projection:
+  - `projection.consistency.enabled=true`;
+  - `projection.consistency.method=local_table_feasible_jax`;
+  - `projection.consistency.max_scope_cells=200000`;
+  - `projection.consistency.max_dense_constraint_cells=20000000`.
+- QDTE:
+  - `max_iters=2000`;
+  - `stop_patience=2000`;
+  - `total_candidates_per_iter=256`;
+  - `accepted_per_iter=8`;
+  - `candidate_diagnostics=false`.
+
+Matched Runs:
+
+- Original random mixed:
+  - output: `outputs/exp_A_matched45_original_mixed_consistency2000_constructive_pair/`;
+  - total queries: `243`;
+  - mixed-like queries: `45`;
+  - mixed group sensitivity: `sqrt(2)` to `sqrt(5)`;
+  - mixed group noise std: `5.477` to `8.660`.
+- Orthogonal mixed:
+  - output: `outputs/exp_A_matched45_orthogonal_mixed_consistency2000_constructive_pair/`;
+  - total queries: `242`;
+  - mixed-like queries: `44`;
+  - used `orthogonal_kway_mixed_range_bins=2`;
+  - all orthogonal mixed group sensitivities: `1`;
+  - orthogonal mixed group noise std: `3.873`.
+
+Result:
+
+| Run | Total queries | Mixed-like queries | Final measured loss | Final true MAE | Final true RMSE | Candidates scored | Accepted edits |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A + original random mixed | 243 | 45 | `2.278054872` | `0.002020576` | `0.002725433` | 512000 | 1456 |
+| A + orthogonal mixed | 242 | 44 | `3.976314087` | `0.001805785` | `0.002338149` | 35072 | 942 |
+
+Family-level result:
+
+| Run | Family | Family queries | Final family measured loss | Final family true RMSE |
+| --- | --- | ---: | ---: | ---: |
+| Original random mixed | `mixed` | 45 | `1.118008105` | `0.004234777` |
+| Orthogonal mixed | `orthogonal_kway_mixed` | 44 | `1.048462780` | `0.002969542` |
+
+Interpretation:
+
+- After matching query counts, the orthogonal mixed measurement still improves
+  offline true error on this seed:
+  - total final true RMSE: `0.002725433 -> 0.002338149`;
+  - total final true MAE: `0.002020576 -> 0.001805785`.
+- The mixed-like family itself also improves in true RMSE:
+  - `0.004234777 -> 0.002969542`.
+- The orthogonal run's measured loss is higher despite lower true RMSE because
+  the lower-noise orthogonal measurements have larger `inv_variance`, so the
+  measured objective is stricter. It also stopped generating candidates after
+  residuals fell below the configured noise threshold, scoring only `35072`
+  candidates versus `512000` for the original mixed run.
+- This is still a one-seed pilot and the measured mixed predicates are not
+  identical predicates, but the query-count confound is substantially reduced.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- No unit tests were run in this task because no source code changed.
+- Experiment commands:
+  - `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_ablation.py --config configs/smoke.yaml --variant constructive_pair --run.output_dir outputs/exp_A_matched45_original_mixed_consistency2000 --projection.consistency.enabled true --projection.consistency.method local_table_feasible_jax --projection.consistency.max_scope_cells 200000 --projection.consistency.max_dense_constraint_cells 20000000 --qdte.max_iters 2000 --qdte.stop_patience 2000 --qdte.log_every 200 --qdte.candidate_diagnostics false --evaluation.save_synthetic_csv false --runtime.xla_preallocate false`
+  - `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_ablation.py --config configs/smoke.yaml --variant constructive_pair --run.output_dir outputs/exp_A_matched45_orthogonal_mixed_consistency2000 --workload.include_mixed false --workload.include_orthogonal_kway_mixed true --workload.orthogonal_kway_mixed_orders 2 --workload.orthogonal_kway_mixed_scopes_per_order 6 --workload.orthogonal_kway_mixed_range_bins 2 --workload.max_queries 400 --privacy.measurement_allocation.orthogonal_kway_mixed 0.20 --projection.consistency.enabled true --projection.consistency.method local_table_feasible_jax --projection.consistency.max_scope_cells 200000 --projection.consistency.max_dense_constraint_cells 20000000 --qdte.max_iters 2000 --qdte.stop_patience 2000 --qdte.log_every 200 --qdte.candidate_diagnostics false --evaluation.save_synthetic_csv false --runtime.xla_preallocate false`
+
+Current Status:
+
+- The query-count-matched pilot continues to support the orthogonal mixed
+  measurement scheme.
+- Exact `45` orthogonal mixed queries would require truncating a partition or
+  adding a partial group; this run kept complete partitions, yielding `44`
+  mixed-like queries.
+
+Next Recommended Task:
+
+- Run a multi-seed matched-count comparison and evaluate both methods on a
+  common held-out workload, so the final claim is not tied to different
+  measured query predicates.
+
+## A Scheme With Orthogonal Mixed Measurement Pilot - 2026-06-17
+
+Task:
+
+- Test whether the lower-sensitivity orthogonal mixed measurement scheme helps
+  downstream true error after consistency projection.
+- Run the original A scheme, i.e. `run_ablation.py --variant constructive_pair`.
+
+Setup:
+
+- Base config: `configs/smoke.yaml`.
+- Variant: `constructive_pair`.
+- Projection:
+  - `projection.consistency.enabled=true`;
+  - `projection.consistency.method=local_table_feasible_jax`;
+  - `projection.consistency.max_scope_cells=200000`;
+  - `projection.consistency.max_dense_constraint_cells=20000000`.
+- QDTE:
+  - `max_iters=2000`;
+  - `stop_patience=2000`;
+  - `total_candidates_per_iter=256`;
+  - `accepted_per_iter=8`;
+  - `candidate_diagnostics=false`.
+
+Runs:
+
+- Orthogonal mixed measurement:
+  - output: `outputs/exp_A_orthogonal_mixed_consistency2000_constructive_pair/`;
+  - disabled random `mixed`;
+  - enabled `orthogonal_kway_mixed`;
+  - `orthogonal_kway_mixed_orders=2`;
+  - `orthogonal_kway_mixed_scopes_per_order=6`;
+  - `orthogonal_kway_mixed_range_bins=4`;
+  - `privacy.measurement_allocation.orthogonal_kway_mixed=0.20`.
+- Current-code original mixed baseline:
+  - output: `outputs/exp_A_original_mixed_consistency2000_constructive_pair/`;
+  - original random `mixed` workload;
+  - exact group-sensitivity refinement enabled by current builder.
+
+Results:
+
+| Run | Queries | Mixed-like family | Mixed-like queries | Mixed-like sensitivity | Final measured loss | Final true MAE | Final true RMSE | Accepted edits |
+| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: |
+| A + original random mixed | 243 | `mixed` | 45 | `sqrt(2)` to `sqrt(5)` | `2.278054872` | `0.002020576` | `0.002725433` | 1456 |
+| A + orthogonal mixed | 286 | `orthogonal_kway_mixed` | 88 | `1` for every mixed group | `2.850210873` | `0.001723776` | `0.002239974` | 1235 |
+
+Family-level observation:
+
+- Original random `mixed` final true RMSE: `0.004234777`.
+- Orthogonal mixed family final true RMSE: `0.002402650`.
+- These two family numbers are not exactly apples-to-apples because the query
+  set changed from random overlapping predicates to Cartesian partition cells,
+  but the direction is favorable.
+
+Interpretation:
+
+- On this seed and smoke setup, the lower-sensitivity orthogonal mixed
+  measurement plus consistency projection improves final offline true error:
+  - total final true RMSE improves from `0.002725433` to `0.002239974`;
+  - total final true MAE improves from `0.002020576` to `0.001723776`.
+- The final measured loss is lower for the original mixed run, but it is not a
+  clean comparison because the workload query set and query count differ.
+- The mixed group noise scale confirms the intended mechanism:
+  - original random mixed groups have sensitivity between `sqrt(2)` and
+    `sqrt(5)`, with noise std `5.477` to `8.660`;
+  - orthogonal mixed groups all have sensitivity `1`, with noise std `3.873`
+    under the same per-group rho.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- No unit tests were run in this task because no source code changed.
+- Experiment commands:
+  - `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_ablation.py --config configs/smoke.yaml --variant constructive_pair --run.output_dir outputs/exp_A_orthogonal_mixed_consistency2000 --workload.include_mixed false --workload.include_orthogonal_kway_mixed true --workload.orthogonal_kway_mixed_orders 2 --workload.orthogonal_kway_mixed_scopes_per_order 6 --workload.orthogonal_kway_mixed_range_bins 4 --workload.max_queries 400 --privacy.measurement_allocation.orthogonal_kway_mixed 0.20 --projection.consistency.enabled true --projection.consistency.method local_table_feasible_jax --projection.consistency.max_scope_cells 200000 --projection.consistency.max_dense_constraint_cells 20000000 --qdte.max_iters 2000 --qdte.stop_patience 2000 --qdte.log_every 200 --qdte.candidate_diagnostics false --evaluation.save_synthetic_csv false --runtime.xla_preallocate false`
+  - `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_ablation.py --config configs/smoke.yaml --variant constructive_pair --run.output_dir outputs/exp_A_original_mixed_consistency2000 --projection.consistency.enabled true --projection.consistency.method local_table_feasible_jax --projection.consistency.max_scope_cells 200000 --projection.consistency.max_dense_constraint_cells 20000000 --qdte.max_iters 2000 --qdte.stop_patience 2000 --qdte.log_every 200 --qdte.candidate_diagnostics false --evaluation.save_synthetic_csv false --runtime.xla_preallocate false`
+
+Current Status:
+
+- The pilot supports the hypothesis that orthogonal mixed measurement can
+  reduce downstream true error after consistency projection.
+- The result is one seed and not a fully fair workload-matched experiment,
+  because the random mixed and orthogonal mixed query sets differ.
+
+Next Recommended Task:
+
+- Run a matched multi-seed ablation where evaluation includes a common held-out
+  query set for both measurement schemes.
+- Consider adding an orthogonal standalone range workload so range and mixed
+  measurement can both exploit partition sensitivity.
+
+## Orthogonal K-Way Mixed Workload Construction - 2026-06-17
+
+Task:
+
+- Add an orthogonal query construction scheme for mixed equality/range
+  workloads.
+- Keep the existing random `mixed` and `kway_mixed` generators unchanged for
+  ablation comparisons.
+- Clarify why orthogonal halfspace groups require a query-representation
+  extension.
+
+Implemented:
+
+- Added `include_orthogonal_kway_mixed`.
+  - Family: `orthogonal_kway_mixed`.
+  - Samples k-way mixed scopes containing at least one categorical and one
+    numerical attribute.
+  - Categorical attributes are expanded into all equality cells.
+  - Numerical attributes are expanded into equal-width disjoint `OP_RANGE`
+    intervals.
+  - The Cartesian product of those cells is a mutually exclusive and complete
+    partition over the selected scope.
+  - Each generated `WorkloadGroup` has `sensitivity_l2=1` and
+    `is_partition=True`.
+- Added controls:
+  - `orthogonal_kway_mixed_orders`, default `[2]`;
+  - `orthogonal_kway_mixed_scopes_per_order`, default `4` in ordinary workload
+    summary and `16` in held-out defaults;
+  - `orthogonal_kway_mixed_range_bins`, default `4`;
+  - `orthogonal_kway_mixed_max_cells_per_group`, default `4096`.
+- Added the new family to workload summaries and held-out workload defaults.
+- Added regression coverage proving a 2-way categorical/range partition creates
+  four disjoint queries with group sensitivity `1`.
+
+DP/Noise Rationale:
+
+- For a group answer vector, the relevant sensitivity is:
+  `sqrt(max_x number_of_group_queries_satisfied_by_x)`.
+- The orthogonal construction makes that maximum equal to `1`.
+- This means a whole equality/range partition can be measured as a vector with
+  the same zCDP Gaussian noise scale as one scalar query.
+
+Halfspace Status:
+
+- Orthogonal halfspace groups are not implemented in this change.
+- The current `QueryCatalogue` represents one cumulative halfspace predicate:
+  `sum_i w_i x_i <= t`.
+- Equal-width thresholds over that score are still nested/cumulative queries,
+  not mutually exclusive queries.
+- A true sensitivity-1 halfspace partition needs either:
+  - a linear slab predicate, e.g. `lo < sum_i w_i x_i <= hi`; or
+  - halfspace-tree leaf predicates, i.e. conjunctions of halfspace decisions.
+- Either path requires extending query representation, JAX evaluation, delta
+  scoring, GPU repair/scoring, and possibly consistency projection.
+
+Changed Files:
+
+- `qdte/queries/workload.py`
+- `qdte/evolution/engine.py`
+- `tests/test_workload.py`
+- `README.md`
+- `architecture.md`
+- `architecture_zh.md`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -m py_compile qdte/queries/workload.py qdte/evolution/engine.py tests/test_workload.py`
+  - passed
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q tests/test_workload.py tests/test_measurement.py`
+  - `18 passed in 1.51s`
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_qdte.py --config configs/smoke.yaml --run.output_dir outputs/smoke_orthogonal_kway_mixed_probe --workload.include_oneway false --workload.include_2way_cat false --workload.include_prefix false --workload.include_range false --workload.include_mixed false --workload.include_kway false --workload.include_kway_prefix false --workload.include_kway_range false --workload.include_kway_mixed false --workload.include_orthogonal_kway_mixed true --workload.orthogonal_kway_mixed_orders 2 --workload.orthogonal_kway_mixed_scopes_per_order 1 --workload.orthogonal_kway_mixed_range_bins 4 --workload.max_queries 64 --privacy.measurement_allocation.orthogonal_kway_mixed 1.0 --qdte.max_iters 3 --qdte.stop_patience 3 --qdte.log_every 1 --evaluation.save_synthetic_csv false --runtime.xla_preallocate false`
+  - passed
+  - workload: `20` queries, `1` `orthogonal_kway_mixed` group
+  - measurement group: sensitivity `1`, rho `1`, noise std `0.707107`
+  - final measured loss: `93636.5`
+  - candidates scored: `768`
+  - accepted edits: `24`
+
+Current Status:
+
+- The code now has both random overlapping mixed workloads and an orthogonal
+  equality/range mixed workload construction.
+- The orthogonal equality/range construction can be used to test whether
+  lower group sensitivity improves total query error and downstream QDTE
+  convergence.
+
+Next Recommended Task:
+
+- Run a controlled ablation comparing `kway_mixed` versus
+  `orthogonal_kway_mixed` at matched scope/order/query budgets.
+- Design the halfspace-slab representation if orthogonal halfspace partitions
+  remain important for the paper.
+
+## Exact Group Sensitivity For Orthogonal Workloads - 2026-06-17
+
+Task:
+
+- Correct the DP sensitivity used when grouped queries are orthogonal.
+- Explain why the previous `kway_mixed` smoke reported sensitivity `4`.
+
+Implemented:
+
+- Added exact `WorkloadGroup` L2 sensitivity refinement in
+  `qdte/queries/workload.py`.
+- The refinement enumerates the finite public query scope and computes:
+  - `max_overlap = max_x number_of_group_queries_satisfied_by_x`;
+  - `sensitivity_l2 = sqrt(max_overlap)`.
+- This uses only schema/cardinality and query definitions, not private data.
+- It is controlled by `workload.exact_group_sensitivity_max_cells`, default
+  `200000`.
+- If the group scope is too large to enumerate, the builder keeps the previous
+  conservative sensitivity.
+- Orthogonal equality workloads now get sensitivity `1`, as expected.
+- Overlapping prefix/range/mixed workloads get their actual maximum overlap
+  when the scope is enumerable.
+
+Important Correction:
+
+- The earlier `kway_mixed` smoke reported sensitivity `4` because non-partition
+  groups were initialized with the conservative `sqrt(group_size)` bound.
+- That was safe but too noisy, and it did not exploit orthogonality.
+- Re-running the same 16-query `kway_mixed` smoke after exact refinement gives
+  sensitivity `1.41421`, because the sampled mixed predicates are not fully
+  orthogonal but have maximum overlap `2`.
+- A same-scope k-way equality cell workload now has sensitivity `1`.
+
+Changed Files:
+
+- `qdte/queries/workload.py`
+- `tests/test_workload.py`
+- `README.md`
+- `architecture.md`
+- `architecture_zh.md`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -m py_compile qdte/queries/workload.py tests/test_workload.py`
+  - passed
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q tests/test_workload.py tests/test_measurement.py`
+  - `17 passed in 1.49s`
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_qdte.py --config configs/smoke.yaml --run.output_dir outputs/smoke_kway_mixed_sensitivity_probe --workload.include_oneway false --workload.include_2way_cat false --workload.include_prefix false --workload.include_range false --workload.include_mixed false --workload.include_kway false --workload.include_kway_prefix false --workload.include_kway_range false --workload.include_kway_mixed true --workload.kway_mixed_orders 4 --workload.kway_mixed_queries_per_order 16 --workload.max_queries 32 --privacy.measurement_allocation.kway_mixed 1.0 --qdte.max_iters 3 --qdte.stop_patience 3 --qdte.log_every 1 --evaluation.save_synthetic_csv false --runtime.xla_preallocate false`
+  - passed
+  - workload: `16` queries, `1` `kway_mixed` group
+  - measurement group: sensitivity `1.41421`, rho `1`, noise std `1`
+  - final measured loss: `9174.93`
+  - candidates scored: `768`
+  - accepted edits: `24`
+
+Current Status:
+
+- Grouped DP measurement now exploits orthogonality when the group query scope
+  is enumerable.
+- The previous `sqrt(group_size)` behavior remains only as a fallback for
+  too-large scopes.
+
+Next Recommended Task:
+
+- Decide whether high-order sampled workloads should be grouped by exact scope
+  to expose more orthogonal subgroups and possibly improve the budget/noise
+  tradeoff.
+
+## K-Way Mixed Workloads And Group Measurement - 2026-06-17
+
+Task:
+
+- Answer whether `k-way-mixed` and grouped query noise are implemented.
+- Implement missing `kway_mixed` workload support and document the actual
+  group-noise semantics.
+
+Implemented:
+
+- Added `include_kway_mixed`.
+  - Family: `kway_mixed`.
+  - Generates sampled k-way conjunctions.
+  - Categorical attributes use `OP_EQ`.
+  - Numerical attributes use randomly sampled `OP_LE` prefix or `OP_RANGE`
+    range terms.
+  - Requires at least one numerical attribute in each sampled query and allows
+    multiple numerical terms in the same query.
+  - Controlled by `kway_mixed_orders` and
+    `kway_mixed_queries_per_order`.
+- Extended workload summaries and held-out workload defaults so
+  `kway_mixed` controls are preserved in run artifacts.
+- Added regression coverage for `kway_mixed` query generation.
+- Added regression coverage for grouped DP measurement calibration.
+
+Group Measurement Status:
+
+- The static DP measurement path already measures per `WorkloadGroup`.
+- For each group, `measure_real_dataset` computes the group answer vector and
+  calls the zCDP Gaussian mechanism calibrated by:
+  - the group's `sensitivity_l2`;
+  - the rho allocated to that group's family, divided across groups in that
+    family.
+- Current semantics are independent Gaussian coordinates with the same
+  standard deviation inside a group, and diagonal variance bookkeeping.
+- This is not adaptive select-measure-generate yet; `measurement_mode` is still
+  `static_all`.
+
+Changed Files:
+
+- `qdte/queries/workload.py`
+- `qdte/evolution/engine.py`
+- `tests/test_workload.py`
+- `tests/test_measurement.py`
+- `README.md`
+- `architecture.md`
+- `architecture_zh.md`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -m py_compile qdte/queries/workload.py qdte/evolution/engine.py tests/test_workload.py tests/test_measurement.py`
+  - passed
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q tests/test_workload.py tests/test_measurement.py`
+  - `16 passed in 1.47s`
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_qdte.py --config configs/smoke.yaml --run.output_dir outputs/smoke_kway_mixed_workload_probe --workload.include_oneway false --workload.include_2way_cat false --workload.include_prefix false --workload.include_range false --workload.include_mixed false --workload.include_kway false --workload.include_kway_prefix false --workload.include_kway_range false --workload.include_kway_mixed true --workload.kway_mixed_orders 4 --workload.kway_mixed_queries_per_order 16 --workload.max_queries 32 --privacy.measurement_allocation.kway_mixed 1.0 --qdte.max_iters 3 --qdte.stop_patience 3 --qdte.log_every 1 --evaluation.save_synthetic_csv false --runtime.xla_preallocate false`
+  - passed
+  - workload: `16` queries, `1` `kway_mixed` group
+  - measurement group: sensitivity `4`, rho `1`, noise std `2.82843`
+  - final measured loss: `1146.75`
+  - candidates scored: `768`
+  - accepted edits: `24`
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q`
+  - `160 passed in 11.76s`
+- `git diff --check`
+  - passed
+
+Current Status:
+
+- `kway`, `kway_prefix`, `kway_range`, and `kway_mixed` are implemented and
+  disabled by default.
+- Enabling `kway_mixed` in DP mode requires
+  `privacy.measurement_allocation.kway_mixed`.
+- Grouped query noise is implemented for static workload groups with diagonal
+  variance bookkeeping.
+
+Next Recommended Task:
+
+- Add a named experiment config for expanded high-order workloads, including a
+  deliberate privacy allocation across `kway`, `kway_prefix`, `kway_range`,
+  `kway_mixed`, and existing low-order families.
+- Decide whether future adaptive measurement needs correlated group covariance
+  bookkeeping or whether the current diagonal zCDP group mechanism is
+  sufficient for the first paper experiments.
+
+## Configurable K-Way Workloads - 2026-06-17
+
+Task:
+
+- Add configurable high-order workload families beyond the previous fixed
+  two-way/mixed construction.
+
+Implemented:
+
+- Added `include_kway`.
+  - Family: `kway`.
+  - Generates sampled k-way equality conjunctions.
+  - Controlled by `kway_orders` and `kway_queries_per_order`.
+- Added `include_kway_prefix`.
+  - Family: `kway_prefix`.
+  - Generates sampled k-way conjunctions with one numeric `OP_LE` prefix term
+    and equality terms on the remaining attributes.
+  - Controlled by `kway_prefix_orders` and
+    `kway_prefix_queries_per_order`.
+- Added `include_kway_range`.
+  - Family: `kway_range`.
+  - Generates sampled k-way conjunctions with one numeric `OP_RANGE` term and
+    equality terms on the remaining attributes.
+  - Controlled by `kway_range_orders` and `kway_range_queries_per_order`.
+- Extended `run_qdte` workload summaries and held-out workload config defaults
+  so the new family controls are preserved in run artifacts.
+
+Important Usage Note:
+
+- These new families are disabled by default.
+- In DP mode, enabling any of them requires adding matching
+  `privacy.measurement_allocation` entries for `kway`, `kway_prefix`, and/or
+  `kway_range`; otherwise measurement budget allocation correctly fails fast.
+- The local-table consistency projection already supports these queries through
+  the existing `QueryCatalogue` `EQ/LE/RANGE` representation, subject to
+  `projection.consistency.max_scope_cells`.
+
+Changed Files:
+
+- `qdte/queries/workload.py`
+- `qdte/evolution/engine.py`
+- `tests/test_workload.py`
+- `README.md`
+- `architecture.md`
+- `architecture_zh.md`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -m py_compile qdte/queries/workload.py tests/test_workload.py`
+  - passed
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q tests/test_workload.py`
+  - `3 passed in 0.04s`
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_qdte.py --config configs/smoke.yaml --run.output_dir outputs/smoke_kway_workload_probe --workload.include_oneway false --workload.include_2way_cat false --workload.include_prefix false --workload.include_range false --workload.include_mixed false --workload.include_kway true --workload.include_kway_prefix true --workload.include_kway_range true --workload.kway_orders 3 --workload.kway_prefix_orders 3 --workload.kway_range_orders 4 --workload.kway_queries_per_order 12 --workload.kway_prefix_queries_per_order 12 --workload.kway_range_queries_per_order 12 --workload.max_queries 60 --privacy.measurement_allocation.kway 0.34 --privacy.measurement_allocation.kway_prefix 0.33 --privacy.measurement_allocation.kway_range 0.33 --qdte.max_iters 3 --qdte.stop_patience 3 --qdte.log_every 1 --evaluation.save_synthetic_csv false --runtime.xla_preallocate false`
+  - passed
+  - workload: `36` queries, with `12` each for `kway`, `kway_prefix`, and
+    `kway_range`
+  - initial measured loss: `542.61`
+  - final measured loss: `370.4288896128588`
+  - candidates scored: `768`
+  - accepted edits: `24`
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q`
+  - `158 passed in 10.33s`
+
+Current Status:
+
+- Workload generation now supports configurable high-order equality, prefix,
+  and range conjunctions.
+- Existing configs are unchanged because the new families default to disabled.
+
+Next Recommended Task:
+
+- Add a final experiment config that enables these families at a controlled
+  order/query budget and allocates privacy budget across the expanded family
+  set.
+
+## Completed Algorithm Components Summary - 2026-06-17
+
+Task:
+
+- Summarize which algorithmic components of QDTE are currently completed.
+
+Completed Algorithm Parts:
+
+- Query/workload layer:
+  - supports `oneway`, `twoway`, `prefix`, `range`, `mixed`, `kway`,
+    `kway_prefix`, `kway_range`, `kway_mixed`,
+    `orthogonal_kway_mixed`, and `halfspace`;
+  - `QueryCatalogue` represents ordinary `EQ/LE/GE/RANGE` conjunctions and
+    linear halfspace predicates.
+- DP measurement layer:
+  - static-all DP measurement with zCDP Gaussian noise;
+  - per-family/group budget allocation and `rho_spent` reporting;
+  - DP boundary keeps exact true answers evaluation-only.
+- Projection layer:
+  - simplex projection for partition groups;
+  - clipping and prefix monotonicity projection;
+  - query-space LSQ/feasible LSQ consistency projection;
+  - local-table feasible consistency projection with CPU SLSQP and JAX dense
+    active-set variants;
+  - halfspace queries are included in local-table consistency via scope masks.
+- Single-dataset QDTE generation layer:
+  - objective invariants implemented:
+    `residual = target_projected - answer_syn`,
+    measured loss, candidate delta, and edit advantage;
+  - active query selection using noisy/projected residuals and variances;
+  - CPU directed enter/exit candidate repair;
+  - CPU variants for masked, paired, exit-side, residual-weighted,
+    enumerated-local, constructive partner, protected repair, and bounded
+    best-partner diagnostics;
+  - exact single-edit and aggregate edit-advantage scoring;
+  - microbatch greedy, atom-flow, random group, directed group, and
+    constructive-pair transports;
+  - incremental residual update with recompute drift checks.
+- Current practical generator:
+  - A `constructive_pair_accept_anneal32` is the leading practical smoke
+    generator under projected targets;
+  - A can be explained as efficient pool-based/implicit partner construction.
+- Interpretability/diagnostic generator:
+  - D `bounded_best_partner` explicitly searches partner edits for harmed
+    queries;
+  - D is useful for mechanism explanation but remains slower than A.
+- GPU/high-throughput layer:
+  - fused `jax_repair` / `gpu_repair` candidate generation and scoring;
+  - dense GPU, query-block GPU, and sparse-delta GPU scoring;
+  - multi-word query-scope bitsets remove the old 31-attribute sparse GPU
+    limitation;
+  - GPU fused single-query repair now supports halfspace enter/exit.
+- Evaluation/experiment support:
+  - measured-loss and per-family metrics;
+  - offline true-query and held-out evaluation;
+  - candidate diagnostics;
+  - ablation scripts and experiment-plan documents.
+
+Not Yet Completed:
+
+- Reusable select-measure-generate artifact boundary.
+- Adaptive measurement/query selection with privacy accounting.
+- Outer dataset-level population evolution wrapping inner QDTE/A.
+- Exact upstream Private-GSD integration as a paper baseline.
+- Downstream ML evaluation and public schema loader.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Documentation summary only; no tests were run.
+
+Current Status:
+
+- The completed core is a single-dataset, residual-directed QDTE generator with
+  consistency-projected DP targets and extensive ablation variants.
+- The next algorithmic build should be the SMG boundary, then the outer
+  dataset-population evolution layer.
+
+Next Recommended Task:
+
+- Refactor or wrap `run_qdte` into reusable select/measure/project/generate
+  phases so multiple generators and future population individuals can consume
+  the same measured target artifact.
+
+## Halfspace Consistency Projection Clarification - 2026-06-17
+
+Question:
+
+- Whether halfspace queries are included in the consistency projection together
+  with other query families.
+
+Answer:
+
+- Yes. Halfspace support was already wired into the measurement/projection
+  layer before the GPU fused repair change.
+- In `qdte/measurement/consistency.py`, `_query_scope` includes both ordinary
+  query terms and `qcat.linear_terms(qid)`, so a halfspace query is assigned to
+  the local table over its linear attributes.
+- `_mask_indices` turns a halfspace predicate into the subset of local-table
+  cells satisfying `sum_i weight_i * x[attr_i] <= threshold`.
+- For `local_table_feasible_lsq` and `local_table_feasible_jax`, halfspace
+  query masks are included in the same weighted measurement matrix as the other
+  queries, and overlapping scopes are tied by shared marginal equality
+  constraints.
+- Therefore a halfspace such as `(a + x <= 2)` and one-way queries on `a` are
+  reconciled through overlapping local scopes, subject to the configured
+  `projection.consistency.max_scope_cells` limit.
+
+Changed Files:
+
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- Documentation clarification only; no tests were run for this answer.
+
+Current Status:
+
+- The recent GPU fused repair work changed candidate generation/scoring support
+  for halfspace, not the consistency projection layer.
+- The key caveat remains scope size: high-dimensional halfspace queries can make
+  their local table too large and will fail fast if they exceed
+  `projection.consistency.max_scope_cells`.
+
+## GPU Fused Halfspace Repair - 2026-06-17
+
+Task:
+
+- Implement halfspace support in the high-throughput GPU fused candidate repair
+  path.
+
+Implemented:
+
+- Added JAX halfspace scoring/repair helpers in
+  `qdte/evolution/gpu_candidates.py`.
+- `_eval_candidate_source_satisfaction` now evaluates both ordinary
+  `EQ/LE/GE/RANGE` terms and halfspace linear predicates when filtering GPU
+  source draws.
+- `_repair_directed_rows` now applies directed halfspace enter/exit repair:
+  - positive residuals reduce the halfspace linear score until
+    `score <= threshold` when feasible;
+  - negative residuals increase the score until `score > threshold` when
+    feasible;
+  - exit repair keeps the existing random-mutation fallback when a halfspace
+    cannot be exited by directed linear-term changes.
+- GPU dense and query-block scoring now pass `linear_attrs`,
+  `linear_weights`, `linear_thresholds`, and `linear_num_terms` into
+  `eval_records_queries_arrays`, so halfspace predicates are included in
+  `dense_gpu` scoring as well as `sparse_delta_gpu`.
+- Removed the config-validation fail-fast that previously rejected
+  `workload.include_halfspace=true` with `candidate_backend=jax_repair` or
+  `gpu_repair`.
+- Added two small performance optimizations:
+  - source filtering now skips the linear halfspace loop when the active batch
+    has no halfspace queries;
+  - halfspace-only active batches skip the ordinary `EQ/LE/GE/RANGE` repair
+    loop, and halfspace repair reuses gathered linear query arrays across its
+    greedy repair steps.
+
+Scope:
+
+- Supported now:
+  - `candidate_backend: jax_repair` / `gpu_repair`;
+  - default `candidate_compiler: single_query`;
+  - `score_backend: dense_gpu` and `sparse_delta_gpu`;
+  - halfspace-only queries and mixed catalogues containing halfspace queries.
+- Still CPU-only:
+  - structured compilers other than `single_query`, such as paired/masked/D
+    variants, because config validation already requires those compilers to use
+    `candidate_backend=cpu_repair`.
+
+Changed Files:
+
+- `qdte/evolution/gpu_candidates.py`
+- `qdte/config_validation.py`
+- `tests/test_gpu_candidates.py`
+- `tests/test_config_validation.py`
+- `README.md`
+- `architecture.md`
+- `architecture_zh.md`
+- `docs/HANDOFF.md`
+
+Tests Run:
+
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte python -m py_compile qdte/evolution/gpu_candidates.py qdte/config_validation.py tests/test_gpu_candidates.py tests/test_config_validation.py`
+  - passed
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q tests/test_gpu_candidates.py tests/test_config_validation.py`
+  - `65 passed in 4.78s`
+- `/home/qianqiu/.anaconda3/bin/conda run -n qdte pytest -q`
+  - `156 passed in 10.44s`
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_qdte.py --config configs/smoke.yaml --run.output_dir outputs/smoke_halfspace_gpu_repair_probe --workload.include_halfspace true --workload.halfspace_queries 8 --privacy.measurement_allocation.oneway 0.20 --privacy.measurement_allocation.twoway 0.20 --privacy.measurement_allocation.prefix 0.15 --privacy.measurement_allocation.range 0.15 --privacy.measurement_allocation.mixed 0.15 --privacy.measurement_allocation.halfspace 0.15 --qdte.candidate_backend jax_repair --qdte.score_backend sparse_delta_gpu --qdte.total_candidates_per_iter 256 --qdte.num_active_targets 8 --qdte.max_iters 5 --qdte.stop_patience 5 --qdte.log_every 1 --runtime.use_pmap true --runtime.xla_preallocate false`
+  - passed
+  - initial measured loss: `3458.04`
+  - final measured loss: `2628.71`
+  - candidates scored: `1280`
+  - accepted edits: `40`
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_qdte.py --config configs/smoke.yaml --run.output_dir outputs/smoke_halfspace_gpu_repair_probe_opt --workload.include_halfspace true --workload.halfspace_queries 8 --privacy.measurement_allocation.oneway 0.20 --privacy.measurement_allocation.twoway 0.20 --privacy.measurement_allocation.prefix 0.15 --privacy.measurement_allocation.range 0.15 --privacy.measurement_allocation.mixed 0.15 --privacy.measurement_allocation.halfspace 0.15 --qdte.candidate_backend jax_repair --qdte.score_backend sparse_delta_gpu --qdte.total_candidates_per_iter 256 --qdte.num_active_targets 8 --qdte.max_iters 5 --qdte.stop_patience 5 --qdte.log_every 5 --runtime.use_pmap true --runtime.xla_preallocate false`
+  - passed
+  - final measured loss: `2628.707164028321`
+  - wall clock seconds: `7.051303271000506`
+  - candidates scored: `1280`
+  - accepted edits: `40`
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false /home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_qdte.py --config configs/smoke.yaml --run.output_dir outputs/smoke_gpu_repair_ordinary_probe_opt --qdte.candidate_backend jax_repair --qdte.score_backend sparse_delta_gpu --qdte.total_candidates_per_iter 256 --qdte.num_active_targets 8 --qdte.max_iters 5 --qdte.stop_patience 5 --qdte.log_every 5 --runtime.use_pmap true --runtime.xla_preallocate false`
+  - passed
+  - final measured loss: `3254.315521274113`
+  - wall clock seconds: `7.034338375000516`
+  - candidates scored: `1280`
+  - accepted edits: `40`
+
+Current Status:
+
+- GPU fused single-query candidate repair now supports halfspace workloads.
+- The old documentation statements that halfspace requires CPU repair are
+  superseded by this section.
+
+Next Recommended Task:
+
+- Run a short highpower workload with halfspace enabled and compare measured
+  loss/time against the CPU repair backend.
+- Use a longer warmup than the 5-step smoke probes before drawing performance
+  conclusions, because the short probes are dominated by JAX compilation.
+
 ## GitHub Sync Preparation - 2026-06-17
 
 Task:
@@ -5437,7 +10356,7 @@ score(x_old -> x_new) =
 
 - Objective math and sign convention are covered by focused tests.
 - DP measurement budget allocation, `rho_spent`, missing allocation failure, and no true-answer leakage in public measurement JSON are covered.
-- Workload/query evaluation supports `oneway`, `twoway`, `prefix`, `range`, `mixed`, and CPU-path `halfspace`.
+- Workload/query evaluation supports `oneway`, `twoway`, `prefix`, `range`, `mixed`, `kway`, `kway_prefix`, `kway_range`, `kway_mixed`, `orthogonal_kway_mixed`, and `halfspace`.
 - Consistency projection supports `EQ/LE/GE/RANGE` and halfspace masks through scope-local marginal tables, with fail-fast `max_scope_cells`.
 - Batch/exact atom-flow and sparse delta paths have unit coverage plus smoke/probe history.
 - Full test suite passes as of this audit.
@@ -5688,7 +10607,7 @@ projection:
   - workload construction supports `include_halfspace` and `halfspace_queries`;
   - CPU repair can enter/exit halfspace queries;
   - consistency projection maps halfspace masks to local scope marginal cells.
-- Added fail-fast validation for `include_halfspace: true` with `candidate_backend` set to `jax_repair`/`gpu_repair`, because GPU fused repair does not yet implement directed halfspace repair.
+- At that time, added fail-fast validation for `include_halfspace: true` with `candidate_backend` set to `jax_repair`/`gpu_repair`, because GPU fused repair did not yet implement directed halfspace repair. This historical limitation is superseded by the 2026-06-17 GPU fused halfspace repair update at the top of this file.
 - Documented the new projection in README and architecture docs.
 
 ### Changed Files

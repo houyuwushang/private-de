@@ -12,11 +12,17 @@
   - `prefix`
   - `range`
   - `mixed`
+  - `kway`
+  - `kway_prefix`
+  - `kway_range`
+  - `kway_mixed`
+  - `orthogonal_kway_mixed`
   - `halfspace`
 - 支持 DP measurement：
   - 使用 zCDP Gaussian mechanism 加噪。
   - 对 partition workload 可做 simplex projection。
   - 对非 partition counts 可做 clipping。
+  - 按 `WorkloadGroup` 同时测量一组查询：为每个 group 分配 rho，用该 group 的 L2 sensitivity 标定 vector Gaussian noise；当 group scope 可枚举时会按查询定义精确计算单条记录最大 overlap，正交 equality workload 的 sensitivity 为 `1`，当前记录的是 diagonal variances，组内坐标噪声独立同方差。
   - 支持 scope-local marginal consistency projection：把 `EQ/LE/GE/RANGE` 的任意维 conjunction 映射到局部 marginal table，强制非负、已知总行数 `N`、以及重叠 query scope 的边际一致性。
 - 支持 oracle mode，用于 debug 或上界实验，不应作为 DP 结果使用。
 - 支持 QDTE edit loop：
@@ -31,7 +37,7 @@
 - 支持默认严格的 noise threshold：未超过 `kappa_noise * sigma` 的 residual 默认不会触发候选生成。
 - 支持基础 debt scheduler 更新，用于记录 query-level collateral damage，并可通过 `debt_alpha` 影响后续 active query priority。
 - 支持 prefix monotonicity projection，可对 prefix measurement group 做 weighted isotonic projection。
-- 支持 halfspace 查询的 measurement、JAX/CPU evaluation、CPU repair candidate path 和 consistency projection；GPU fused repair backend 对 halfspace 仍会 fail-fast。
+- 支持 halfspace 查询的 measurement、JAX/CPU evaluation、CPU repair candidate path、GPU fused single-query repair path 和 consistency projection。
 - 支持 GPU-oriented candidate path：
   - `jax_repair` / `gpu_repair`
   - cached GPU query/schema context
@@ -62,6 +68,11 @@ edit advantage =
   - 0.5 * ((delta * delta) @ inv_variance)
   - lambda_cost * edit_cost
 ```
+
+当前主线配置使用 `qdte.objective_weighting: unweighted`，即生成阶段设置优化用
+`inv_variance[q] = 1`，直接拟合一致性投影后的 feasible target。measurement
+variances 仍会保留在输出中用于审计和加权消融；旧的 inverse-variance objective
+可通过 `qdte.objective_weighting: variance` 保留为 ablation。
 
 exact true answers 只能用于离线 evaluation metrics。它们不会用于 active query selection、candidate generation、scoring、transport、stopping 或 hyperparameter selection，也不会写入 `measurements.json`。
 
@@ -112,6 +123,47 @@ python scripts/run_qdte.py --config configs/adult_qdte.yaml --privacy.mode dp
   --qdte.stop_patience 1000
 ```
 
+Population-level 可选入口是：
+
+```bash
+/home/qianqiu/.anaconda3/bin/conda run -n qdte python scripts/run_population.py \
+  --config configs/smoke.yaml \
+  --run.output_dir outputs/smoke_population \
+  --population.size 4 \
+  --population.elite_count 1 \
+  --population.generations 10 \
+  --population.inner_iters 200 \
+  --population.parallel.enabled true \
+  --population.parallel.gpu_devices 0,1 \
+  --population.parallel.workers_per_gpu 1 \
+  --population.crossover.enabled true \
+  --population.crossover.mode context_aware \
+  --population.crossover.children 2
+```
+
+该入口先运行一次 DP measurement/projection，再让多个 QDTE 个体复用同一个
+`measurements.json`，最后按 measured objective 选择 elite。
+`population.generations=1` 保留一轮 restart/elite wrapper 行为；
+`population.generations>1` 会进入多代循环，每一代从上一代 elite clone、
+crossover child 和 restart 个体中重新运行内层 QDTE。
+`population.inner_iters` 是每个个体每一代的内层 QDTE 最大步数；若
+`qdte.stop_patience` 触发，个体会提前停止。当前版本支持两种 crossover：
+
+- `random_row`：从两个父 synthetic tables 随机抽取一部分 rows 生成 child；
+- `context_aware`：把 donor parent 的 rows 当作接收 parent 的候选
+  row-replacement edits，用接收 parent 的 residual 和 QDTE edit advantage
+  重新评分，只接受正收益 replacements。
+
+两种模式都会从生成的 child 继续运行 QDTE。candidate pool 不在不同 dataset
+之间共享打分结果；共享的是 donor rows，advantage 始终按接收 dataset 的
+residual 重新计算。
+
+`population.parallel.enabled=true` 会启动持久 GPU worker pool。每个 worker
+通过 `CUDA_VISIBLE_DEVICES` 绑定到 `population.parallel.gpu_devices` 中的
+一个 GPU slot，并在多代循环中持续复用同一个 Python/JAX 进程，避免每个
+dataset 反复初始化 JAX。当前推荐 `workers_per_gpu=1`；只有在确认单个 QDTE
+个体显存很低且 `runtime.xla_preallocate=false` 时，再尝试同一卡多个 worker。
+
 当前可选 candidate-generation variants 包括 `random_mutation`、`single_query`、`masked_single_query`、`paired_query`、`masked_paired_query`、`masked_exit_query`、`directed_exit_only`、`masked_exit_only` 和 `random_source_directed_exit`，其中多数也有 `_full` 或 `blind_` 消融形式。2026-06-10 的统一 1000-step smoke 消融显示：`random_mutation` 长跑 measured loss 最好；`masked_single_query` 略好于重跑的 `single_query` measured loss，但仍没有超过 random；full-budget paired 系列和 exit-only 系列更容易停滞或退化。
 
 ## 关键配置
@@ -120,6 +172,7 @@ python scripts/run_qdte.py --config configs/adult_qdte.yaml --privacy.mode dp
 
 `configs/adult_qdte.yaml` 是质量优先配置，当前使用：
 
+- `objective_weighting: unweighted`
 - `transport_mode: atom_flow`
 - `atom_flow_update_mode: batch`
 - `atom_flow_pool_multiplier: 16`
@@ -133,10 +186,11 @@ python scripts/run_qdte.py --config configs/adult_qdte.yaml --privacy.mode dp
 - `projection.consistency.enabled: true`
 - `projection.consistency.method: local_marginal_ipf`
 
-该投影使用已知行数作为硬约束：每个局部 marginal table 都满足非负且总和为 `N`，并通过重叠 scope 的 shared marginals 对齐 oneway/twoway/prefix/range/mixed 等查询之间的一致性。超出 `max_scope_cells` 的 scope 会 fail-fast，不会静默跳过。
+该投影使用已知行数作为硬约束：每个局部 marginal table 都满足非负且总和为 `N`，并通过重叠 scope 的 shared marginals 对齐 oneway/twoway/prefix/range/mixed/kway/kway_prefix/kway_range/kway_mixed/orthogonal_kway_mixed/halfspace 等查询之间的一致性。超出 `max_scope_cells` 的 scope 会 fail-fast，不会静默跳过。
 
 `configs/adult_qdte_gpu_highpower.yaml` 是吞吐优先配置，当前显式使用：
 
+- `objective_weighting: unweighted`
 - `score_backend: sparse_delta_gpu`
 - `candidate_backend: jax_repair`
 - `transport_mode: atom_flow`
@@ -179,12 +233,30 @@ evaluation:
     include_prefix: true
     include_range: true
     include_mixed: true
+    include_kway: false
+    include_kway_prefix: false
+    include_kway_range: false
+    include_kway_mixed: false
+    include_orthogonal_kway_mixed: false
     include_halfspace: false
     max_queries: 10000
     max_terms: 4
     max_2way_cells: 10000
     range_intervals_per_num_attr: 128
     mixed_queries_per_pair: 128
+    kway_orders: [3]
+    kway_prefix_orders: [3]
+    kway_range_orders: [3]
+    kway_mixed_orders: [3]
+    orthogonal_kway_mixed_orders: [2]
+    kway_queries_per_order: 128
+    kway_prefix_queries_per_order: 128
+    kway_range_queries_per_order: 128
+    kway_mixed_queries_per_order: 128
+    orthogonal_kway_mixed_scopes_per_order: 16
+    orthogonal_kway_mixed_range_bins: 4
+    orthogonal_kway_mixed_max_cells_per_group: 4096
+    exact_group_sensitivity_max_cells: 200000
     random_seed: 10000
 ```
 
@@ -264,7 +336,9 @@ sparse-delta GPU 50-iter scoring time: about 14.26s
 
 ## 当前限制
 
-- halfspace 的 GPU fused candidate repair 尚未实现；`include_halfspace: true` 目前需要 `qdte.candidate_backend: cpu_repair`。
+- `kway`、`kway_prefix`、`kway_range`、`kway_mixed`、`orthogonal_kway_mixed` 默认关闭。启用后需要在 `privacy.measurement_allocation` 中给对应 family 分配预算，否则 DP measurement 会 fail-fast。
+- `orthogonal_kway_mixed` 用完整 equality/range Cartesian partition 构造互斥 mixed queries；range term 来自等分的 disjoint intervals，因此每个 group 的 sensitivity 为 `1`。当前 halfspace query 仍是单阈值 `<=` 表示，不能直接表达互斥 linear slabs。
+- halfspace 的 GPU fused single-query candidate repair 已支持 `jax_repair` / `gpu_repair`。复杂 CPU-only compilers 仍需要 `qdte.candidate_backend: cpu_repair`。
 - `sparse_delta_gpu` 已使用 multi-word `uint32` query-scope bitsets，去掉了原先 31 个 encoded attributes 的单 word 限制；仍需保证 `gpu_sparse_changed_attr_capacity` 覆盖候选可能修改的属性数。
 - 没有 adaptive query selection。
 - 没有 public schema loader。

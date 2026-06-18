@@ -10,6 +10,7 @@ from qdte.evolution.transport import (
     choose_blind_transport,
     choose_constructive_pair_transport,
     choose_directed_group_transport,
+    choose_directed_group_transport_jax,
     choose_random_group_transport,
     choose_transport_batch,
     select_nonconflicting_in_order,
@@ -355,5 +356,44 @@ def test_directed_group_transport_builds_compensating_group() -> None:
     assert set(result.accepted_indices.tolist()) == {0, 1}
     assert np.allclose(result.delta_sum, np.asarray([1.0, 0.0], dtype=np.float32))
     assert result.batch_advantage > 0.0
+    assert result.diagnostics["directed_group_positive_groups"] >= 1
+    assert result.diagnostics["directed_group_accepted_candidates"] == 2
+
+
+def test_directed_group_transport_jax_builds_compensating_group() -> None:
+    builder = QueryBuilder(max_terms=1)
+    builder.add([(0, OP_EQ, 1, 1, 1)], "a=1", "oneway:0", "oneway")
+    builder.add([(1, OP_EQ, 1, 1, 1)], "b=1", "oneway:1", "oneway")
+    qcat = builder.build()
+    candidates = CandidateBatch(
+        row_ids=np.asarray([0, 1], dtype=np.int32),
+        old_rows=np.asarray([[0, 0], [0, 1]], dtype=np.int32),
+        new_rows=np.asarray([[1, 1], [0, 0]], dtype=np.int32),
+        target_query_ids=np.asarray([0, 1], dtype=np.int32),
+        edit_cost=np.zeros(2, dtype=np.float32),
+        repair_type=np.ones(2, dtype=np.int32),
+    )
+    residual = np.asarray([0.8, -0.2], dtype=np.float32)
+    inv_variance = np.ones(2, dtype=np.float32)
+    advantages = np.asarray([-0.4, -0.3], dtype=np.float32)
+
+    result = choose_directed_group_transport_jax(
+        candidates,
+        advantages,
+        residual,
+        inv_variance,
+        lambda_cost=0.0,
+        qcat=qcat,
+        max_accept=2,
+        min_advantage=0.0,
+        seed_count=2,
+        min_group_size=2,
+        max_group_size=2,
+    )
+
+    assert set(result.accepted_indices.tolist()) == {0, 1}
+    assert np.allclose(result.delta_sum, np.asarray([1.0, 0.0], dtype=np.float32))
+    assert result.batch_advantage > 0.0
+    assert result.diagnostics["directed_group_jax_mode"] == 1
     assert result.diagnostics["directed_group_positive_groups"] >= 1
     assert result.diagnostics["directed_group_accepted_candidates"] == 2

@@ -1,7 +1,7 @@
 run:
   dataset_name: adult
   input_csv: /home/qianqiu/rerun-experiment/dataset/adult.csv
-  output_dir: outputs/adult_qdte_gpu_highpower
+  output_dir: outputs/adult_qdte_gpu_highpower_directed_group
   seed: 0
   device: gpu
 
@@ -59,10 +59,27 @@ qdte:
   objective_weighting: unweighted
   score_backend: sparse_delta_gpu
   candidate_backend: jax_repair
-  transport_mode: atom_flow
-  atom_flow_update_mode: batch
-  atom_flow_pool_multiplier: 16
-  atom_flow_max_pool: 0
+  transport_mode: directed_group
+  directed_group_backend: jax
+  directed_group_positive_fill: true
+  directed_group_positive_fill_augment: true
+  directed_group_positive_fill_augment_trigger: adaptive
+  directed_group_positive_fill_augment_threshold: 64
+  directed_group_positive_fill_augment_max_loss: 0.0
+  directed_group_positive_fill_augment_noise_floor_ratio: 2.0
+  directed_group_positive_fill_augment_plateau_window: 100
+  directed_group_positive_fill_augment_plateau_relative_drop: 0.01
+  directed_group_augment_seed_count: 16
+  directed_group_augment_min_size: 1
+  directed_group_augment_max_size: 8
+  directed_group_augment_pool_multiplier: 0
+  directed_group_augment_max_pool: 512
+  directed_group_seed_count: 32
+  directed_group_min_size: 1
+  directed_group_max_size: 8
+  directed_group_pool_multiplier: 0
+  directed_group_max_pool: 8192
+  directed_group_allow_negative_steps: true
   transport_delta_backend: jax_prefix
   transport_prefix_strategy: best_advantage
   max_iters: 500

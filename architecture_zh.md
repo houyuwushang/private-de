@@ -54,6 +54,7 @@ Adult 数据集默认可靠 DP 配置。
 - `privacy.delta: 1.0e-9`
 - `privacy.measurement_mode: static_all`
 - `qdte.candidate_backend` 未显式设置，因此 engine 默认使用 `cpu_repair`
+- `qdte.objective_weighting: unweighted`
 - `qdte.score_backend: dense_gpu`
 - `qdte.transport_mode: atom_flow`
 - `qdte.atom_flow_update_mode: batch`
@@ -63,7 +64,9 @@ Adult 数据集默认可靠 DP 配置。
 - `qdte.total_candidates_per_iter: 4096`
 - `qdte.accepted_per_iter: 64`
 
-这是当前质量优先的默认基线配置。
+这是当前质量优先的默认基线配置。`objective_weighting: unweighted` 是当前单层
+QDTE 主线：生成阶段直接最小化投影后目标统计和合成数据统计之间的 raw
+residual。`variance` 模式仍保留为 inverse-variance 消融。
 
 ### `configs/adult_qdte_gpu_highpower.yaml`
 
@@ -72,6 +75,7 @@ Adult 数据集默认可靠 DP 配置。
 关键配置：
 
 - 输出目录：`outputs/adult_qdte_gpu_highpower`
+- `qdte.objective_weighting: unweighted`
 - `qdte.candidate_backend: jax_repair`
 - `qdte.score_backend: sparse_delta_gpu`
 - `qdte.transport_mode: atom_flow`
@@ -265,6 +269,11 @@ sum_i weight_i * x[attr_i] <= threshold
 - `prefix`
 - `range`
 - `mixed`
+- `kway`
+- `kway_prefix`
+- `kway_range`
+- `kway_mixed`
+- `orthogonal_kway_mixed`
 - `halfspace`
 
 每个 `WorkloadGroup` 包含：
@@ -274,9 +283,23 @@ sum_i weight_i * x[attr_i] <= threshold
 - `sensitivity_l2`
 - `is_partition`
 
+可配置的高阶 family：
+
+- `kway`：采样 k-way equality conjunction。
+- `kway_prefix`：采样 k-way conjunction，其中一个 numeric prefix term，其余属性为 equality 条件。
+- `kway_range`：采样 k-way conjunction，其中一个 numeric range term，其余属性为 equality 条件。
+- `kway_mixed`：采样 k-way conjunction；categorical 属性使用 equality term，numerical 属性使用 prefix/range term，允许同一个 query 内包含多个 numerical 条件。
+- `orthogonal_kway_mixed`：采样 k-way mixed scope 后展开成完整 Cartesian partition；categorical 维度使用所有 equality cells，numerical 维度使用等分的 disjoint range intervals。每个 group 内查询互斥，L2 sensitivity 为 `1`。
+
+它们通过 `include_kway`、`include_kway_prefix`、`include_kway_range`、`include_kway_mixed`、`include_orthogonal_kway_mixed`、对应的 `*_orders` 和 `*_queries_per_order` 或 `*_scopes_per_order` 控制。DP 模式下启用后，也需要在 `privacy.measurement_allocation` 中给对应 family 分配预算。
+
+DP measurement 按 `WorkloadGroup` 加噪：先计算该 group 的 answer vector，再用该 group 的 L2 sensitivity 和分配到的 rho 标定 Gaussian mechanism。`build_workload` 会只根据公开 schema 和 query 定义，在 group scope 不超过 `workload.exact_group_sensitivity_max_cells` 时精确枚举单条记录的最大 query overlap。因此正交 equality workload 的 sensitivity 是 `1`；prefix/range/mixed 这类会重叠的 workload 使用 `sqrt(max_overlap)`。scope 太大时退回保守的 group sensitivity。当前实现记录 diagonal variances；组内坐标使用独立同方差 Gaussian 噪声。
+
 one-way 和部分 two-way 这类 partition groups 可以投影到 simplex，使非负 counts 之和等于真实数据行数。
 
-Halfspace 查询已支持 measurement、evaluation、CPU repair 和 consistency projection。GPU fused candidate repair 会对 `include_halfspace: true` fail-fast，因为该 backend 还没有实现 directed halfspace repair。
+Halfspace 查询已支持 measurement、evaluation、CPU repair、GPU fused single-query repair 和 consistency projection。
+
+正交 halfspace group 还没有实现。当前 catalogue 只能表示单个 linear threshold `sum_i w_i x_i <= t`，这类查询是 cumulative 且互相重叠的。真正正交的 halfspace partition 需要 linear slab 谓词 `lo < sum_i w_i x_i <= hi`，或者 halfspace tree leaf 的 conjunction；这需要扩展 query 表示、JAX evaluation 和 GPU 路径。
 
 ### JAX query evaluation
 
@@ -339,7 +362,7 @@ answer(q) = sum_{cell satisfies q} mu_scope[cell]
 marginal(mu_S over S∩T) = marginal(mu_T over S∩T)
 ```
 
-这覆盖当前已实现的 `oneway`、`twoway`、`prefix`、`range`、`mixed`、`halfspace` query，以及 adaptive 外循环未来加入的任意维 supported conjunction。若某个 scope 的 cell 数超过 `projection.consistency.max_scope_cells`，代码会 fail-fast，而不是静默跳过一致性投影。
+这覆盖当前已实现的 `oneway`、`twoway`、`prefix`、`range`、`mixed`、`kway`、`kway_prefix`、`kway_range`、`kway_mixed`、`orthogonal_kway_mixed`、`halfspace` query，以及 adaptive 外循环未来加入的任意维 supported conjunction。若某个 scope 的 cell 数超过 `projection.consistency.max_scope_cells`，代码会 fail-fast，而不是静默跳过一致性投影。
 
 当前 projection 后仍保留 diagonal variance 表示；完整的 post-projection covariance propagation 还没有实现。
 
@@ -442,7 +465,7 @@ qdte:
 - `score_backend: dense_gpu` 时，在 GPU 上用 boolean enter/exit masks 计算等价的 dense query delta 贡献，减少 float32 delta 临时张量压力。
 - dense path 可选地按 `gpu_score_query_block_size` 对 query 维度分块累加 score，避免一次性形成完整的 candidate x query 临时矩阵。
 - `score_backend: sparse_delta_gpu` 时，预先构造 attribute-to-query affected index 和 multi-word query scope bitsets；每个 edit 只遍历 changed attrs 对应的 query blocks，并用 bitset 去重同一 query 被多个 changed attrs 重复计入的问题。
-- sparse GPU path 支持 `QueryCatalogue` 中普通 k-way `EQ/LE/GE/RANGE` conjunction；高吞吐 GPU repair 仍不支持 directed halfspace repair，因此 halfspace workload 搭配 GPU candidate backend 会 fail-fast。
+- sparse GPU path 支持 `QueryCatalogue` 中普通 k-way `EQ/LE/GE/RANGE` conjunction 和 halfspace query；高吞吐 GPU repair 已支持 single-query directed halfspace enter/exit。复杂结构化 compiler 仍是 CPU-only。
 - 在 GPU 上给所有 generated candidates 打分。
 - 可选地通过 `gpu_return_top_k` 只返回 local top-k candidates。
 - 可选地通过 `gpu_batches_per_iter` 在同一个 QDTE iteration 内运行多个 GPU scoring batch。
@@ -785,7 +808,7 @@ outputs/adult_qdte_gpu_highpower
 - 默认路径优先保证最终质量和可靠性。
 - 高吞吐路径优先提高 GPU occupancy 和候选评分吞吐。
 - 当前只实现了 `measurement_mode=static_all`。adaptive select-measure-generate 在这个版本中会被 `NotImplementedError` 明确拒绝。
-- `include_halfspace` 已支持 measurement/evaluation/CPU repair/consistency projection；GPU fused candidate repair 对 halfspace 仍未实现，会在配置验证中 fail-fast。
+- `include_halfspace` 已支持 measurement/evaluation/CPU repair/GPU fused single-query repair/consistency projection。
 - consistency projection 后仍使用 diagonal variance 表示；完整 covariance propagation 还没有实现。
 - `sparse_delta_gpu` 使用 multi-word `uint32` query-scope bitsets，旧版 31 encoded-attribute 限制已移除。仍需保证 `gpu_sparse_changed_attr_capacity` 覆盖候选可能修改的属性数。
 - 仓库还没有 dependency manifest；当前测试和运行依赖本机 `qdte` conda 环境。

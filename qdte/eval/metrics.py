@@ -11,6 +11,18 @@ def measured_loss(residual: np.ndarray, inv_variance: np.ndarray) -> float:
     return float(0.5 * np.sum(r * r * inv))
 
 
+def unweighted_measured_loss(residual: np.ndarray) -> float:
+    r = residual.astype(np.float64)
+    return float(0.5 * np.sum(r * r))
+
+
+def rms_unweighted_residual(residual: np.ndarray) -> float:
+    r = residual.astype(np.float64)
+    if r.size == 0:
+        return 0.0
+    return float(math.sqrt(float(np.mean(r * r))))
+
+
 def rms_standardized_residual(loss: float, num_queries: int) -> float:
     if num_queries <= 0:
         return 0.0

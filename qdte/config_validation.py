@@ -29,6 +29,8 @@ def validate_config(config: dict[str, Any]) -> None:
     init = _section(config, "init")
     qdte = _section(config, "qdte")
     projection = _section(config, "projection")
+    measurement = _section(config, "measurement")
+    population = _section(config, "population")
 
     measurement_mode = str(privacy.get("measurement_mode", "static_all")).lower()
     if measurement_mode != "static_all":
@@ -36,11 +38,21 @@ def validate_config(config: dict[str, Any]) -> None:
             "Only privacy.measurement_mode=static_all is implemented. "
             "adaptive_select_measure/select-measure-generate is not implemented in this version."
         )
+    reuse_from = measurement.get("reuse_from", measurement.get("artifact_dir"))
+    if reuse_from is not None and str(reuse_from) == "":
+        raise ValueError("measurement.reuse_from must be a non-empty path when provided")
 
     heldout_workload = evaluation.get("heldout_workload", {})
     if heldout_workload is not None:
         if not isinstance(heldout_workload, dict):
             raise ValueError("evaluation.heldout_workload must be a mapping")
+    oracle_bias = evaluation.get("oracle_projection_bias", {})
+    if oracle_bias is not None:
+        if not isinstance(oracle_bias, dict):
+            raise ValueError("evaluation.oracle_projection_bias must be a mapping")
+        if bool(oracle_bias.get("enabled", False)):
+            if int(oracle_bias.get("num_samples", 32)) <= 1:
+                raise ValueError("evaluation.oracle_projection_bias.num_samples must be greater than 1")
 
     if bool(evaluation.get("downstream_ml", False)):
         raise NotImplementedError("evaluation.downstream_ml=true is not implemented")
@@ -48,11 +60,6 @@ def validate_config(config: dict[str, Any]) -> None:
     candidate_backend = str(qdte.get("candidate_backend", "cpu_repair"))
     score_backend = str(qdte.get("score_backend", "dense_gpu"))
     candidate_compiler = str(qdte.get("candidate_compiler", "single_query"))
-    if bool(workload.get("include_halfspace", False)) and candidate_backend in {"jax_repair", "gpu_repair"}:
-        raise NotImplementedError(
-            "workload.include_halfspace=true currently requires qdte.candidate_backend=cpu_repair; "
-            "GPU fused candidate repair for halfspace is not implemented"
-        )
     if score_backend == "sparse_delta_gpu" and candidate_backend not in {"jax_repair", "gpu_repair"}:
         raise ValueError("qdte.score_backend='sparse_delta_gpu' requires qdte.candidate_backend to be jax_repair or gpu_repair")
     if candidate_compiler != "single_query" and candidate_backend in {"jax_repair", "gpu_repair"}:
@@ -114,6 +121,27 @@ def validate_config(config: dict[str, Any]) -> None:
                     raise ValueError("projection.consistency.max_dense_constraint_cells must be positive")
             if float(consistency.get("tolerance", 1.0e-2)) < 0.0:
                 raise ValueError("projection.consistency.tolerance must be non-negative")
+
+    uncertainty = projection.get("uncertainty", {})
+    if uncertainty is not None:
+        if not isinstance(uncertainty, dict):
+            raise ValueError("projection.uncertainty must be a mapping")
+        if bool(uncertainty.get("enabled", False)):
+            method = str(uncertainty.get("method", "bootstrap_diagonal"))
+            if method != "bootstrap_diagonal":
+                raise ValueError("projection.uncertainty.method must be 'bootstrap_diagonal'")
+            if int(uncertainty.get("num_samples", 32)) <= 1:
+                raise ValueError("projection.uncertainty.num_samples must be greater than 1")
+            center = str(uncertainty.get("center", "projected")).lower()
+            if center not in {"projected", "noisy"}:
+                raise ValueError("projection.uncertainty.center must be 'projected' or 'noisy'")
+            if float(uncertainty.get("min_variance", 1.0e-6)) <= 0.0:
+                raise ValueError("projection.uncertainty.min_variance must be positive")
+            if float(uncertainty.get("min_raw_variance_fraction", 0.0)) < 0.0:
+                raise ValueError("projection.uncertainty.min_raw_variance_fraction must be non-negative")
+            debias_alpha = float(uncertainty.get("debias_alpha", 1.0))
+            if debias_alpha < 0.0 or debias_alpha > 1.0:
+                raise ValueError("projection.uncertainty.debias_alpha must be in [0, 1]")
 
     init_method = init.get("method")
     if init_method is not None and str(init_method) != "independent_oneway":
@@ -200,6 +228,34 @@ def validate_config(config: dict[str, Any]) -> None:
     )
     _validate_choice(
         qdte,
+        "directed_group_backend",
+        {"cpu", "jax", "gpu"},
+        "cpu",
+        "qdte.directed_group_backend",
+    )
+    _validate_choice(
+        qdte,
+        "directed_group_positive_fill_augment_trigger",
+        {"always", "loss_gate", "adaptive"},
+        "loss_gate",
+        "qdte.directed_group_positive_fill_augment_trigger",
+    )
+    _validate_choice(
+        qdte,
+        "constructive_pair_group_augment_trigger",
+        {"always", "loss_gate", "adaptive"},
+        "adaptive",
+        "qdte.constructive_pair_group_augment_trigger",
+    )
+    _validate_choice(
+        qdte,
+        "objective_weighting",
+        {"variance", "unweighted"},
+        "variance",
+        "qdte.objective_weighting",
+    )
+    _validate_choice(
+        qdte,
         "accepted_per_iter_schedule",
         {"fixed", "none", "linear", "cosine", "exponential"},
         "fixed",
@@ -281,6 +337,31 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("qdte.constructive_pair_harm_query_limit must be non-negative")
     if "constructive_pair_max_units" in qdte and int(qdte["constructive_pair_max_units"]) < 0:
         raise ValueError("qdte.constructive_pair_max_units must be non-negative")
+    if (
+        "constructive_pair_group_augment_threshold" in qdte
+        and int(qdte["constructive_pair_group_augment_threshold"]) < 0
+    ):
+        raise ValueError("qdte.constructive_pair_group_augment_threshold must be non-negative")
+    if (
+        "constructive_pair_group_augment_max_loss" in qdte
+        and float(qdte["constructive_pair_group_augment_max_loss"]) < 0.0
+    ):
+        raise ValueError("qdte.constructive_pair_group_augment_max_loss must be non-negative")
+    if (
+        "constructive_pair_group_augment_noise_floor_ratio" in qdte
+        and float(qdte["constructive_pair_group_augment_noise_floor_ratio"]) < 0.0
+    ):
+        raise ValueError("qdte.constructive_pair_group_augment_noise_floor_ratio must be non-negative")
+    if (
+        "constructive_pair_group_augment_plateau_window" in qdte
+        and int(qdte["constructive_pair_group_augment_plateau_window"]) < 0
+    ):
+        raise ValueError("qdte.constructive_pair_group_augment_plateau_window must be non-negative")
+    if (
+        "constructive_pair_group_augment_plateau_relative_drop" in qdte
+        and float(qdte["constructive_pair_group_augment_plateau_relative_drop"]) < 0.0
+    ):
+        raise ValueError("qdte.constructive_pair_group_augment_plateau_relative_drop must be non-negative")
     if "random_group_count" in qdte and int(qdte["random_group_count"]) <= 0:
         raise ValueError("qdte.random_group_count must be positive")
     if "random_group_min_size" in qdte and int(qdte["random_group_min_size"]) <= 0:
@@ -301,6 +382,43 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("qdte.directed_group_pool_multiplier must be non-negative")
     if "directed_group_max_pool" in qdte and int(qdte["directed_group_max_pool"]) < 0:
         raise ValueError("qdte.directed_group_max_pool must be non-negative")
+    if (
+        "directed_group_positive_fill_augment_threshold" in qdte
+        and int(qdte["directed_group_positive_fill_augment_threshold"]) < 0
+    ):
+        raise ValueError("qdte.directed_group_positive_fill_augment_threshold must be non-negative")
+    if (
+        "directed_group_positive_fill_augment_max_loss" in qdte
+        and float(qdte["directed_group_positive_fill_augment_max_loss"]) < 0.0
+    ):
+        raise ValueError("qdte.directed_group_positive_fill_augment_max_loss must be non-negative")
+    if (
+        "directed_group_positive_fill_augment_noise_floor_ratio" in qdte
+        and float(qdte["directed_group_positive_fill_augment_noise_floor_ratio"]) < 0.0
+    ):
+        raise ValueError("qdte.directed_group_positive_fill_augment_noise_floor_ratio must be non-negative")
+    if (
+        "directed_group_positive_fill_augment_plateau_window" in qdte
+        and int(qdte["directed_group_positive_fill_augment_plateau_window"]) < 0
+    ):
+        raise ValueError("qdte.directed_group_positive_fill_augment_plateau_window must be non-negative")
+    if (
+        "directed_group_positive_fill_augment_plateau_relative_drop" in qdte
+        and float(qdte["directed_group_positive_fill_augment_plateau_relative_drop"]) < 0.0
+    ):
+        raise ValueError("qdte.directed_group_positive_fill_augment_plateau_relative_drop must be non-negative")
+    if "directed_group_augment_seed_count" in qdte and int(qdte["directed_group_augment_seed_count"]) < 0:
+        raise ValueError("qdte.directed_group_augment_seed_count must be non-negative")
+    if "directed_group_augment_min_size" in qdte and int(qdte["directed_group_augment_min_size"]) <= 0:
+        raise ValueError("qdte.directed_group_augment_min_size must be positive")
+    if "directed_group_augment_max_size" in qdte and int(qdte["directed_group_augment_max_size"]) < 0:
+        raise ValueError("qdte.directed_group_augment_max_size must be non-negative")
+    if "directed_group_augment_pool_multiplier" in qdte and int(qdte["directed_group_augment_pool_multiplier"]) < 0:
+        raise ValueError("qdte.directed_group_augment_pool_multiplier must be non-negative")
+    if "directed_group_augment_max_pool" in qdte and int(qdte["directed_group_augment_max_pool"]) < 0:
+        raise ValueError("qdte.directed_group_augment_max_pool must be non-negative")
+    if "encoded_npy" in init and str(init["encoded_npy"]) == "":
+        raise ValueError("init.encoded_npy must be a non-empty path when provided")
     if "constructive_partner_seed_fraction" in qdte:
         value = float(qdte["constructive_partner_seed_fraction"])
         if value < 0.0 or value > 1.0:
@@ -336,6 +454,53 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("qdte.best_partner_seed_batch_size must be positive")
     if "best_partner_cached_verify_margin" in qdte and float(qdte["best_partner_cached_verify_margin"]) < 0.0:
         raise ValueError("qdte.best_partner_cached_verify_margin must be non-negative")
+
+    if bool(population.get("enabled", False)):
+        if int(population.get("size", 4)) <= 0:
+            raise ValueError("population.size must be positive")
+        if int(population.get("elite_count", 1)) <= 0:
+            raise ValueError("population.elite_count must be positive")
+        if int(population.get("elite_count", 1)) > int(population.get("size", 4)):
+            raise ValueError("population.elite_count must be less than or equal to population.size")
+        if int(population.get("generations", 1)) <= 0:
+            raise ValueError("population.generations must be positive")
+        if int(population.get("inner_iters", qdte.get("max_iters", 100))) < 0:
+            raise ValueError("population.inner_iters must be non-negative")
+        if int(population.get("seed_stride", 1000)) <= 0:
+            raise ValueError("population.seed_stride must be positive")
+        crossover = population.get("crossover", {})
+        if crossover is not None:
+            if not isinstance(crossover, dict):
+                raise ValueError("population.crossover must be a mapping")
+            mode = str(crossover.get("mode", population.get("crossover_mode", "random_row"))).lower()
+            if mode not in {"random_row", "context_aware"}:
+                raise ValueError("population.crossover.mode must be one of: random_row, context_aware")
+            if int(crossover.get("children", population.get("crossover_children", 0))) < 0:
+                raise ValueError("population.crossover.children must be non-negative")
+            fraction = float(crossover.get("fraction", population.get("crossover_fraction", 0.5)))
+            if fraction < 0.0 or fraction > 1.0:
+                raise ValueError("population.crossover.fraction must be in [0, 1]")
+            if int(crossover.get("parent_pool", population.get("crossover_parent_pool", 0))) < 0:
+                raise ValueError("population.crossover.parent_pool must be non-negative")
+            if int(crossover.get("candidates", population.get("crossover_candidates", 0))) < 0:
+                raise ValueError("population.crossover.candidates must be non-negative")
+            if int(crossover.get("max_edits", population.get("crossover_max_edits", 0))) < 0:
+                raise ValueError("population.crossover.max_edits must be non-negative")
+            if int(crossover.get("inner_iters", population.get("crossover_inner_iters", population.get("inner_iters", 0)))) < 0:
+                raise ValueError("population.crossover.inner_iters must be non-negative")
+        parallel = population.get("parallel", {})
+        if parallel is not None:
+            if not isinstance(parallel, dict):
+                raise ValueError("population.parallel must be a mapping")
+            if int(parallel.get("workers", population.get("parallel_workers", 0))) < 0:
+                raise ValueError("population.parallel.workers must be non-negative")
+            if int(parallel.get("workers_per_gpu", population.get("parallel_workers_per_gpu", 1))) <= 0:
+                raise ValueError("population.parallel.workers_per_gpu must be positive")
+            gpu_devices = parallel.get("gpu_devices", population.get("parallel_gpu_devices", "auto"))
+            if isinstance(gpu_devices, str) and gpu_devices.strip() == "":
+                raise ValueError("population.parallel.gpu_devices must be non-empty")
+            if isinstance(gpu_devices, (list, tuple)) and len(gpu_devices) == 0:
+                raise ValueError("population.parallel.gpu_devices must be non-empty")
     if "protected_repair_seed_fraction" in qdte:
         value = float(qdte["protected_repair_seed_fraction"])
         if value < 0.0 or value > 1.0:

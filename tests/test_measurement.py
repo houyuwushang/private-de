@@ -49,6 +49,36 @@ def test_measurement_noise_parameters() -> None:
     assert "true_answers_debug" not in m.to_public_dict()
 
 
+def test_dp_measurement_calibrates_noise_to_workload_group_vectors() -> None:
+    builder = QueryBuilder(max_terms=1)
+    builder.add([(0, OP_EQ, 0, 0, 0)], "a=0", "g0", "kway_mixed")
+    builder.add([(0, OP_EQ, 1, 1, 1)], "a=1", "g0", "kway_mixed")
+    builder.add([(0, OP_EQ, 2, 2, 2)], "a=2", "g1", "kway_mixed")
+    qcat = builder.build()
+    groups = [
+        WorkloadGroup("g0", "kway_mixed", np.asarray([0, 1], dtype=np.int32), math.sqrt(2.0), False),
+        WorkloadGroup("g1", "kway_mixed", np.asarray([2], dtype=np.int32), 1.0, False),
+    ]
+    X = np.asarray([[0], [1], [2], [2]], dtype=np.int32)
+    cfg = {
+        "privacy": {
+            "mode": "dp",
+            "rho_total": 2.0,
+            "delta": 1e-9,
+            "measurement_allocation": {"kway_mixed": 1.0},
+        },
+        "projection": {"project_partitions": False, "clip_nonpartition": False},
+    }
+
+    m = measure_real_dataset(X, qcat, groups, cfg, np.random.default_rng(0), batch_size=4)
+
+    assert [group.query_indices.tolist() for group in m.groups] == [[0, 1], [2]]
+    assert [group.rho for group in m.groups] == [1.0, 1.0]
+    assert np.allclose(m.variances[:2], 1.0)
+    assert math.isclose(float(m.variances[2]), 0.5)
+    assert math.isclose(m.rho_spent, 2.0)
+
+
 def test_oracle_measurement_is_exact() -> None:
     builder = QueryBuilder(max_terms=1)
     builder.add([(0, OP_EQ, 0, 0, 0)], "a=0", "oneway:0", "oneway")
@@ -151,6 +181,131 @@ def test_measurement_can_apply_query_space_feasible_lsq_consistency_projection()
     assert diagnostics["method"] == "query_space_feasible_lsq"
     assert np.all(m.target_projected >= -1.0e-6)
     assert np.all(m.target_projected <= 4.0 + 1.0e-6)
+    assert np.isclose(float(m.target_projected.sum()), 4.0, atol=1.0e-5)
+
+
+def test_projection_uncertainty_bootstrap_replaces_raw_variances() -> None:
+    builder = QueryBuilder(max_terms=1)
+    builder.add([(0, OP_EQ, 0, 0, 0)], "a=0", "oneway:0", "oneway")
+    builder.add([(0, OP_EQ, 1, 1, 1)], "a=1", "oneway:0", "oneway")
+    qcat = builder.build()
+    group = WorkloadGroup("oneway:0", "oneway", np.asarray([0, 1], dtype=np.int32), 1.0, True)
+    X = np.asarray([[0], [1], [1], [0]], dtype=np.int32)
+    cfg = {
+        "privacy": {"mode": "oracle", "oracle_variance": 4.0},
+        "projection": {
+            "project_partitions": False,
+            "clip_nonpartition": False,
+            "consistency": {"enabled": True, "method": "query_space_feasible_lsq"},
+            "uncertainty": {
+                "enabled": True,
+                "method": "bootstrap_diagonal",
+                "num_samples": 16,
+                "center": "projected",
+                "min_variance": 1.0e-6,
+            },
+        },
+    }
+
+    m = measure_real_dataset(
+        X,
+        qcat,
+        [group],
+        cfg,
+        np.random.default_rng(0),
+        batch_size=4,
+        cardinalities=np.asarray([2], dtype=np.int32),
+    )
+
+    diagnostics = m.to_public_dict()["projection_diagnostics"]["uncertainty"]
+    assert diagnostics["enabled"] is True
+    assert diagnostics["method"] == "bootstrap_diagonal"
+    assert diagnostics["num_samples"] == 16
+    assert np.all(m.variances > 0.0)
+    assert not np.allclose(m.variances, np.full(2, 4.0, dtype=np.float32))
+
+
+def test_projection_uncertainty_bootstrap_can_debias_projected_target() -> None:
+    builder = QueryBuilder(max_terms=1)
+    builder.add([(0, OP_EQ, 0, 0, 0)], "a=0", "oneway:0", "oneway")
+    builder.add([(0, OP_EQ, 1, 1, 1)], "a=1", "oneway:0", "oneway")
+    qcat = builder.build()
+    group = WorkloadGroup("oneway:0", "oneway", np.asarray([0, 1], dtype=np.int32), 1.0, True)
+    X = np.asarray([[0], [0], [0], [0]], dtype=np.int32)
+    cfg = {
+        "privacy": {"mode": "oracle", "oracle_variance": 4.0},
+        "projection": {
+            "project_partitions": False,
+            "clip_nonpartition": False,
+            "consistency": {"enabled": True, "method": "query_space_feasible_lsq"},
+            "uncertainty": {
+                "enabled": True,
+                "method": "bootstrap_diagonal",
+                "num_samples": 32,
+                "center": "projected",
+                "debias_target": True,
+                "min_variance": 1.0e-6,
+            },
+        },
+    }
+
+    m = measure_real_dataset(
+        X,
+        qcat,
+        [group],
+        cfg,
+        np.random.default_rng(1),
+        batch_size=4,
+        cardinalities=np.asarray([2], dtype=np.int32),
+    )
+
+    diagnostics = m.to_public_dict()["projection_diagnostics"]["uncertainty"]
+    assert diagnostics["debias_target"] is True
+    assert diagnostics["bias_l2"] > 0.0
+    assert not np.allclose(m.target_projected, np.asarray([4.0, 0.0], dtype=np.float32))
+
+
+def test_projection_uncertainty_debias_can_reproject_target() -> None:
+    builder = QueryBuilder(max_terms=1)
+    builder.add([(0, OP_EQ, 0, 0, 0)], "a=0", "oneway:0", "oneway")
+    builder.add([(0, OP_EQ, 1, 1, 1)], "a=1", "oneway:0", "oneway")
+    qcat = builder.build()
+    group = WorkloadGroup("oneway:0", "oneway", np.asarray([0, 1], dtype=np.int32), 1.0, True)
+    X = np.asarray([[0], [0], [0], [0]], dtype=np.int32)
+    cfg = {
+        "privacy": {"mode": "oracle", "oracle_variance": 4.0},
+        "projection": {
+            "project_partitions": False,
+            "clip_nonpartition": False,
+            "consistency": {"enabled": True, "method": "query_space_feasible_lsq"},
+            "uncertainty": {
+                "enabled": True,
+                "method": "bootstrap_diagonal",
+                "num_samples": 32,
+                "center": "projected",
+                "debias_target": True,
+                "debias_alpha": 1.0,
+                "reproject_debiased_target": True,
+                "min_variance": 1.0e-6,
+            },
+        },
+    }
+
+    m = measure_real_dataset(
+        X,
+        qcat,
+        [group],
+        cfg,
+        np.random.default_rng(1),
+        batch_size=4,
+        cardinalities=np.asarray([2], dtype=np.int32),
+    )
+
+    diagnostics = m.to_public_dict()["projection_diagnostics"]["uncertainty"]
+    assert diagnostics["debias_target"] is True
+    assert diagnostics["debias_alpha"] == 1.0
+    assert diagnostics["target_reprojected_after_debias"] is True
+    assert np.all(m.target_projected >= -1.0e-6)
     assert np.isclose(float(m.target_projected.sum()), 4.0, atol=1.0e-5)
 
 

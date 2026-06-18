@@ -82,6 +82,23 @@ Main metrics:
 - wall time and phase timings;
 - peak memory / backend notes.
 
+Private-GSD baseline clarification:
+
+- The preferred paper baseline is to run the upstream open-source Private-GSD
+  implementation directly, with only adapter code for dataset/workload export
+  and result import.
+- "Exact baseline" means a fair, clearly labeled comparison against the
+  upstream algorithm's intended population-level mutation/selection procedure.
+- It does not mean rewriting Private-GSD inside QDTE.
+- It does mean avoiding claims that QDTE-internal shortcuts such as
+  `pgsd_style_mutate50` are the upstream Private-GSD method.
+- For fairness, the wrapper should align public preprocessing, workload/query
+  definitions where possible, privacy budget/noise setting, synthetic row
+  count, seed policy, and compute budget. If exact workload alignment is not
+  possible because the upstream code expects a different statistic interface,
+  report it as an external Private-GSD baseline and separately keep
+  `pgsd_style_mutate50` as an internal sanity ablation.
+
 ## Core Ablation Matrix
 
 ### Proposal Direction
@@ -465,6 +482,47 @@ Minimal variants:
   restart stalled individuals.
 - Population random mutation: Private-GSD-style population control using the
   same measured target, as an internal baseline.
+
+Implemented minimal entry:
+
+- `scripts/run_population.py`
+  - measures/projects once;
+  - reruns several QDTE individuals with `measurement.reuse_from`;
+  - selects elites by `final_measured_loss`;
+  - writes `population_summary.json`;
+  - implements random-restart/elite selection;
+  - supports `population.generations>1` for repeated generations where previous
+    elites seed the next generation through elite clones, crossover children,
+    and fresh restarts;
+  - optionally generates crossover children and continues inner QDTE from each
+    child via `init.encoded_npy`;
+  - supports `population.crossover.mode=random_row`;
+  - supports `population.crossover.mode=context_aware`, where donor-parent
+    rows become recipient-parent row-replacement candidates and are rescored by
+    the recipient residual using QDTE edit advantage;
+  - supports `population.parallel.enabled=true`, which starts persistent GPU
+    worker processes bound by `CUDA_VISIBLE_DEVICES` and reuses them across
+    generations.
+
+Current smoke observation:
+
+- A single-GPU smoke run with `population.size=2`,
+  `population.generations=2000`, `population.inner_iters=100`, and
+  `population.crossover.mode=context_aware` reached best measured/unweighted
+  loss `1460.0758429369116` by generation `73`.
+- Later generations did not improve this value. Most individuals then stopped
+  after `qdte.stop_patience=15` iterations because no positive-advantage edits
+  were found.
+- This suggests that, under the current candidate generator and smoke workload,
+  simply adding many outer generations does not by itself escape the local
+  edit-advantage plateau. The next population ablation should compare
+  context-aware crossover with random-row crossover and larger exploratory
+  candidate pools under equal total candidate evaluations.
+- A persistent two-GPU rerun of the same 2000-generation smoke produced the
+  same best measured/unweighted loss `1460.0758429369116` and reduced wall time
+  from the earlier serial `144.71s` to `102.95s`. The speedup is real but not
+  yet ideal because each generation still has synchronization, parent loading,
+  crossover construction, and output-writing overhead.
 
 Research value:
 

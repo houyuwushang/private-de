@@ -54,6 +54,7 @@ Important settings:
 - `privacy.delta: 1.0e-9`
 - `privacy.measurement_mode: static_all`
 - `qdte.candidate_backend`: omitted, so the engine uses `cpu_repair`
+- `qdte.objective_weighting: unweighted`
 - `qdte.score_backend: dense_gpu`
 - `qdte.transport_mode: atom_flow`
 - `qdte.atom_flow_update_mode: batch`
@@ -63,7 +64,11 @@ Important settings:
 - `qdte.total_candidates_per_iter: 4096`
 - `qdte.accepted_per_iter: 64`
 
-This is the current quality-oriented baseline.
+This is the current quality-oriented baseline. `objective_weighting:
+unweighted` is the current single-layer QDTE mainline: the generation stage
+directly minimizes raw residuals between the projected feasible target and the
+synthetic query answers. The `variance` mode remains available as an
+inverse-variance ablation.
 
 ### `configs/adult_qdte_gpu_highpower.yaml`
 
@@ -72,6 +77,7 @@ Experimental high-throughput GPU configuration.
 Important settings:
 
 - Output directory: `outputs/adult_qdte_gpu_highpower`
+- `qdte.objective_weighting: unweighted`
 - `qdte.candidate_backend: jax_repair`
 - `qdte.score_backend: sparse_delta_gpu`
 - `qdte.transport_mode: atom_flow`
@@ -255,6 +261,11 @@ Implemented families:
 - `prefix`
 - `range`
 - `mixed`
+- `kway`
+- `kway_prefix`
+- `kway_range`
+- `kway_mixed`
+- `orthogonal_kway_mixed`
 - `halfspace`
 
 Each `WorkloadGroup` carries:
@@ -266,7 +277,21 @@ Each `WorkloadGroup` carries:
 
 Partition groups such as one-way and selected two-way marginals can be projected to the simplex with total count equal to the real dataset size.
 
-Halfspace queries are implemented for measurement, evaluation, CPU repair, and consistency projection. GPU fused candidate repair intentionally rejects `include_halfspace: true` because directed halfspace repair has not been implemented in that backend.
+The configurable high-order families are:
+
+- `kway`: sampled k-way equality conjunctions.
+- `kway_prefix`: sampled k-way conjunctions with one numeric prefix term and equality conditions on the remaining attributes.
+- `kway_range`: sampled k-way conjunctions with one numeric range term and equality conditions on the remaining attributes.
+- `kway_mixed`: sampled k-way conjunctions where categorical attributes use equality terms and numerical attributes use prefix/range terms, allowing multiple numerical terms in the same query.
+- `orthogonal_kway_mixed`: sampled k-way mixed scopes expanded into full Cartesian partitions. Categorical dimensions use all equality cells; numerical dimensions use equal-width disjoint range intervals. Each group is mutually exclusive and has L2 sensitivity `1`.
+
+They are controlled by `include_kway`, `include_kway_prefix`, `include_kway_range`, `include_kway_mixed`, `include_orthogonal_kway_mixed`, the corresponding `*_orders`, and `*_queries_per_order` or `*_scopes_per_order` settings. If enabled in DP mode, their family names must also appear in `privacy.measurement_allocation`.
+
+DP measurement is applied per `WorkloadGroup`: the group answer vector is noised with a Gaussian mechanism calibrated to that group's L2 sensitivity and allocated rho. `build_workload` refines each group sensitivity from the public schema and query definitions by enumerating the finite query scope when it is below `workload.exact_group_sensitivity_max_cells`. Orthogonal equality workloads therefore get sensitivity `1`; overlapping prefix/range/mixed workloads get `sqrt(max_overlap)`. If the scope is too large, the builder falls back to the conservative configured group sensitivity. The implementation records diagonal variances; coordinates inside a group currently receive independent Gaussian noise with the same standard deviation.
+
+Halfspace queries are implemented for measurement, evaluation, CPU repair, GPU fused single-query repair, and consistency projection.
+
+Orthogonal halfspace groups are not implemented yet. The current catalogue can represent a single linear threshold `sum_i w_i x_i <= t`, which gives cumulative and overlapping halfspace queries. A truly orthogonal halfspace partition would require either a linear slab predicate `lo < sum_i w_i x_i <= hi` or conjunctions of halfspace tree leaves; both require extending the query representation and JAX/GPU evaluation paths.
 
 ### JAX query evaluation
 
@@ -307,7 +332,7 @@ Projection helpers:
 - `project_non_decreasing`: weighted PAVA projection for prefix measurements.
 - `project_consistent_targets`: maps supported query scopes to local marginal tables, enforces non-negativity and known row count `N`, and reconciles overlapping scopes by shared marginals.
 
-The consistency projection supports `EQ`, `LE`, `GE`, `RANGE`, and halfspace masks represented by `QueryCatalogue`. It fails fast when a scope exceeds `projection.consistency.max_scope_cells`; it does not silently skip large scopes. The current implementation still reports diagonal variances after projection. Full post-projection covariance propagation is future work.
+The consistency projection supports `EQ`, `LE`, `GE`, `RANGE`, configurable k-way conjunctions, and halfspace masks represented by `QueryCatalogue`. It fails fast when a scope exceeds `projection.consistency.max_scope_cells`; it does not silently skip large scopes. The current implementation still reports diagonal variances after projection. Full post-projection covariance propagation is future work.
 
 ## QDTE State
 
@@ -406,6 +431,7 @@ This backend fuses candidate generation and scoring inside a JAX `pmap` kernel:
 - Scores all generated candidates on GPU.
 - With `score_backend: dense_gpu`, uses boolean enter/exit masks and optional query-block scoring via `gpu_score_query_block_size`.
 - With `score_backend: sparse_delta_gpu`, uses a precomputed attribute-to-query affected index and multi-word query-scope bitsets so each edit evaluates only query blocks touched by changed attributes.
+- Supports directed halfspace enter/exit repair in the fused single-query GPU path. CPU-only structured compilers still require `candidate_backend: cpu_repair`.
 - Optionally returns only local top-k candidates via `gpu_return_top_k`.
 - Optionally runs multiple GPU scoring batches inside one QDTE iteration via `gpu_batches_per_iter`.
 
@@ -413,7 +439,7 @@ The returned `CandidateBatch.diagnostics["scored_candidates"]` records the full 
 
 The replicated GPU table is updated after accepted edits via `apply_edits_to_replicated_table`.
 
-The GPU repair backend does not implement directed halfspace repair. Config validation fails fast for `workload.include_halfspace: true` with `qdte.candidate_backend: jax_repair` or `gpu_repair`.
+The GPU repair backend implements directed halfspace repair for the default single-query compiler. Structured compilers other than `single_query` remain CPU-only.
 
 ## Candidate Scoring
 
@@ -719,7 +745,7 @@ This configuration is faster and uses the GPU much more heavily, but final quali
 - The default path prioritizes final quality and robustness.
 - The high-throughput path prioritizes GPU occupancy and iteration throughput.
 - `measurement_mode=static_all` is the only implemented privacy measurement mode. Adaptive select-measure-generate is intentionally rejected with `NotImplementedError` in this version.
-- `include_halfspace` is implemented for measurement/evaluation/CPU repair/consistency projection. GPU fused candidate repair for halfspace is not implemented and fails fast in config validation.
+- `include_halfspace` is implemented for measurement/evaluation/CPU repair/GPU fused single-query repair/consistency projection.
 - Consistency projection currently keeps the existing diagonal variance representation; full post-projection covariance propagation is not implemented.
 - `sparse_delta_gpu` uses multi-word `uint32` query-scope bitsets, so the previous single-word 31 encoded-attribute limit has been removed. The remaining capacity assumption is `gpu_sparse_changed_attr_capacity`: it must cover the number of attributes a candidate can change.
 - There is no repository-level dependency manifest yet; current tests and runs rely on the local `qdte` conda environment.

@@ -34,12 +34,14 @@ def test_valid_config_passes() -> None:
         ("qdte", "candidate_compiler", "unknown", ValueError),
         ("qdte", "score_backend", "unknown", ValueError),
         ("qdte", "transport_mode", "unknown", ValueError),
+        ("qdte", "directed_group_backend", "unknown", ValueError),
         ("qdte", "accepted_per_iter_schedule", "unknown", ValueError),
         ("qdte", "atom_flow_update_mode", "unknown", ValueError),
         ("qdte", "transport_delta_backend", "unknown", ValueError),
         ("qdte", "constructive_partner_delta_backend", "unknown", ValueError),
         ("qdte", "best_partner_delta_backend", "unknown", ValueError),
         ("qdte", "protected_repair_delta_backend", "unknown", ValueError),
+        ("qdte", "objective_weighting", "unknown", ValueError),
     ],
 )
 def test_unsupported_or_unknown_config_fails_fast(
@@ -120,6 +122,79 @@ def test_local_table_feasible_jax_consistency_projection_is_allowed() -> None:
     validate_config(cfg)
 
 
+def test_projection_uncertainty_bootstrap_is_allowed() -> None:
+    cfg = _valid_config()
+    cfg["projection"] = {
+        "uncertainty": {
+            "enabled": True,
+            "method": "bootstrap_diagonal",
+            "num_samples": 8,
+            "center": "projected",
+            "debias_target": True,
+            "debias_alpha": 0.5,
+            "reproject_debiased_target": True,
+            "min_variance": 1.0e-6,
+            "min_raw_variance_fraction": 0.01,
+        }
+    }
+
+    validate_config(cfg)
+
+
+def test_oracle_projection_bias_diagnostic_is_allowed() -> None:
+    cfg = _valid_config()
+    cfg["evaluation"] = {
+        "downstream_ml": False,
+        "oracle_projection_bias": {
+            "enabled": True,
+            "num_samples": 4,
+        },
+    }
+
+    validate_config(cfg)
+
+
+def test_projection_uncertainty_invalid_method_fails_fast() -> None:
+    cfg = _valid_config()
+    cfg["projection"] = {
+        "uncertainty": {
+            "enabled": True,
+            "method": "unknown",
+        }
+    }
+
+    with pytest.raises(ValueError, match="projection.uncertainty.method"):
+        validate_config(cfg)
+
+
+def test_projection_uncertainty_invalid_debias_alpha_fails_fast() -> None:
+    cfg = _valid_config()
+    cfg["projection"] = {
+        "uncertainty": {
+            "enabled": True,
+            "method": "bootstrap_diagonal",
+            "debias_alpha": 1.5,
+        }
+    }
+
+    with pytest.raises(ValueError, match="projection.uncertainty.debias_alpha"):
+        validate_config(cfg)
+
+
+def test_oracle_projection_bias_invalid_sample_count_fails_fast() -> None:
+    cfg = _valid_config()
+    cfg["evaluation"] = {
+        "downstream_ml": False,
+        "oracle_projection_bias": {
+            "enabled": True,
+            "num_samples": 1,
+        },
+    }
+
+    with pytest.raises(ValueError, match="evaluation.oracle_projection_bias.num_samples"):
+        validate_config(cfg)
+
+
 def test_unknown_consistency_projection_method_fails_fast() -> None:
     cfg = _valid_config()
     cfg["projection"] = {"consistency": {"enabled": True, "method": "unknown"}}
@@ -135,13 +210,13 @@ def test_halfspace_workload_is_allowed() -> None:
     validate_config(cfg)
 
 
-def test_halfspace_gpu_candidate_backend_fails_fast() -> None:
+@pytest.mark.parametrize("candidate_backend", ["jax_repair", "gpu_repair"])
+def test_halfspace_gpu_candidate_backend_is_allowed(candidate_backend: str) -> None:
     cfg = _valid_config()
     cfg["workload"]["include_halfspace"] = True
-    cfg["qdte"]["candidate_backend"] = "jax_repair"
+    cfg["qdte"]["candidate_backend"] = candidate_backend
 
-    with pytest.raises(NotImplementedError, match="halfspace"):
-        validate_config(cfg)
+    validate_config(cfg)
 
 
 def test_atom_flow_transport_mode_is_allowed() -> None:
@@ -157,6 +232,86 @@ def test_blind_accept_transport_mode_is_allowed_for_ablation() -> None:
     cfg["qdte"]["transport_mode"] = "blind_accept"
 
     validate_config(cfg)
+
+
+def test_unweighted_objective_weighting_is_allowed_for_ablation() -> None:
+    cfg = _valid_config()
+    cfg["qdte"]["objective_weighting"] = "unweighted"
+
+    validate_config(cfg)
+
+
+def test_measurement_reuse_path_is_allowed() -> None:
+    cfg = _valid_config()
+    cfg["measurement"] = {"reuse_from": "outputs/example_measurement"}
+
+    validate_config(cfg)
+
+
+def test_population_controls_are_allowed() -> None:
+    cfg = _valid_config()
+    cfg["population"] = {
+        "enabled": True,
+        "size": 4,
+        "elite_count": 2,
+        "generations": 3,
+        "inner_iters": 10,
+        "seed_stride": 100,
+        "parallel": {
+            "enabled": True,
+            "gpu_devices": "0,1",
+            "workers_per_gpu": 1,
+            "workers": 2,
+        },
+        "crossover": {
+            "enabled": True,
+            "mode": "context_aware",
+            "children": 2,
+            "fraction": 0.5,
+            "parent_pool": 3,
+            "candidates": 128,
+            "max_edits": 8,
+            "inner_iters": 5,
+        },
+    }
+
+    validate_config(cfg)
+
+
+def test_init_encoded_npy_is_allowed() -> None:
+    cfg = _valid_config()
+    cfg["init"]["encoded_npy"] = "outputs/seed.npy"
+
+    validate_config(cfg)
+
+
+def test_population_elite_count_must_fit_population_size() -> None:
+    cfg = _valid_config()
+    cfg["population"] = {"enabled": True, "size": 2, "elite_count": 3}
+
+    with pytest.raises(ValueError, match="population.elite_count"):
+        validate_config(cfg)
+
+
+def test_population_generations_must_be_positive() -> None:
+    cfg = _valid_config()
+    cfg["population"] = {"enabled": True, "size": 2, "elite_count": 1, "generations": 0}
+
+    with pytest.raises(ValueError, match="population.generations"):
+        validate_config(cfg)
+
+
+def test_population_parallel_workers_per_gpu_must_be_positive() -> None:
+    cfg = _valid_config()
+    cfg["population"] = {
+        "enabled": True,
+        "size": 2,
+        "elite_count": 1,
+        "parallel": {"enabled": True, "workers_per_gpu": 0},
+    }
+
+    with pytest.raises(ValueError, match="population.parallel.workers_per_gpu"):
+        validate_config(cfg)
 
 
 def test_sparse_delta_backends_are_allowed() -> None:
@@ -291,6 +446,43 @@ def test_directed_group_transport_controls_are_allowed() -> None:
             "directed_group_pool_multiplier": 0,
             "directed_group_max_pool": 256,
             "directed_group_allow_negative_steps": False,
+            "directed_group_backend": "jax",
+            "directed_group_positive_fill": True,
+            "directed_group_positive_fill_augment": True,
+            "directed_group_positive_fill_augment_trigger": "adaptive",
+            "directed_group_positive_fill_augment_threshold": 64,
+            "directed_group_positive_fill_augment_max_loss": 4000000.0,
+            "directed_group_positive_fill_augment_noise_floor_ratio": 2.0,
+            "directed_group_positive_fill_augment_plateau_window": 100,
+            "directed_group_positive_fill_augment_plateau_relative_drop": 0.01,
+            "directed_group_augment_seed_count": 16,
+            "directed_group_augment_min_size": 1,
+            "directed_group_augment_max_size": 8,
+            "directed_group_augment_pool_multiplier": 0,
+            "directed_group_augment_max_pool": 512,
+        }
+    )
+
+    validate_config(cfg)
+
+
+def test_constructive_pair_group_augment_controls_are_allowed() -> None:
+    cfg = _valid_config()
+    cfg["qdte"].update(
+        {
+            "transport_mode": "constructive_pair",
+            "constructive_pair_group_augment": True,
+            "constructive_pair_group_augment_trigger": "adaptive",
+            "constructive_pair_group_augment_threshold": 8,
+            "constructive_pair_group_augment_max_loss": 0.0,
+            "constructive_pair_group_augment_noise_floor_ratio": 2.0,
+            "constructive_pair_group_augment_plateau_window": 100,
+            "constructive_pair_group_augment_plateau_relative_drop": 0.01,
+            "directed_group_augment_seed_count": 16,
+            "directed_group_augment_min_size": 1,
+            "directed_group_augment_max_size": 8,
+            "directed_group_augment_pool_multiplier": 0,
+            "directed_group_augment_max_pool": 256,
         }
     )
 

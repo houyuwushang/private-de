@@ -45,6 +45,7 @@ init:
   method: independent_oneway
 
 qdte:
+  objective_weighting: unweighted
   score_backend: dense_gpu
   transport_mode: microbatch_greedy
   max_iters: 5000

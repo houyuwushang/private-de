@@ -57,6 +57,7 @@ class Measurements:
     epsilon_delta: float
     delta: float
     projection_diagnostics: dict[str, Any] | None = None
+    projection_uncertainty_bias: np.ndarray | None = None
 
     def to_public_dict(self) -> dict:
         return {
@@ -71,6 +72,37 @@ class Measurements:
             "groups": [g.to_dict() for g in self.groups],
             "projection_diagnostics": self.projection_diagnostics or {},
         }
+
+
+def measurement_group_from_dict(data: dict[str, Any]) -> MeasurementGroup:
+    return MeasurementGroup(
+        query_indices=np.asarray(data["query_indices"], dtype=np.int32),
+        sensitivity_l2=float(data["sensitivity_l2"]),
+        rho=float(data["rho"]),
+        sigma=float(data["sigma"]),
+        noise_std=float(data["noise_std"]),
+        name=str(data["name"]),
+        family=str(data["family"]),
+        is_partition=bool(data["is_partition"]),
+    )
+
+
+def measurements_from_public_dict(data: dict[str, Any]) -> Measurements:
+    variances = np.asarray(data["variances"], dtype=np.float32)
+    inv_variances = 1.0 / np.maximum(variances, 1.0e-12)
+    return Measurements(
+        target_noisy=np.asarray(data["target_noisy"], dtype=np.float32),
+        target_projected=np.asarray(data["target_projected"], dtype=np.float32),
+        variances=variances,
+        inv_variances=inv_variances.astype(np.float32),
+        groups=[measurement_group_from_dict(group) for group in data.get("groups", [])],
+        mode=str(data["mode"]),
+        rho_total=float(data["rho_total"]),
+        rho_spent=float(data["rho_spent"]),
+        epsilon_delta=float(data["epsilon_delta"]),
+        delta=float(data["delta"]),
+        projection_diagnostics=dict(data.get("projection_diagnostics", {})),
+    )
 
 
 def _family_counts(groups: list[WorkloadGroup]) -> dict[str, int]:
@@ -135,6 +167,234 @@ def project_targets(
         elif clip_nonpartition:
             projected[idx] = clip_counts(projected[idx], float(total))
     return projected.astype(np.float32)
+
+
+def _cardinalities_for_projection(X_real: np.ndarray, cardinalities: np.ndarray | None) -> np.ndarray:
+    if cardinalities is not None:
+        return np.asarray(cardinalities, dtype=np.int32)
+    return np.max(X_real, axis=0).astype(np.int32) + 1
+
+
+def _apply_configured_projection(
+    noisy: np.ndarray,
+    qcat: QueryCatalogue,
+    groups: list[MeasurementGroup],
+    total: int,
+    projection_cfg: dict[str, Any],
+    variances: np.ndarray,
+    cardinalities: np.ndarray,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    projected = project_targets(
+        noisy,
+        groups,
+        total,
+        project_partitions=bool(projection_cfg.get("project_partitions", True)),
+        clip_nonpartition=bool(projection_cfg.get("clip_nonpartition", True)),
+        prefix_monotonicity=bool(projection_cfg.get("prefix_monotonicity", False)),
+        variances=variances,
+    )
+    projection_diagnostics: dict[str, Any] = {
+        "consistency": {"enabled": False},
+    }
+    consistency_cfg = projection_cfg.get("consistency", {})
+    if consistency_cfg is None:
+        consistency_cfg = {}
+    if not isinstance(consistency_cfg, dict):
+        raise ValueError("projection.consistency must be a mapping")
+    if bool(consistency_cfg.get("enabled", False)):
+        method = str(consistency_cfg.get("method", "local_marginal_ipf"))
+        if method == "local_marginal_ipf":
+            consistency_result = project_consistent_targets(
+                noisy,
+                qcat,
+                cardinalities,
+                total,
+                variances=variances,
+                max_scope_cells=int(consistency_cfg.get("max_scope_cells", 200_000)),
+                max_iterations=int(consistency_cfg.get("max_iterations", 100)),
+                tolerance=float(consistency_cfg.get("tolerance", 1.0e-2)),
+                max_lsq_iterations=int(consistency_cfg.get("max_lsq_iterations", 100)),
+            )
+        elif method == "query_space_lsq":
+            consistency_result = project_query_space_lsq(
+                noisy,
+                qcat,
+                cardinalities,
+                total,
+                variances=variances,
+                max_constraints=int(consistency_cfg.get("max_constraints", 200_000)),
+                solver_atol=float(consistency_cfg.get("solver_atol", 1.0e-10)),
+                solver_btol=float(consistency_cfg.get("solver_btol", 1.0e-10)),
+                solver_max_iterations=int(consistency_cfg.get("solver_max_iterations", 10_000)),
+            )
+        elif method == "query_space_feasible_lsq":
+            consistency_result = project_query_space_feasible_lsq(
+                noisy,
+                qcat,
+                cardinalities,
+                total,
+                variances=variances,
+                max_constraints=int(consistency_cfg.get("max_constraints", 200_000)),
+                solver_ftol=float(consistency_cfg.get("solver_ftol", 1.0e-9)),
+                solver_max_iterations=int(consistency_cfg.get("solver_max_iterations", 1_000)),
+                max_dense_constraint_cells=int(consistency_cfg.get("max_dense_constraint_cells", 20_000_000)),
+            )
+        elif method == "local_table_feasible_lsq":
+            consistency_result = project_local_table_feasible_lsq(
+                noisy,
+                qcat,
+                cardinalities,
+                total,
+                variances=variances,
+                max_scope_cells=int(consistency_cfg.get("max_scope_cells", 200_000)),
+                solver_ftol=float(consistency_cfg.get("solver_ftol", 1.0e-9)),
+                solver_max_iterations=int(consistency_cfg.get("solver_max_iterations", 1_000)),
+                max_dense_constraint_cells=int(consistency_cfg.get("max_dense_constraint_cells", 20_000_000)),
+            )
+        elif method == "local_table_feasible_jax":
+            consistency_result = project_local_table_feasible_jax(
+                noisy,
+                qcat,
+                cardinalities,
+                total,
+                variances=variances,
+                max_scope_cells=int(consistency_cfg.get("max_scope_cells", 200_000)),
+                jax_iterations=int(consistency_cfg.get("jax_iterations", 1_000)),
+                jax_active_set_tolerance=float(consistency_cfg.get("jax_active_set_tolerance", 1.0e-8)),
+                jax_kkt_ridge=float(consistency_cfg.get("jax_kkt_ridge", 1.0e-10)),
+                max_dense_constraint_cells=int(consistency_cfg.get("max_dense_constraint_cells", 20_000_000)),
+            )
+        else:
+            raise ValueError(
+                "projection.consistency.method must be one of: "
+                "local_marginal_ipf, query_space_lsq, query_space_feasible_lsq, "
+                "local_table_feasible_lsq, local_table_feasible_jax; "
+                f"got {method!r}"
+            )
+        projected = consistency_result.projected
+        projection_diagnostics["consistency"] = consistency_result.diagnostics
+    return projected.astype(np.float32), projection_diagnostics
+
+
+def _projection_uncertainty_cfg(projection_cfg: dict[str, Any]) -> dict[str, Any]:
+    cfg = projection_cfg.get("uncertainty", {})
+    if cfg is None:
+        return {}
+    if not isinstance(cfg, dict):
+        raise ValueError("projection.uncertainty must be a mapping")
+    return cfg
+
+
+def _apply_projection_aware_uncertainty(
+    noisy: np.ndarray,
+    projected: np.ndarray,
+    qcat: QueryCatalogue,
+    groups: list[MeasurementGroup],
+    total: int,
+    projection_cfg: dict[str, Any],
+    variances: np.ndarray,
+    cardinalities: np.ndarray,
+    rng: np.random.Generator,
+    min_variance: float,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any], np.ndarray | None]:
+    cfg = _projection_uncertainty_cfg(projection_cfg)
+    if not bool(cfg.get("enabled", False)):
+        return projected.astype(np.float32), variances.astype(np.float32), {"enabled": False}, None
+    method = str(cfg.get("method", "bootstrap_diagonal"))
+    if method != "bootstrap_diagonal":
+        raise ValueError("projection.uncertainty.method must be 'bootstrap_diagonal'")
+    num_samples = int(cfg.get("num_samples", 32))
+    if num_samples <= 1:
+        raise ValueError("projection.uncertainty.num_samples must be greater than 1")
+    center_name = str(cfg.get("center", "projected")).lower()
+    if center_name == "projected":
+        center = np.asarray(projected, dtype=np.float64)
+    elif center_name == "noisy":
+        center = np.asarray(noisy, dtype=np.float64)
+    else:
+        raise ValueError("projection.uncertainty.center must be 'projected' or 'noisy'")
+    raw_var = np.maximum(np.asarray(variances, dtype=np.float64), float(min_variance))
+    raw_std = np.sqrt(raw_var)
+    mean = np.zeros(qcat.m, dtype=np.float64)
+    m2 = np.zeros(qcat.m, dtype=np.float64)
+    for sample_idx in range(1, num_samples + 1):
+        boot_noisy = center + rng.normal(loc=0.0, scale=raw_std, size=qcat.m)
+        boot_projected, _ = _apply_configured_projection(
+            boot_noisy.astype(np.float32),
+            qcat,
+            groups,
+            total,
+            projection_cfg,
+            raw_var.astype(np.float32),
+            cardinalities,
+        )
+        x = boot_projected.astype(np.float64)
+        delta = x - mean
+        mean += delta / float(sample_idx)
+        m2 += delta * (x - mean)
+    boot_var = m2 / float(num_samples - 1)
+    min_var = float(cfg.get("min_variance", min_variance))
+    if min_var <= 0.0:
+        raise ValueError("projection.uncertainty.min_variance must be positive")
+    min_raw_fraction = float(cfg.get("min_raw_variance_fraction", 0.0))
+    if min_raw_fraction < 0.0:
+        raise ValueError("projection.uncertainty.min_raw_variance_fraction must be non-negative")
+    effective_var = np.maximum(boot_var, min_var)
+    if min_raw_fraction > 0.0:
+        effective_var = np.maximum(effective_var, min_raw_fraction * raw_var)
+    debias_target = bool(cfg.get("debias_target", False))
+    debias_alpha = float(cfg.get("debias_alpha", 1.0))
+    if debias_alpha < 0.0 or debias_alpha > 1.0:
+        raise ValueError("projection.uncertainty.debias_alpha must be in [0, 1]")
+    effective_debias_alpha = debias_alpha if debias_target else 0.0
+    reproject_debiased_target = bool(cfg.get("reproject_debiased_target", False))
+    bias = mean - center
+    target = np.asarray(projected, dtype=np.float64)
+    pre_reproject_min = float(np.min(target)) if target.size else 0.0
+    pre_reproject_negative_count = int(np.sum(target < -1.0e-9))
+    if debias_target:
+        target = target - effective_debias_alpha * bias
+        pre_reproject_min = float(np.min(target)) if target.size else 0.0
+        pre_reproject_negative_count = int(np.sum(target < -1.0e-9))
+        if reproject_debiased_target:
+            target, _ = _apply_configured_projection(
+                target.astype(np.float32),
+                qcat,
+                groups,
+                total,
+                projection_cfg,
+                raw_var.astype(np.float32),
+                cardinalities,
+            )
+            target = target.astype(np.float64)
+    diagnostics = {
+        "enabled": True,
+        "method": method,
+        "num_samples": int(num_samples),
+        "center": center_name,
+        "debias_target": bool(debias_target),
+        "debias_alpha": float(debias_alpha),
+        "effective_debias_alpha": float(effective_debias_alpha),
+        "reproject_debiased_target": bool(reproject_debiased_target),
+        "target_reprojected_after_debias": bool(debias_target and reproject_debiased_target),
+        "pre_reproject_target_min": float(pre_reproject_min),
+        "pre_reproject_negative_target_count": int(pre_reproject_negative_count),
+        "final_target_min": float(np.min(target)) if target.size else 0.0,
+        "final_negative_target_count": int(np.sum(target < -1.0e-9)),
+        "min_variance": float(min_var),
+        "min_raw_variance_fraction": float(min_raw_fraction),
+        "raw_variance_mean": float(np.mean(raw_var)),
+        "raw_variance_min": float(np.min(raw_var)),
+        "raw_variance_max": float(np.max(raw_var)),
+        "effective_variance_mean": float(np.mean(effective_var)),
+        "effective_variance_min": float(np.min(effective_var)),
+        "effective_variance_max": float(np.max(effective_var)),
+        "effective_to_raw_variance_mean": float(np.mean(effective_var / raw_var)),
+        "bias_l2": float(np.linalg.norm(bias)),
+        "bias_linf": float(np.max(np.abs(bias))) if bias.size else 0.0,
+        "mean_projected_bootstrap_l2_from_center": float(np.linalg.norm(mean - center)),
+    }
+    return target.astype(np.float32), effective_var.astype(np.float32), diagnostics, bias.astype(np.float32)
 
 
 def measure_real_dataset(
@@ -207,100 +467,29 @@ def measure_real_dataset(
 
     min_variance = float(privacy_cfg.get("min_variance", 1.0e-6))
     variances = np.maximum(variances, min_variance).astype(np.float32)
-    projected = project_targets(
+    cards = _cardinalities_for_projection(X_real, cardinalities)
+    projected, projection_diagnostics = _apply_configured_projection(
         target,
+        qcat,
         measurement_groups,
         X_real.shape[0],
-        project_partitions=bool(projection_cfg.get("project_partitions", True)),
-        clip_nonpartition=bool(projection_cfg.get("clip_nonpartition", True)),
-        prefix_monotonicity=bool(projection_cfg.get("prefix_monotonicity", False)),
-        variances=variances,
+        projection_cfg,
+        variances,
+        cards,
     )
-    projection_diagnostics: dict[str, Any] = {
-        "consistency": {"enabled": False},
-    }
-    consistency_cfg = projection_cfg.get("consistency", {})
-    if consistency_cfg is None:
-        consistency_cfg = {}
-    if not isinstance(consistency_cfg, dict):
-        raise ValueError("projection.consistency must be a mapping")
-    if bool(consistency_cfg.get("enabled", False)):
-        cards = (
-            np.asarray(cardinalities, dtype=np.int32)
-            if cardinalities is not None
-            else (np.max(X_real, axis=0).astype(np.int32) + 1)
-        )
-        method = str(consistency_cfg.get("method", "local_marginal_ipf"))
-        if method == "local_marginal_ipf":
-            consistency_result = project_consistent_targets(
-                target,
-                qcat,
-                cards,
-                X_real.shape[0],
-                variances=variances,
-                max_scope_cells=int(consistency_cfg.get("max_scope_cells", 200_000)),
-                max_iterations=int(consistency_cfg.get("max_iterations", 100)),
-                tolerance=float(consistency_cfg.get("tolerance", 1.0e-2)),
-                max_lsq_iterations=int(consistency_cfg.get("max_lsq_iterations", 100)),
-            )
-        elif method == "query_space_lsq":
-            consistency_result = project_query_space_lsq(
-                target,
-                qcat,
-                cards,
-                X_real.shape[0],
-                variances=variances,
-                max_constraints=int(consistency_cfg.get("max_constraints", 200_000)),
-                solver_atol=float(consistency_cfg.get("solver_atol", 1.0e-10)),
-                solver_btol=float(consistency_cfg.get("solver_btol", 1.0e-10)),
-                solver_max_iterations=int(consistency_cfg.get("solver_max_iterations", 10_000)),
-            )
-        elif method == "query_space_feasible_lsq":
-            consistency_result = project_query_space_feasible_lsq(
-                target,
-                qcat,
-                cards,
-                X_real.shape[0],
-                variances=variances,
-                max_constraints=int(consistency_cfg.get("max_constraints", 200_000)),
-                solver_ftol=float(consistency_cfg.get("solver_ftol", 1.0e-9)),
-                solver_max_iterations=int(consistency_cfg.get("solver_max_iterations", 1_000)),
-                max_dense_constraint_cells=int(consistency_cfg.get("max_dense_constraint_cells", 20_000_000)),
-            )
-        elif method == "local_table_feasible_lsq":
-            consistency_result = project_local_table_feasible_lsq(
-                target,
-                qcat,
-                cards,
-                X_real.shape[0],
-                variances=variances,
-                max_scope_cells=int(consistency_cfg.get("max_scope_cells", 200_000)),
-                solver_ftol=float(consistency_cfg.get("solver_ftol", 1.0e-9)),
-                solver_max_iterations=int(consistency_cfg.get("solver_max_iterations", 1_000)),
-                max_dense_constraint_cells=int(consistency_cfg.get("max_dense_constraint_cells", 20_000_000)),
-            )
-        elif method == "local_table_feasible_jax":
-            consistency_result = project_local_table_feasible_jax(
-                target,
-                qcat,
-                cards,
-                X_real.shape[0],
-                variances=variances,
-                max_scope_cells=int(consistency_cfg.get("max_scope_cells", 200_000)),
-                jax_iterations=int(consistency_cfg.get("jax_iterations", 1_000)),
-                jax_active_set_tolerance=float(consistency_cfg.get("jax_active_set_tolerance", 1.0e-8)),
-                jax_kkt_ridge=float(consistency_cfg.get("jax_kkt_ridge", 1.0e-10)),
-                max_dense_constraint_cells=int(consistency_cfg.get("max_dense_constraint_cells", 20_000_000)),
-            )
-        else:
-            raise ValueError(
-                "projection.consistency.method must be one of: "
-                "local_marginal_ipf, query_space_lsq, query_space_feasible_lsq, "
-                "local_table_feasible_lsq, local_table_feasible_jax; "
-                f"got {method!r}"
-            )
-        projected = consistency_result.projected
-        projection_diagnostics["consistency"] = consistency_result.diagnostics
+    projected, variances, uncertainty_diagnostics, uncertainty_bias = _apply_projection_aware_uncertainty(
+        target,
+        projected,
+        qcat,
+        measurement_groups,
+        X_real.shape[0],
+        projection_cfg,
+        variances,
+        cards,
+        rng,
+        min_variance=min_variance,
+    )
+    projection_diagnostics["uncertainty"] = uncertainty_diagnostics
     inv_variances = (1.0 / variances).astype(np.float32)
     return Measurements(
         target_noisy=target.astype(np.float32),
@@ -314,4 +503,5 @@ def measure_real_dataset(
         epsilon_delta=epsilon_delta,
         delta=delta,
         projection_diagnostics=projection_diagnostics,
+        projection_uncertainty_bias=uncertainty_bias,
     )

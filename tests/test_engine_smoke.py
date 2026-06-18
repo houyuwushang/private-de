@@ -93,6 +93,7 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
             "compute_heldout_query_error": True,
             "heldout_exclude_measured_queries": True,
             "save_synthetic_csv": True,
+            "oracle_projection_bias": {"enabled": True, "num_samples": 4, "seed": 123},
             "heldout_workload": {
                 "include_oneway": True,
                 "include_2way_cat": True,
@@ -114,6 +115,7 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
     assert (out_dir / "synthetic_decoded.csv").exists()
     assert (out_dir / "metrics_final.json").exists()
     assert (out_dir / "metrics_by_family.json").exists()
+    assert (out_dir / "oracle_projection_bias.json").exists()
     assert (out_dir / "workload_summary.json").exists()
     assert (out_dir / "queries_holdout.json").exists()
     assert (out_dir / "workload_summary_holdout.json").exists()
@@ -124,11 +126,15 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
     assert (out_dir / "runtime.json").exists()
     metrics_json = orjson.loads((out_dir / "metrics_final.json").read_bytes())
     assert "final_rms_standardized_residual" in metrics_json
+    assert "final_unweighted_measured_loss" in metrics_json
+    assert "final_rms_unweighted_residual" in metrics_json
     assert "initial_true_query_mae" in metrics_json
     assert "final_true_query_mae" in metrics_json
     assert "positive_returned_rate_is_topk_biased" in metrics_json
     assert metrics_json["candidate_diagnostics_enabled"] is True
     assert "heldout_final_true_query_mae" in metrics_json
+    assert "oracle_projection_bias_oracle_bias_l2" in metrics_json
+    assert "oracle_projection_bias_observed_projected_error_l2" in metrics_json
     assert metrics_json["true_query_mae"] == metrics_json["final_true_query_mae"]
     assert metrics["final_incremental_answer_drift"] == 0.0
     by_family_json = orjson.loads((out_dir / "metrics_by_family.json").read_bytes())
@@ -159,6 +165,7 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
     measurement_json = orjson.loads((out_dir / "measurements.json").read_bytes())
     assert "true_answers_debug" not in measurement_json
     assert "true_answers" not in measurement_json
+    assert "oracle_projection_bias" not in measurement_json
     assert measurement_json["rho_spent"] <= measurement_json["rho_total"] + 1.0e-12
     runtime_json = orjson.loads((out_dir / "runtime.json").read_bytes())
     assert runtime_json["num_candidates_requested"] >= runtime_json["num_candidates_scored"]
@@ -171,6 +178,9 @@ def test_engine_smoke_outputs(tmp_path: Path) -> None:
     assert "diag_mean_target_component" in candidate_diagnostics.columns
     assert "diag_mean_collateral_component" in candidate_diagnostics.columns
     assert "diag_target_positive_full_negative_rate" in candidate_diagnostics.columns
+    metrics_timeseries = pd.read_csv(out_dir / "metrics_timeseries.csv")
+    assert "unweighted_measured_loss" in metrics_timeseries.columns
+    assert "rms_unweighted_residual" in metrics_timeseries.columns
 
 
 def test_engine_no_active_queries_skip_candidate_generation(tmp_path: Path) -> None:
@@ -202,18 +212,74 @@ def test_engine_no_active_queries_skip_candidate_generation(tmp_path: Path) -> N
             "allow_below_noise_fallback": False,
             "stop_patience": 1,
             "log_every": 1,
+            "objective_weighting": "unweighted",
         },
         "runtime": {"use_pmap": False, "scoring_chunk_size": 8, "answer_batch_size": 8, "xla_preallocate": False},
         "evaluation": {"compute_true_query_error": False, "save_synthetic_csv": False},
     }
 
-    run_qdte(config)
+    metrics = run_qdte(config)
 
     runtime_json = orjson.loads((out_dir / "runtime.json").read_bytes())
+    metrics_json = orjson.loads((out_dir / "metrics_final.json").read_bytes())
     logs = (out_dir / "logs.txt").read_text(encoding="utf-8")
+    assert metrics["objective_weighting"] == "unweighted"
+    assert metrics_json["objective_inv_variance_mean"] == 1.0
+    assert runtime_json["objective_weighting"] == "unweighted"
+    assert np.isclose(metrics["final_measured_loss"], metrics["final_unweighted_measured_loss"])
     assert runtime_json["num_candidates_requested"] == 0
     assert runtime_json["num_candidates_scored"] == 0
     assert "No active queries above noise threshold" in logs
+
+
+def test_engine_can_reuse_measurement_artifact(tmp_path: Path) -> None:
+    df = pd.DataFrame({"a": [0, 1, 0, 1, 1, 0], "label": [0, 1, 0, 1, 0, 1]})
+    data_path = tmp_path / "reuse.csv"
+    measurement_dir = tmp_path / "measurement"
+    reuse_dir = tmp_path / "reuse_out"
+    df.to_csv(data_path, index=False)
+    base_config = {
+        "run": {"dataset_name": "reuse", "input_csv": str(data_path), "output_dir": str(measurement_dir), "seed": 7},
+        "preprocess": {"label_column": "label", "categorical_columns": ["a", "label"], "numerical_columns": []},
+        "workload": {
+            "include_oneway": True,
+            "include_2way_cat": False,
+            "include_prefix": False,
+            "include_range": False,
+            "include_mixed": False,
+            "max_queries": 10,
+            "max_terms": 2,
+        },
+        "privacy": {"mode": "dp", "rho_total": 1.0, "delta": 1e-9, "measurement_allocation": {"oneway": 1.0}},
+        "projection": {"project_partitions": True, "clip_nonpartition": True},
+        "init": {"N_syn": "same_as_real", "method": "independent_oneway"},
+        "qdte": {
+            "max_iters": 0,
+            "num_active_targets": 2,
+            "total_candidates_per_iter": 8,
+            "accepted_per_iter": 1,
+            "objective_weighting": "unweighted",
+        },
+        "runtime": {"use_pmap": False, "scoring_chunk_size": 8, "answer_batch_size": 8, "xla_preallocate": False},
+        "evaluation": {"compute_true_query_error": False, "save_synthetic_csv": False},
+    }
+
+    first_metrics = run_qdte(base_config)
+    reuse_config = dict(base_config)
+    reuse_config["run"] = dict(base_config["run"], output_dir=str(reuse_dir), seed=99)
+    reuse_config["measurement"] = {"reuse_from": str(measurement_dir)}
+    reuse_config["init"] = dict(base_config["init"], encoded_npy=str(measurement_dir / "synthetic_encoded.npy"))
+    reuse_metrics = run_qdte(reuse_config)
+
+    assert first_metrics["measurement_reused"] is False
+    assert reuse_metrics["measurement_reused"] is True
+    assert reuse_metrics["measurement_reuse_from"] == str(measurement_dir)
+    assert np.isclose(first_metrics["final_measured_loss"], reuse_metrics["final_measured_loss"])
+    first_measurements = orjson.loads((measurement_dir / "measurements.json").read_bytes())
+    reused_measurements = orjson.loads((reuse_dir / "measurements.json").read_bytes())
+    assert first_measurements["target_projected"] == reused_measurements["target_projected"]
+    logs = (reuse_dir / "logs.txt").read_text(encoding="utf-8")
+    assert "Reused measurement artifact" in logs
 
 
 def test_engine_atom_flow_transport_smoke(tmp_path: Path) -> None:
