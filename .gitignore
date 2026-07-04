@@ -11,6 +11,19 @@ htmlcov/
 outputs/
 *.prof
 
+# Internal research artifacts; keep public releases code-focused.
+resources/
+sage_runs/
+sage_paper/
+docs/HANDOFF.md
+docs/*ASSESSMENT*
+docs/*DRAFT*
+docs/*EXPERT*
+docs/*MEMO*
+docs/*PLAN*
+docs/*PROOF*
+docs/*REJECT*
+
 .env
 .venv/
 venv/
