@@ -72,7 +72,6 @@ qdte:
   stop_patience: 50
   min_advantage: 1.0e-6
   log_every: 100
-  eval_every: 100
 
 runtime:
   use_pmap: true

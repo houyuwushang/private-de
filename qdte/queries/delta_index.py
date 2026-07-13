@@ -64,16 +64,8 @@ class QueryDeltaIndex:
         qids = self.affected_query_ids(old_row, new_row)
         if len(qids) == 0:
             return SparseCandidateDelta(np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int8))
-        old_sat = np.fromiter(
-            (self._eval_query_on_row(old_row, int(qid)) for qid in qids.tolist()),
-            dtype=np.bool_,
-            count=len(qids),
-        )
-        new_sat = np.fromiter(
-            (self._eval_query_on_row(new_row, int(qid)) for qid in qids.tolist()),
-            dtype=np.bool_,
-            count=len(qids),
-        )
+        old_sat = self._eval_queries_on_row(old_row, qids)
+        new_sat = self._eval_queries_on_row(new_row, qids)
         values = new_sat.astype(np.int8) - old_sat.astype(np.int8)
         keep = values != 0
         return SparseCandidateDelta(
@@ -93,16 +85,50 @@ class QueryDeltaIndex:
         return out
 
     def delta_sum(self, old_rows: np.ndarray, new_rows: np.ndarray) -> np.ndarray:
+        sparse = self.sparse_delta_sum(old_rows, new_rows)
         total = np.zeros(self.qcat.m, dtype=np.float32)
+        total[sparse.qids] = sparse.values.astype(np.float32)
+        return total
+
+    def sparse_delta_sum(self, old_rows: np.ndarray, new_rows: np.ndarray) -> SparseCandidateDelta:
         old = np.asarray(old_rows, dtype=np.int32)
         new = np.asarray(new_rows, dtype=np.int32)
         if old.shape != new.shape:
             raise ValueError(f"old_rows and new_rows must have the same shape, got {old.shape} and {new.shape}")
+        qid_parts: list[np.ndarray] = []
+        value_parts: list[np.ndarray] = []
         for idx in range(old.shape[0]):
             delta = self.candidate_delta(old[idx], new[idx])
             if len(delta.qids):
-                np.add.at(total, delta.qids, delta.values.astype(np.float32))
-        return total
+                qid_parts.append(delta.qids)
+                value_parts.append(delta.values)
+        if not qid_parts:
+            return SparseCandidateDelta(
+                np.empty(0, dtype=np.int32),
+                np.empty(0, dtype=np.int8),
+            )
+        if len(qid_parts) == 1:
+            return SparseCandidateDelta(
+                qid_parts[0].astype(np.int32, copy=False),
+                value_parts[0].astype(np.int8, copy=False),
+            )
+
+        qids = np.concatenate(qid_parts)
+        values = np.concatenate(value_parts).astype(np.int16, copy=False)
+        order = np.argsort(qids, kind="stable")
+        sorted_qids = qids[order]
+        sorted_values = values[order]
+        starts = np.flatnonzero(
+            np.concatenate(
+                [np.asarray([True]), sorted_qids[1:] != sorted_qids[:-1]]
+            )
+        )
+        summed_values = np.add.reduceat(sorted_values, starts)
+        keep = summed_values != 0
+        return SparseCandidateDelta(
+            sorted_qids[starts][keep].astype(np.int32, copy=False),
+            summed_values[keep].astype(np.int8, copy=False),
+        )
 
     def padded_attr_query_ids(
         self,
@@ -170,3 +196,32 @@ class QueryDeltaIndex:
             if score > float(qcat.linear_thresholds[qid]):
                 return False
         return True
+
+    def _eval_queries_on_row(self, row: np.ndarray, qids: np.ndarray) -> np.ndarray:
+        qcat = self.qcat
+        ids = np.asarray(qids, dtype=np.int32)
+        if len(ids) == 0:
+            return np.empty(0, dtype=np.bool_)
+        row_arr = np.asarray(row, dtype=np.int32)
+
+        attrs = qcat.attrs[ids]
+        valid = attrs >= 0
+        xvals = row_arr[np.maximum(attrs, 0)]
+        ops = qcat.ops[ids]
+        values = qcat.values[ids]
+        cond = np.where(ops == OP_EQ, xvals == values, xvals <= values)
+        cond = np.where(ops == OP_GE, xvals >= values, cond)
+        cond = np.where(ops == OP_RANGE, (xvals >= qcat.lows[ids]) & (xvals <= qcat.highs[ids]), cond)
+        ordinary_sat = np.all(np.where(valid, cond, True), axis=1)
+
+        linear_attrs = qcat.linear_attrs[ids]
+        linear_valid_terms = linear_attrs >= 0
+        linear_xvals = row_arr[np.maximum(linear_attrs, 0)].astype(np.float32)
+        linear_scores = np.sum(
+            np.where(linear_valid_terms, linear_xvals * qcat.linear_weights[ids], 0.0),
+            axis=1,
+            dtype=np.float32,
+        )
+        has_linear = qcat.linear_num_terms[ids] > 0
+        linear_sat = np.where(has_linear, linear_scores <= qcat.linear_thresholds[ids], True)
+        return ordinary_sat & linear_sat

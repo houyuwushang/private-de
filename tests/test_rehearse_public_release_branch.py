@@ -25,9 +25,12 @@ def test_rehearse_public_release_branch_passes_current_surface(tmp_path: Path) -
     assert result.ok
     assert "public release verification passed" in result.stdout
     assert "public release branch rehearsal passed" in result.stdout
-    assert "docs/HANDOFF.md" in result.copied_internal_paths
     assert "docs/HANDOFF.md" not in result.tracked_paths
-    assert (result.output_dir / "docs" / "HANDOFF.md").is_file()
+    if (root / "docs" / "HANDOFF.md").is_file():
+        assert "docs/HANDOFF.md" in result.copied_internal_paths
+        assert (result.output_dir / "docs" / "HANDOFF.md").is_file()
+    else:
+        assert "docs/HANDOFF.md" not in result.copied_internal_paths
 
 
 def test_rehearse_public_release_branch_refuses_existing_output_without_force(tmp_path: Path) -> None:

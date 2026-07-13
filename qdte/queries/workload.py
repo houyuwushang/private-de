@@ -493,6 +493,8 @@ def build_workload(schema: TableSchema, config: dict[str, Any]) -> tuple[QueryCa
 
     if bool(cfg.get("include_oneway", True)):
         for attr, col in enumerate(schema.columns):
+            if len(builder.names) + int(col.cardinality) > max_queries:
+                continue
             start = len(builder.names)
             for val in range(col.cardinality):
                 builder.add(
@@ -502,8 +504,6 @@ def build_workload(schema: TableSchema, config: dict[str, Any]) -> tuple[QueryCa
                     family="oneway",
                 )
             mark_group(f"oneway:{attr}", "oneway", start, True, 1.0)
-            if _cap_queries(builder, max_queries):
-                break
 
     if not _cap_queries(builder, max_queries) and bool(cfg.get("include_2way_cat", True)):
         pairs = list(itertools.combinations(range(schema.d), 2))
@@ -515,6 +515,8 @@ def build_workload(schema: TableSchema, config: dict[str, Any]) -> tuple[QueryCa
             cells = ka * kb
             if used_cells + cells > max_2way_cells:
                 continue
+            if len(builder.names) + cells > max_queries:
+                continue
             start = len(builder.names)
             for va in range(ka):
                 for vb in range(kb):
@@ -524,14 +526,8 @@ def build_workload(schema: TableSchema, config: dict[str, Any]) -> tuple[QueryCa
                         group=f"twoway:{a}:{b}",
                         family="twoway",
                     )
-                    if _cap_queries(builder, max_queries):
-                        break
-                if _cap_queries(builder, max_queries):
-                    break
             mark_group(f"twoway:{a}:{b}", "twoway", start, True, 1.0)
             used_cells += cells
-            if _cap_queries(builder, max_queries):
-                break
 
     numerical = schema.numerical_indices
     if not _cap_queries(builder, max_queries) and bool(cfg.get("include_prefix", True)):

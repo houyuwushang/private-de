@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import time
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 
 import jax
@@ -21,12 +22,24 @@ from qdte.eval.metrics import (
 )
 from qdte.eval.runtime import RuntimeStats
 from qdte.evolution.candidates import generate_candidates
-from qdte.evolution.initialization import initialize_independent_oneway
+from qdte.evolution.initialization import initialize_independent_oneway, split_run_rng_streams
 from qdte.evolution.gpu_candidates import (
     apply_edits_to_replicated_table,
     generate_and_score_candidates_gpu,
     prepare_gpu_candidate_context,
     replicate_table_to_devices,
+)
+from qdte.evolution.hybrid_candidates import (
+    AdaptiveSwapAttributePolicy,
+    candidate_unit_deltas,
+    generate_global_directed_swap_units,
+    prepare_hybrid_score_context,
+    score_candidate_units as score_hybrid_candidate_units,
+    score_candidate_units_l1 as score_hybrid_candidate_units_l1,
+)
+from qdte.evolution.hybrid_transport import (
+    apply_candidate_units as apply_hybrid_candidate_units,
+    select_nonconflicting_candidate_units,
 )
 from qdte.evolution.scheduler import debt_diagnostics, select_active_queries, update_query_debt_from_loss_vectors
 from qdte.evolution.scoring import (
@@ -34,6 +47,7 @@ from qdte.evolution.scoring import (
     compute_deltas_sparse,
     prepare_score_context,
     score_candidates,
+    score_candidates_l1,
     score_candidates_sparse,
     score_candidates_target_only,
 )
@@ -41,6 +55,7 @@ from qdte.evolution.state import QDTEState
 from qdte.evolution.transport import (
     apply_edits,
     batch_advantage,
+    batch_advantage_l1,
     choose_atom_flow_batch_transport,
     choose_atom_flow_transport,
     choose_blind_transport,
@@ -54,11 +69,18 @@ from qdte.evolution.transport import (
     select_top_nonconflicting,
 )
 from qdte.measurement.measure import _apply_configured_projection, measure_real_dataset, measurements_from_public_dict
+from qdte.measurement.fission import (
+    FissionCheckpointSelection,
+    GaussianFissionSplit,
+    gaussian_fission_split,
+    select_fission_checkpoint,
+)
 from qdte.preprocess import decode_array, load_and_preprocess_csv
 from qdte.queries.eval_jax import answer_queries
 from qdte.queries.delta_index import QueryDeltaIndex
 from qdte.queries.types import QueryCatalogue, filter_query_catalogue, query_key
 from qdte.queries.workload import WorkloadGroup, build_workload, filter_workload_groups
+from qdte.schema import TableSchema
 
 
 HELDOUT_WORKLOAD_DEFAULTS: dict[str, Any] = {
@@ -286,6 +308,26 @@ def _resolve_n_syn(value: Any, n_real: int) -> int:
     return int(value)
 
 
+def _run_rng_streams(seed: int) -> tuple[np.random.Generator, np.random.Generator]:
+    return split_run_rng_streams(seed)
+
+
+def _mark_run_started(output_dir: Path, seed: int) -> None:
+    for name in (
+        "metrics_final.json",
+        "runtime.json",
+        "synthetic_encoded.npy",
+        "synthetic_decoded.csv",
+        "run_metadata.json",
+        "evaluation_external.json",
+        "measurements_fission.json",
+        "fission_checkpoints.json",
+        "synthetic_train_terminal_encoded.npy",
+    ):
+        (output_dir / name).unlink(missing_ok=True)
+    write_json({"status": "running", "seed": int(seed)}, output_dir / "run_status.json")
+
+
 def _scheduled_accept_limit(
     *,
     iteration: int,
@@ -320,6 +362,27 @@ def _scheduled_accept_limit(
         else:
             raise ValueError(f"Unknown qdte.accepted_per_iter_schedule={schedule!r}")
     return max(1, int(round(value)))
+
+
+def _search_adjusted_noise_guard_kappa(
+    *,
+    mode: str,
+    fixed_kappa: float,
+    family_size: int,
+    alpha: float,
+) -> float:
+    base = float(fixed_kappa)
+    if mode == "fixed":
+        return base
+    if mode != "bonferroni":
+        raise ValueError(f"Unknown structured swap noise-guard mode {mode!r}")
+    if family_size <= 0:
+        return base
+    if not 0.0 < float(alpha) < 1.0:
+        raise ValueError("structured swap noise-guard alpha must be in (0, 1)")
+    one_sided_tail = float(alpha) / float(family_size)
+    corrected = NormalDist().inv_cdf(1.0 - one_sided_tail)
+    return max(base, float(corrected))
 
 
 def _count_by_family(families: list[str]) -> dict[str, int]:
@@ -395,6 +458,98 @@ def _objective_variance_arrays(
     return variance, inv_variance, sigma
 
 
+def _objective_loss_weights(
+    mode: str,
+    workload_groups: list[WorkloadGroup],
+    num_queries: int,
+) -> np.ndarray:
+    normalized = str(mode).lower()
+    if normalized in {"quadratic", "l2", "measured_l2"}:
+        return np.ones(int(num_queries), dtype=np.float32)
+    if normalized != "tvd_l1":
+        raise ValueError("qdte.objective_loss must be one of: quadratic, tvd_l1")
+
+    weights = np.zeros(int(num_queries), dtype=np.float32)
+    partition_groups = [
+        group
+        for group in workload_groups
+        if bool(getattr(group, "is_partition", False)) and len(getattr(group, "query_indices", [])) > 1
+    ]
+    if not partition_groups:
+        weights.fill(1.0)
+        return weights
+    for group in partition_groups:
+        idx = np.asarray(group.query_indices, dtype=np.int32)
+        idx = idx[(idx >= 0) & (idx < int(num_queries))]
+        weights[idx] += 0.5
+    return weights.astype(np.float32, copy=False)
+
+
+def _objective_query_weight_multipliers(
+    profile: str,
+    workload_groups: list[WorkloadGroup],
+    num_queries: int,
+) -> np.ndarray:
+    normalized = str(profile).lower()
+    multipliers = np.ones(int(num_queries), dtype=np.float32)
+    if normalized == "none":
+        return multipliers
+    if normalized != "joint_utility_envelope":
+        raise ValueError(
+            "qdte.objective_weight_profile must be one of: "
+            "none, joint_utility_envelope"
+        )
+
+    partition_groups = [
+        group
+        for group in workload_groups
+        if bool(getattr(group, "is_partition", False))
+        and len(getattr(group, "query_indices", [])) > 1
+    ]
+    if not partition_groups:
+        return multipliers
+    max_block_size = max(len(group.query_indices) for group in partition_groups)
+    for group in partition_groups:
+        idx = np.asarray(group.query_indices, dtype=np.int32)
+        idx = idx[(idx >= 0) & (idx < int(num_queries))]
+        multipliers[idx] += float(len(group.query_indices)) / float(max_block_size)
+    return multipliers
+
+
+def _objective_selection_sigma(objective_weights: np.ndarray) -> np.ndarray:
+    weights = np.asarray(objective_weights, dtype=np.float32)
+    sigma = np.full(weights.shape, 1.0e12, dtype=np.float32)
+    positive = weights > 0.0
+    sigma[positive] = 1.0 / np.maximum(weights[positive], 1.0e-6)
+    return sigma
+
+
+def _optimization_objective_value(
+    residual: np.ndarray,
+    objective_loss: str,
+    inv_variance: np.ndarray,
+    objective_loss_weights: np.ndarray,
+) -> float:
+    if str(objective_loss).lower() == "tvd_l1":
+        return float(
+            np.abs(residual.astype(np.float64))
+            @ objective_loss_weights.astype(np.float64)
+        )
+    return measured_loss(residual, inv_variance)
+
+
+def _optimization_loss_vector(
+    residual: np.ndarray,
+    objective_loss: str,
+    inv_variance: np.ndarray,
+    objective_loss_weights: np.ndarray,
+) -> np.ndarray:
+    r = residual.astype(np.float64)
+    if str(objective_loss).lower() == "tvd_l1":
+        return np.abs(r) * objective_loss_weights.astype(np.float64)
+    return 0.5 * r * r * inv_variance.astype(np.float64)
+
+
 def _measurement_reuse_path(config: dict[str, Any]) -> Path | None:
     measurement_cfg = config.get("measurement", {})
     if measurement_cfg is None:
@@ -416,7 +571,7 @@ def _measurement_json_path(path: Path) -> Path:
 def _validate_reused_queries(path: Path, qcat: QueryCatalogue) -> None:
     query_path = path / "queries.json" if path.is_dir() else path.parent / "queries.json"
     if not query_path.exists():
-        return
+        raise FileNotFoundError(f"measurement.reuse_from does not contain queries.json near {path}")
     reused_qcat = QueryCatalogue.from_dict(read_json(query_path))
     if reused_qcat.m != qcat.m:
         raise ValueError(
@@ -425,6 +580,54 @@ def _validate_reused_queries(path: Path, qcat: QueryCatalogue) -> None:
     for qid in range(qcat.m):
         if query_key(reused_qcat, qid) != query_key(qcat, qid):
             raise ValueError(f"measurement.reuse_from query mismatch at qid={qid}")
+
+
+def _validate_reused_schema(path: Path, schema: TableSchema) -> None:
+    schema_path = path / "schema.json" if path.is_dir() else path.parent / "schema.json"
+    if not schema_path.exists():
+        raise FileNotFoundError(f"measurement.reuse_from does not contain schema.json near {path}")
+    reused_schema = TableSchema.load_json(schema_path)
+    if reused_schema.to_dict() != schema.to_dict():
+        raise ValueError("measurement.reuse_from schema does not match the current encoded data schema")
+
+
+def _reuse_workload_from_measurement(config: dict[str, Any]) -> bool:
+    workload_cfg = config.get("workload", {})
+    if not isinstance(workload_cfg, dict):
+        return False
+    return bool(workload_cfg.get("reuse_from_measurement", False))
+
+
+def _load_reused_workload_groups(path: Path, qcat: QueryCatalogue) -> list[WorkloadGroup]:
+    measurement_json_path = _measurement_json_path(path)
+    if not measurement_json_path.exists():
+        raise FileNotFoundError(f"measurement.reuse_from does not contain measurements.json: {path}")
+    data = read_json(measurement_json_path)
+    groups: list[WorkloadGroup] = []
+    for raw in data.get("groups", []):
+        idx = np.asarray(raw.get("query_indices", []), dtype=np.int32)
+        if np.any(idx < 0) or np.any(idx >= int(qcat.m)):
+            raise ValueError(f"measurement.reuse_from group {raw.get('name', '')!r} has out-of-range query indices")
+        groups.append(
+            WorkloadGroup(
+                name=str(raw.get("name", "")),
+                family=str(raw.get("family", "unknown")),
+                query_indices=idx,
+                sensitivity_l2=float(raw.get("sensitivity_l2", 1.0)),
+                is_partition=bool(raw.get("is_partition", False)),
+            )
+        )
+    if not groups and qcat.m:
+        groups.append(
+            WorkloadGroup(
+                name="reused_measurement",
+                family="reused",
+                query_indices=np.arange(qcat.m, dtype=np.int32),
+                sensitivity_l2=1.0,
+                is_partition=False,
+            )
+        )
+    return groups
 
 
 def _oracle_projection_bias_diagnostics(
@@ -784,6 +987,7 @@ def _write_timeseries(rows: list[dict[str, Any]], path: Path) -> None:
                 "iteration",
                 "wall_time",
                 "measured_loss",
+                "optimization_objective",
                 "unweighted_measured_loss",
                 "rms_standardized_residual",
                 "rms_unweighted_residual",
@@ -791,6 +995,10 @@ def _write_timeseries(rows: list[dict[str, Any]], path: Path) -> None:
                 "residual_l1",
                 "active_queries",
                 "num_candidates",
+                "raw_returned_candidates_before_edge_dedup",
+                "duplicate_edge_candidates",
+                "duplicate_edge_rate",
+                "edge_candidates_trimmed_to_return_limit",
                 "candidates_scored_this_iter",
                 "positive_advantage_rate",
                 "positive_returned_rate",
@@ -899,12 +1107,14 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     validate_config(config)
     run_cfg = config.get("run", {})
     qdte_cfg = config.get("qdte", {})
+    measurement_cfg = config.get("measurement", {})
     runtime_cfg = config.get("runtime", {})
     evaluation_cfg = config.get("evaluation", {})
     debug_cfg = config.get("debug", {})
     seed = int(run_cfg.get("seed", 0))
-    rng = np.random.default_rng(seed)
+    measurement_rng, generation_rng = _run_rng_streams(seed)
     output_dir = ensure_dir(run_cfg.get("output_dir", "outputs/qdte_run"))
+    _mark_run_started(output_dir, seed)
     logs: list[str] = []
 
     def log(message: str) -> None:
@@ -920,13 +1130,30 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     X_real = preprocess_result.X
     schema = preprocess_result.schema
     n_real = int(X_real.shape[0])
+    if n_real <= 0 or schema.d <= 0:
+        raise ValueError("Input data must contain at least one row and one column")
     schema.save_json(output_dir / "schema.json")
     log(f"Loaded real data: rows={X_real.shape[0]}, cols={X_real.shape[1]}")
 
-    qcat, workload_groups = build_workload(schema, config)
+    reuse_path = _measurement_reuse_path(config)
+    if _reuse_workload_from_measurement(config):
+        if reuse_path is None:
+            raise ValueError("workload.reuse_from_measurement requires measurement.reuse_from")
+        query_path = reuse_path / "queries.json" if reuse_path.is_dir() else reuse_path.parent / "queries.json"
+        if not query_path.exists():
+            raise FileNotFoundError(f"workload.reuse_from_measurement could not find queries.json near {reuse_path}")
+        qcat = QueryCatalogue.from_dict(read_json(query_path))
+        workload_groups = _load_reused_workload_groups(reuse_path, qcat)
+        log(f"Reused workload from measurement artifact: queries={qcat.m}, groups={len(workload_groups)}")
+    else:
+        qcat, workload_groups = build_workload(schema, config)
+        log(f"Constructed workload: queries={qcat.m}, groups={len(workload_groups)}")
+    if qcat.m <= 0:
+        raise ValueError("Configured workload produced no queries")
+    schema.validate()
+    qcat.validate(schema.cardinalities)
     qcat.save_json(output_dir / "queries.json")
     workload_summary = _workload_summary(qcat, workload_groups, schema, config)
-    log(f"Constructed workload: queries={qcat.m}, groups={len(workload_groups)}")
     compute_heldout_eval = bool(evaluation_cfg.get("compute_heldout_query_error", False))
     heldout_qcat: QueryCatalogue | None = None
     heldout_workload_groups: list[WorkloadGroup] = []
@@ -944,6 +1171,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             num_removed_as_measured_duplicates = int(heldout_qcat.m - len(keep_indices))
             heldout_qcat = filter_query_catalogue(heldout_qcat, keep_indices)
             heldout_workload_groups = filter_workload_groups(heldout_workload_groups, keep_indices)
+        heldout_qcat.validate(schema.cardinalities)
         heldout_qcat.save_json(output_dir / "queries_holdout.json")
         heldout_summary = _heldout_workload_summary(
             heldout_qcat,
@@ -959,10 +1187,10 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             f"removed_measured_duplicates={num_removed_as_measured_duplicates}"
         )
 
-    reuse_path = _measurement_reuse_path(config)
     if reuse_path is not None:
         t0 = time.perf_counter()
         _validate_reused_queries(reuse_path, qcat)
+        _validate_reused_schema(reuse_path, schema)
         measurement_json_path = _measurement_json_path(reuse_path)
         if not measurement_json_path.exists():
             raise FileNotFoundError(f"measurement.reuse_from does not contain measurements.json: {reuse_path}")
@@ -971,6 +1199,11 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 "measurement.reuse_from target length mismatch: "
                 f"artifact has {measurements.target_projected.shape[0]}, current workload has {qcat.m}"
+            )
+        if measurements.num_rows is not None and int(measurements.num_rows) != n_real:
+            raise ValueError(
+                "measurement.reuse_from row-count mismatch: "
+                f"artifact has {measurements.num_rows}, current data has {n_real}"
             )
         stats.time_measurement_seconds = time.perf_counter() - t0
         log(f"Reused measurement artifact from {measurement_json_path}")
@@ -981,11 +1214,17 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             qcat,
             workload_groups,
             config,
-            rng,
+            measurement_rng,
             batch_size=int(runtime_cfg.get("answer_batch_size", 8192)),
             cardinalities=schema.cardinalities,
         )
         stats.time_measurement_seconds = time.perf_counter() - t0
+    configured_privacy_mode = str(config.get("privacy", {}).get("mode", "dp")).lower()
+    if configured_privacy_mode == "dp" and measurements.mode != "dp":
+        raise ValueError(
+            "privacy.mode=dp cannot reuse or consume a non-DP measurement artifact; "
+            f"artifact mode is {measurements.mode!r}"
+        )
     write_json(measurements.to_public_dict(), output_dir / "measurements.json")
     if measurements.mode == "dp" and reuse_path is not None:
         log(
@@ -1015,6 +1254,104 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 f"sensitivity_l2={group.sensitivity_l2:.6g}, rho={group.rho:.6g}, noise_std={group.noise_std:.6g}"
             )
 
+    fission_cfg = measurement_cfg.get("fission", {}) or {}
+    fission_enabled = bool(fission_cfg.get("enabled", False))
+    fission_split: GaussianFissionSplit | None = None
+    fission_projection_diagnostics: dict[str, Any] | None = None
+    fission_reconstruction_max_abs = 0.0
+    fission_optimization_branch = str(
+        fission_cfg.get("optimization_branch", "train")
+    ).lower()
+    fission_holdout_branch = "validation"
+    fission_holdout_noisy: np.ndarray | None = None
+    fission_holdout_variance: np.ndarray | None = None
+    generation_target_projected = measurements.target_projected.astype(np.float32)
+    generation_measurement_variance = measurements.variances.astype(np.float32)
+    if fission_enabled:
+        raw_variance = _raw_variances_from_measurement_groups(
+            measurements.groups,
+            qcat.m,
+            measurements.variances,
+        ).astype(np.float32)
+        fission_seed_offset = int(fission_cfg.get("seed_offset", 51_771))
+        fission_rng = np.random.default_rng(
+            np.random.SeedSequence([seed, 0xF15510, fission_seed_offset])
+        )
+        fission_split = gaussian_fission_split(
+            measurements.target_noisy,
+            raw_variance,
+            train_fraction=float(fission_cfg.get("train_fraction", 0.8)),
+            rng=fission_rng,
+        )
+        if fission_optimization_branch == "train":
+            optimization_noisy = fission_split.train_noisy
+            optimization_variance = fission_split.train_variances
+            fission_holdout_branch = "validation"
+            fission_holdout_noisy = fission_split.validation_noisy
+            fission_holdout_variance = fission_split.validation_variances
+        elif fission_optimization_branch == "validation":
+            optimization_noisy = fission_split.validation_noisy
+            optimization_variance = fission_split.validation_variances
+            fission_holdout_branch = "train"
+            fission_holdout_noisy = fission_split.train_noisy
+            fission_holdout_variance = fission_split.train_variances
+        else:
+            raise ValueError(
+                "measurement.fission.optimization_branch must be 'train' or 'validation'"
+            )
+        generation_target_projected, fission_projection_diagnostics = _apply_configured_projection(
+            optimization_noisy,
+            qcat,
+            measurements.groups,
+            n_real,
+            config.get("projection", {}),
+            optimization_variance,
+            schema.cardinalities,
+        )
+        generation_measurement_variance = optimization_variance.astype(np.float32)
+        reconstructed = (
+            fission_split.train_fraction * fission_split.train_noisy.astype(np.float64)
+            + (1.0 - fission_split.train_fraction)
+            * fission_split.validation_noisy.astype(np.float64)
+        )
+        fission_reconstruction_max_abs = float(
+            np.max(np.abs(reconstructed - measurements.target_noisy.astype(np.float64)))
+        )
+        write_json(
+            {
+                "enabled": True,
+                "train_fraction": float(fission_split.train_fraction),
+                "gamma": float(fission_split.gamma),
+                "seed_offset": int(fission_seed_offset),
+                "checkpoint_interval": int(fission_cfg.get("checkpoint_interval", 100)),
+                "selection_rule": str(
+                    fission_cfg.get("selection_rule", "earliest_within_one_se")
+                ),
+                "one_se_multiplier": float(fission_cfg.get("one_se_multiplier", 1.0)),
+                "optimization_branch": fission_optimization_branch,
+                "holdout_branch": fission_holdout_branch,
+                "optimization_noisy": optimization_noisy.tolist(),
+                "optimization_projected": generation_target_projected.tolist(),
+                "optimization_variances": optimization_variance.tolist(),
+                "holdout_noisy": fission_holdout_noisy.tolist(),
+                "holdout_variances": fission_holdout_variance.tolist(),
+                "train_noisy": fission_split.train_noisy.tolist(),
+                "train_variances": fission_split.train_variances.tolist(),
+                "validation_noisy": fission_split.validation_noisy.tolist(),
+                "validation_variances": fission_split.validation_variances.tolist(),
+                "original_reconstruction_max_abs": fission_reconstruction_max_abs,
+                "train_projection_diagnostics": fission_projection_diagnostics or {},
+            },
+            output_dir / "measurements_fission.json",
+        )
+        log(
+            "Applied DP post-processing Gaussian fission: "
+            f"train_fraction={fission_split.train_fraction:.6g}, "
+            f"optimization_branch={fission_optimization_branch}, "
+            f"gamma={fission_split.gamma:.6g}, "
+            f"reconstruction_max_abs={fission_reconstruction_max_abs:.6g}"
+        )
+
     t0 = time.perf_counter()
     init_cfg = config.get("init", {})
     init_encoded_npy = init_cfg.get("encoded_npy")
@@ -1025,6 +1362,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 "init.encoded_npy shape mismatch: "
                 f"expected (*, {schema.d}), got {tuple(X_syn.shape)}"
             )
+        if X_syn.shape[0] <= 0:
+            raise ValueError("init.encoded_npy must contain at least one synthetic row")
         for attr, cardinality in enumerate(schema.cardinalities):
             values = X_syn[:, attr]
             if np.any(values < 0) or np.any(values >= int(cardinality)):
@@ -1033,18 +1372,32 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         log(f"Initialized synthetic table from {init_encoded_npy}: rows={n_syn}, cols={schema.d}")
     else:
         n_syn = _resolve_n_syn(init_cfg.get("N_syn", "same_as_real"), n_real)
-        X_syn = initialize_independent_oneway(qcat, measurements.target_projected, schema, n_syn, rng)
+        X_syn = initialize_independent_oneway(qcat, generation_target_projected, schema, n_syn, generation_rng)
+    save_npy(X_syn, output_dir / "synthetic_initial_encoded.npy")
     answer_syn = answer_queries(X_syn, qcat, batch_size=int(runtime_cfg.get("answer_batch_size", 8192)))
-    target = measurements.target_projected.astype(np.float32)
+    target = generation_target_projected.astype(np.float32)
     residual = target - answer_syn
-    measurement_variance = measurements.variances.astype(np.float32)
-    measurement_inv_variance = measurements.inv_variances.astype(np.float32)
+    measurement_variance = generation_measurement_variance.astype(np.float32)
+    measurement_inv_variance = (1.0 / np.maximum(measurement_variance, 1.0e-12)).astype(np.float32)
     objective_weighting = str(qdte_cfg.get("objective_weighting", "variance")).lower()
+    objective_weight_profile = str(
+        qdte_cfg.get("objective_weight_profile", "none")
+    ).lower()
+    objective_loss = str(qdte_cfg.get("objective_loss", "quadratic")).lower()
+    objective_loss_weights = _objective_loss_weights(objective_loss, workload_groups, qcat.m)
+    objective_query_weight_multipliers = _objective_query_weight_multipliers(
+        objective_weight_profile,
+        workload_groups,
+        qcat.m,
+    )
     variance, inv_variance, sigma = _objective_variance_arrays(
         measurement_variance,
         measurement_inv_variance,
         objective_weighting,
     )
+    inv_variance = (
+        inv_variance * objective_query_weight_multipliers
+    ).astype(np.float32)
     state = QDTEState(
         X_syn=X_syn,
         answer_syn=answer_syn.astype(np.float32),
@@ -1060,12 +1413,21 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     log(
         "QDTE objective weighting: "
         f"{objective_weighting}; "
+        f"weight_profile={objective_weight_profile}; "
+        f"objective_loss={objective_loss}; "
         f"objective_variance_mean={float(np.mean(state.variance)):.6g}; "
+        f"objective_loss_weight_mean={float(np.mean(objective_loss_weights)):.6g}; "
         f"measurement_variance_mean={float(np.mean(measurement_variance)):.6g}"
     )
     initial_answers = state.answer_syn.copy()
     initial_residual = state.residual.copy()
     initial_loss = measured_loss(state.residual, state.inv_variance)
+    initial_optimization_objective = _optimization_objective_value(
+        state.residual,
+        objective_loss,
+        state.inv_variance,
+        objective_loss_weights,
+    )
     initial_unweighted_loss = unweighted_measured_loss(state.residual)
     initial_rms = rms_standardized_residual(initial_loss, qcat.m)
     initial_unweighted_rms = rms_unweighted_residual(state.residual)
@@ -1077,6 +1439,15 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             batch_size=int(runtime_cfg.get("answer_batch_size", 8192)),
         )
     log(f"Initial measured loss: {initial_loss:.6g}")
+
+    fission_checkpoint_interval = int(fission_cfg.get("checkpoint_interval", 100))
+    fission_checkpoint_iterations: list[int] = []
+    fission_checkpoint_tables: list[np.ndarray] = []
+    fission_checkpoint_answers: list[np.ndarray] = []
+    if fission_enabled:
+        fission_checkpoint_iterations.append(0)
+        fission_checkpoint_tables.append(state.X_syn.copy())
+        fission_checkpoint_answers.append(state.answer_syn.copy())
 
     compute_true_eval = bool(evaluation_cfg.get("compute_true_query_error", True))
     X_real_for_evaluation = X_real if compute_true_eval or compute_heldout_eval else None
@@ -1172,6 +1543,40 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     debt_repay = float(qdte_cfg.get("debt_repay", 1.0))
     debt_cap = float(qdte_cfg.get("debt_cap", 1.0e6))
     min_advantage = float(qdte_cfg.get("min_advantage", 1.0e-6))
+    structured_swap_enabled = bool(qdte_cfg.get("structured_swap_enabled", False))
+    structured_swap_start_iter = max(1, int(qdte_cfg.get("structured_swap_start_iter", 1)))
+    structured_swap_interval = max(1, int(qdte_cfg.get("structured_swap_interval", 10)))
+    structured_swap_candidate_units = max(1, int(qdte_cfg.get("structured_swap_candidate_units", 2048)))
+    structured_swap_transport_pool = max(1, int(qdte_cfg.get("structured_swap_transport_pool", 256)))
+    structured_swap_accept_start = max(1, int(qdte_cfg.get("structured_swap_accept_start", 16)))
+    structured_swap_accept_end = max(1, int(qdte_cfg.get("structured_swap_accept_end", 1)))
+    structured_swap_accept_schedule = str(qdte_cfg.get("structured_swap_accept_schedule", "cosine"))
+    structured_swap_noise_guard_kappa = float(qdte_cfg.get("structured_swap_noise_guard_kappa", kappa_noise))
+    structured_swap_noise_guard_mode = str(qdte_cfg.get("structured_swap_noise_guard_mode", "fixed"))
+    structured_swap_noise_guard_alpha = float(qdte_cfg.get("structured_swap_noise_guard_alpha", 0.05))
+    structured_swap_trigger_rms = float(qdte_cfg.get("structured_swap_trigger_rms", 0.0))
+    structured_swap_delta_backend = str(qdte_cfg.get("structured_swap_delta_backend", "sparse_cpu"))
+    structured_swap_exploration_floor = float(qdte_cfg.get("structured_swap_exploration_floor", 0.20))
+    structured_swap_policy_decay = float(qdte_cfg.get("structured_swap_policy_decay", 0.95))
+    structured_swap_policy_prior_strength = float(
+        qdte_cfg.get("structured_swap_policy_prior_strength", 32.0)
+    )
+    if structured_swap_accept_start < structured_swap_accept_end:
+        raise ValueError("qdte.structured_swap_accept_start must be at least structured_swap_accept_end")
+    if structured_swap_noise_guard_kappa < 0.0 or not np.isfinite(structured_swap_noise_guard_kappa):
+        raise ValueError("qdte.structured_swap_noise_guard_kappa must be finite and non-negative")
+    if structured_swap_noise_guard_mode not in {"fixed", "bonferroni"}:
+        raise ValueError(
+            "qdte.structured_swap_noise_guard_mode must be one of {'fixed', 'bonferroni'}"
+        )
+    if not 0.0 < structured_swap_noise_guard_alpha < 1.0:
+        raise ValueError("qdte.structured_swap_noise_guard_alpha must be in (0, 1)")
+    if structured_swap_trigger_rms < 0.0 or not np.isfinite(structured_swap_trigger_rms):
+        raise ValueError("qdte.structured_swap_trigger_rms must be finite and non-negative")
+    if structured_swap_delta_backend not in {"sparse_cpu", "dense_gpu"}:
+        raise ValueError(
+            "qdte.structured_swap_delta_backend must be one of {'sparse_cpu', 'dense_gpu'}"
+        )
     transport_prefix_strategy = str(qdte_cfg.get("transport_prefix_strategy", "largest_positive"))
     stop_patience = int(qdte_cfg.get("stop_patience", 50))
     full_recompute_every = int(qdte_cfg.get("full_recompute_every", 50))
@@ -1193,6 +1598,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     pre_transport_loss_history: list[float] = []
     candidate_diagnostic_rows: list[dict[str, float | int]] = []
     use_gpu_candidate_backend = candidate_backend in {"jax_repair", "gpu_repair"}
+    if use_gpu_candidate_backend and objective_loss == "tvd_l1":
+        raise ValueError("qdte.objective_loss=tvd_l1 is not supported with GPU fused candidate scoring yet")
     X_syn_gpu = replicate_table_to_devices(state.X_syn) if use_gpu_candidate_backend else None
     gpu_candidate_context = prepare_gpu_candidate_context(qcat, schema, config) if use_gpu_candidate_backend else None
     dense_score_context = (
@@ -1200,6 +1607,44 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         if (not use_gpu_candidate_backend and score_backend not in {"target_only", "sparse_delta"})
         else None
     )
+    structured_swap_score_context = prepare_hybrid_score_context(qcat) if structured_swap_enabled else None
+    structured_swap_delta_index = (
+        QueryDeltaIndex.build(qcat, num_attrs=schema.d) if structured_swap_enabled else None
+    )
+    structured_swap_policy = (
+        AdaptiveSwapAttributePolicy.create(
+            schema,
+            exploration_floor=structured_swap_exploration_floor,
+            decay=structured_swap_policy_decay,
+            prior_strength=structured_swap_policy_prior_strength,
+        )
+        if structured_swap_enabled
+        else None
+    )
+    structured_swap_rng = (
+        np.random.default_rng(np.random.SeedSequence([seed, 0x51574450]))
+        if structured_swap_enabled
+        else None
+    )
+    structured_swap_schedule_cfg = {
+        "accepted_per_iter_schedule": structured_swap_accept_schedule,
+        "accepted_per_iter_start": structured_swap_accept_start,
+        "accepted_per_iter_end": structured_swap_accept_end,
+        "accepted_per_iter_warmup_iters": 0,
+        "accepted_per_iter_anneal_iters": max_iters,
+    }
+    structured_swap_total_candidates = 0
+    structured_swap_total_accepted = 0
+    structured_swap_total_noise_guard_rejections = 0
+    structured_swap_total_objective_advantage = 0.0
+    structured_swap_max_effective_noise_guard_kappa = structured_swap_noise_guard_kappa
+    structured_swap_time_seconds = 0.0
+    structured_swap_generation_time_seconds = 0.0
+    structured_swap_scoring_time_seconds = 0.0
+    structured_swap_policy_pool_time_seconds = 0.0
+    structured_swap_delta_time_seconds = 0.0
+    structured_swap_transport_time_seconds = 0.0
+    structured_swap_apply_time_seconds = 0.0
     configured_total_candidates = int(
         qdte_cfg.get("total_candidates_per_iter", max(1, num_active_targets * int(qdte_cfg.get("candidates_per_target", 64))))
     )
@@ -1217,6 +1662,10 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             * state.inv_variance.astype(np.float64, copy=False)
         )
     )
+    objective_advantage_noise_variance = (
+        measurement_variance.astype(np.float64)
+        * state.inv_variance.astype(np.float64) ** 2
+    ).astype(np.float32)
 
     for iteration in range(1, max_iters + 1):
         iter_start = time.perf_counter()
@@ -1230,7 +1679,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         debt_info = debt_diagnostics(state.debt)
         active = select_active_queries(
             state.residual,
-            state.sigma,
+            _objective_selection_sigma(objective_loss_weights) if objective_loss == "tvd_l1" else state.sigma,
             state.debt,
             num_active_targets=num_active_targets,
             kappa_noise=kappa_noise,
@@ -1240,6 +1689,12 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         if len(active) == 0:
             patience += 1
             cur_loss = measured_loss(state.residual, state.inv_variance)
+            cur_optimization_objective = _optimization_objective_value(
+                state.residual,
+                objective_loss,
+                state.inv_variance,
+                objective_loss_weights,
+            )
             cur_unweighted_loss = unweighted_measured_loss(state.residual)
             if iteration == 1 or iteration % log_every == 0:
                 timeseries.append(
@@ -1247,6 +1702,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                         "iteration": iteration,
                         "wall_time": time.perf_counter() - stats.start_time,
                         "measured_loss": cur_loss,
+                        "optimization_objective": cur_optimization_objective,
                         "unweighted_measured_loss": cur_unweighted_loss,
                         "rms_standardized_residual": rms_standardized_residual(cur_loss, qcat.m),
                         "rms_unweighted_residual": rms_unweighted_residual(state.residual),
@@ -1254,6 +1710,10 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                         "residual_l1": float(np.sum(np.abs(state.residual))),
                         "active_queries": 0,
                         "num_candidates": 0,
+                        "raw_returned_candidates_before_edge_dedup": 0,
+                        "duplicate_edge_candidates": 0,
+                        "duplicate_edge_rate": 0.0,
+                        "edge_candidates_trimmed_to_return_limit": 0,
                         "candidates_scored_this_iter": 0,
                         "positive_advantage_rate": 0.0,
                         "positive_returned_rate": 0.0,
@@ -1303,7 +1763,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 state.residual,
                 state.inv_variance,
                 config,
-                rng,
+                generation_rng,
                 context=gpu_candidate_context,
             )
             candidates = gpu_batch.candidates
@@ -1317,8 +1777,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 active,
                 state.residual,
                 config,
-                rng,
-                inv_variance=state.inv_variance,
+                generation_rng,
+                inv_variance=objective_loss_weights if objective_loss == "tvd_l1" else state.inv_variance,
             )
             stats.time_candidate_generation_seconds += time.perf_counter() - t_candidate
         diag = candidates.diagnostics
@@ -1333,9 +1793,19 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         stats.num_source_filter_attempts += int(diag.get("source_filter_attempts", 0.0))
         stats.num_source_filter_failures += int(diag.get("source_filter_failures", 0.0))
         stats.num_candidates_returned_to_cpu += int(candidates.size)
+        stats.num_raw_candidates_returned_before_edge_dedup += int(
+            diag.get("raw_returned_candidates_before_edge_dedup", candidates.size)
+        )
+        stats.num_duplicate_edge_candidates_filtered += int(diag.get("duplicate_edge_candidates", 0.0))
+        stats.num_edge_candidates_trimmed_to_return_limit += int(
+            diag.get("edge_candidates_trimmed_to_return_limit", 0.0)
+        )
+        candidates_scored_this_iter = int(diag.get("scored_candidates", candidates.size))
+        stats.num_candidates_scored += candidates_scored_this_iter
 
         if candidates.size == 0:
             patience += 1
+            stats.num_iterations = iteration
             if patience >= stop_patience:
                 log(f"Stopping at iter={iteration}: no candidates for {patience} iterations")
                 break
@@ -1343,7 +1813,18 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
 
         if fused_advantages is None:
             t_score = time.perf_counter()
-            if score_backend == "target_only":
+            if objective_loss == "tvd_l1":
+                advantages = score_candidates_l1(
+                    candidates,
+                    state.residual,
+                    objective_loss_weights,
+                    qcat,
+                    lambda_cost=lambda_cost,
+                    chunk_size=chunk_size,
+                    use_pmap=use_pmap,
+                    context=dense_score_context,
+                )
+            elif score_backend == "target_only":
                 advantages = score_candidates_target_only(
                     candidates,
                     state.residual,
@@ -1375,18 +1856,25 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             stats.time_scoring_seconds += time.perf_counter() - t_score
         else:
             advantages = fused_advantages
-        candidates_scored_this_iter = int(diag.get("scored_candidates", candidates.size))
-        stats.num_candidates_scored += candidates_scored_this_iter
         positive_returned_count = int(np.sum(advantages > min_advantage)) if len(advantages) else 0
         stats.num_positive_returned_candidates += positive_returned_count
         positive_rate = float(positive_returned_count / max(1, len(advantages)))
 
         t_transport = time.perf_counter()
         before_loss = measured_loss(state.residual, state.inv_variance)
+        before_optimization_objective = _optimization_objective_value(
+            state.residual,
+            objective_loss,
+            state.inv_variance,
+            objective_loss_weights,
+        )
         pre_transport_loss_history.append(float(before_loss))
         residual_before_debt = state.residual.copy()
-        loss_vec_before_debt = 0.5 * residual_before_debt.astype(np.float64) ** 2 * state.inv_variance.astype(
-            np.float64
+        loss_vec_before_debt = _optimization_loss_vector(
+            residual_before_debt,
+            objective_loss,
+            state.inv_variance,
+            objective_loss_weights,
         )
         if transport_mode == "blind_accept":
             selected = select_nonconflicting_in_order(
@@ -1418,6 +1906,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         elif transport_mode == "atom_flow":
             selected = np.empty(0, dtype=np.int32)
             if atom_flow_update_mode == "exact":
+                if objective_loss == "tvd_l1":
+                    raise ValueError("qdte.objective_loss=tvd_l1 supports atom_flow_update_mode=batch only")
                 transport = choose_atom_flow_transport(
                     candidates,
                     advantages,
@@ -1445,6 +1935,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     max_pool=atom_flow_max_pool,
                     prefix_strategy=transport_prefix_strategy,
                     delta_index=query_delta_index if transport_delta_backend == "sparse_cpu" else None,
+                    objective="l1" if objective_loss == "tvd_l1" else "quadratic",
+                    objective_weights=objective_loss_weights if objective_loss == "tvd_l1" else None,
                 )
             else:
                 raise ValueError(f"Unknown qdte.atom_flow_update_mode={atom_flow_update_mode!r}")
@@ -1671,7 +2163,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 qcat,
                 max_accept=accept_limit,
                 min_advantage=min_advantage,
-                rng=rng,
+                rng=generation_rng,
                 group_count=random_group_count,
                 min_group_size=random_group_min_size,
                 max_group_size=random_group_max_size,
@@ -2053,6 +2545,41 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     lambda_cost,
                     prefix_strategy=transport_prefix_strategy,
                 )
+        if len(transport.accepted_indices) > 0:
+            accepted_row_ids = candidates.row_ids[transport.accepted_indices]
+            if len(np.unique(accepted_row_ids)) != len(accepted_row_ids):
+                raise AssertionError("Transport returned conflicting edits for the same synthetic row")
+            accepted_cost = float(
+                candidates.edit_cost[transport.accepted_indices].astype(np.float64, copy=False).sum()
+            )
+            if objective_loss == "tvd_l1":
+                exact_batch_advantage = batch_advantage_l1(
+                    state.residual,
+                    objective_loss_weights,
+                    transport.delta_sum,
+                    accepted_cost,
+                    lambda_cost,
+                )
+            else:
+                exact_batch_advantage = batch_advantage(
+                    state.residual,
+                    state.inv_variance,
+                    transport.delta_sum,
+                    accepted_cost,
+                    lambda_cost,
+                )
+            transport.diagnostics["exact_batch_advantage"] = float(exact_batch_advantage)
+            transport.diagnostics["approx_batch_advantage"] = float(transport.batch_advantage)
+            if transport_mode != "blind_accept" and exact_batch_advantage <= 0.0:
+                transport.diagnostics["rejected_by_exact_batch_check"] = 1
+                transport.accepted_indices = np.empty(0, dtype=np.int32)
+                transport.delta_sum = np.zeros_like(state.residual, dtype=np.float32)
+                transport.batch_advantage = float(exact_batch_advantage)
+                transport.mean_advantage = 0.0
+            else:
+                transport.diagnostics["rejected_by_exact_batch_check"] = 0
+                transport.batch_advantage = float(exact_batch_advantage)
+
         if candidate_diagnostics_enabled:
             diagnostic_delta_index = query_delta_index if transport_delta_backend == "sparse_cpu" else None
             candidate_diagnostic_rows.append(
@@ -2082,7 +2609,12 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             )
             state.answer_syn = (state.answer_syn + transport.delta_sum).astype(np.float32)
             state.residual = (state.target - state.answer_syn).astype(np.float32)
-            loss_vec_after_debt = 0.5 * state.residual.astype(np.float64) ** 2 * state.inv_variance.astype(np.float64)
+            loss_vec_after_debt = _optimization_loss_vector(
+                state.residual,
+                objective_loss,
+                state.inv_variance,
+                objective_loss_weights,
+            )
             state.debt, debt_info = update_query_debt_from_loss_vectors(
                 state.debt,
                 loss_vec_before_debt,
@@ -2096,16 +2628,221 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             patience = 0
         else:
             patience += 1
+
         last_transport_diagnostics = transport.diagnostics
         stats.time_transport_seconds += time.perf_counter() - t_transport
+
+        structured_swap_candidates_this_iter = 0
+        structured_swap_accepted_this_iter = 0
+        structured_swap_noise_rejections_this_iter = 0
+        structured_swap_advantage_this_iter = 0.0
+        structured_swap_effective_noise_guard_kappa = structured_swap_noise_guard_kappa
+        structured_swap_current_rms = rms_standardized_residual(
+            measured_loss(state.residual, state.inv_variance),
+            qcat.m,
+        )
+        structured_swap_due = bool(
+            structured_swap_enabled
+            and iteration >= structured_swap_start_iter
+            and (iteration - structured_swap_start_iter) % structured_swap_interval == 0
+            and structured_swap_current_rms > structured_swap_trigger_rms
+        )
+        if structured_swap_due:
+            if (
+                structured_swap_score_context is None
+                or structured_swap_delta_index is None
+                or structured_swap_policy is None
+                or structured_swap_rng is None
+            ):
+                raise RuntimeError("Structured swap contexts were not initialized")
+            structured_start = time.perf_counter()
+            structured_stage_start = structured_start
+            structured_candidates = generate_global_directed_swap_units(
+                state.X_syn,
+                qcat,
+                schema,
+                state.residual,
+                objective_loss_weights if objective_loss == "tvd_l1" else state.inv_variance,
+                structured_swap_candidate_units,
+                structured_swap_rng,
+                exploration_floor=structured_swap_exploration_floor,
+                attr_probabilities=structured_swap_policy.probabilities(),
+                numerical_gamma=float(qdte_cfg.get("numerical_distance_gamma", 0.1)),
+            )
+            structured_swap_generation_time_seconds += time.perf_counter() - structured_stage_start
+            structured_stage_start = time.perf_counter()
+            if objective_loss == "tvd_l1":
+                structured_scores = score_hybrid_candidate_units_l1(
+                    structured_candidates,
+                    state.residual,
+                    objective_loss_weights,
+                    structured_swap_score_context,
+                    lambda_cost=lambda_cost,
+                    chunk_size=min(chunk_size, 256),
+                )
+            else:
+                structured_scores = score_hybrid_candidate_units(
+                    structured_candidates,
+                    state.residual,
+                    state.inv_variance,
+                    structured_swap_score_context,
+                    lambda_cost=lambda_cost,
+                    chunk_size=chunk_size,
+                    use_pmap=use_pmap,
+                )
+            structured_swap_scoring_time_seconds += time.perf_counter() - structured_stage_start
+            structured_stage_start = time.perf_counter()
+            structured_swap_policy.update(structured_candidates, structured_scores)
+            structured_swap_effective_noise_guard_kappa = _search_adjusted_noise_guard_kappa(
+                mode=structured_swap_noise_guard_mode,
+                fixed_kappa=structured_swap_noise_guard_kappa,
+                family_size=structured_candidates.count,
+                alpha=structured_swap_noise_guard_alpha,
+            )
+            structured_swap_max_effective_noise_guard_kappa = max(
+                structured_swap_max_effective_noise_guard_kappa,
+                structured_swap_effective_noise_guard_kappa,
+            )
+            structured_pool_size = min(structured_candidates.count, structured_swap_transport_pool)
+            structured_pool_indices = np.argsort(-structured_scores, kind="stable")[:structured_pool_size]
+            structured_transport_candidates = structured_candidates.take(structured_pool_indices)
+            structured_transport_scores = structured_scores[structured_pool_indices]
+            structured_accept_limit = _scheduled_accept_limit(
+                iteration=iteration,
+                max_iters=max_iters,
+                base_accept=structured_swap_accept_start,
+                qdte_cfg=structured_swap_schedule_cfg,
+            )
+            structured_swap_policy_pool_time_seconds += time.perf_counter() - structured_stage_start
+            structured_precomputed_deltas = None
+            if structured_swap_delta_backend == "dense_gpu":
+                structured_stage_start = time.perf_counter()
+                structured_precomputed_deltas = candidate_unit_deltas(
+                    structured_transport_candidates,
+                    structured_swap_score_context,
+                )
+                structured_swap_delta_time_seconds += time.perf_counter() - structured_stage_start
+            structured_stage_start = time.perf_counter()
+            structured_transport = select_nonconflicting_candidate_units(
+                structured_transport_candidates,
+                structured_transport_scores,
+                state.residual,
+                state.inv_variance,
+                qcat,
+                max_accept=structured_accept_limit,
+                min_advantage=min_advantage,
+                lambda_cost=lambda_cost,
+                noise_guard_kappa=structured_swap_effective_noise_guard_kappa,
+                advantage_noise_variance=objective_advantage_noise_variance,
+                delta_index=structured_swap_delta_index,
+                precomputed_deltas=structured_precomputed_deltas,
+                objective="l1" if objective_loss == "tvd_l1" else "quadratic",
+                objective_weights=(
+                    objective_loss_weights if objective_loss == "tvd_l1" else None
+                ),
+            )
+            structured_swap_transport_time_seconds += time.perf_counter() - structured_stage_start
+            structured_swap_candidates_this_iter = structured_candidates.count
+            structured_swap_accepted_this_iter = structured_transport.count
+            structured_swap_noise_rejections_this_iter = structured_transport.num_noise_guard_rejections
+            structured_swap_advantage_this_iter = float(
+                np.sum(structured_transport.objective_advantages, dtype=np.float64)
+            )
+            structured_swap_total_candidates += structured_candidates.count
+            structured_swap_total_accepted += structured_transport.count
+            structured_swap_total_noise_guard_rejections += structured_transport.num_noise_guard_rejections
+            structured_swap_total_objective_advantage += structured_swap_advantage_this_iter
+            stats.num_candidates_requested += structured_swap_candidate_units
+            stats.num_candidates_scored += structured_candidates.count
+            stats.num_candidates_returned_to_cpu += structured_candidates.count
+
+            if structured_transport.count > 0:
+                structured_stage_start = time.perf_counter()
+                loss_before_structured = _optimization_objective_value(
+                    state.residual,
+                    objective_loss,
+                    state.inv_variance,
+                    objective_loss_weights,
+                )
+                loss_vec_before_structured = _optimization_loss_vector(
+                    state.residual,
+                    objective_loss,
+                    state.inv_variance,
+                    objective_loss_weights,
+                )
+                apply_hybrid_candidate_units(
+                    state.X_syn,
+                    structured_transport_candidates,
+                    structured_transport.accepted_indices,
+                )
+                accepted_units = structured_transport_candidates.take(structured_transport.accepted_indices)
+                if use_gpu_candidate_backend:
+                    if X_syn_gpu is None:
+                        raise RuntimeError("GPU table is not initialized for structured swap updates")
+                    accepted_mask = accepted_units.row_mask
+                    X_syn_gpu = apply_edits_to_replicated_table(
+                        X_syn_gpu,
+                        accepted_units.row_ids[accepted_mask],
+                        accepted_units.new_rows[accepted_mask],
+                    )
+                state.answer_syn = (state.answer_syn + structured_transport.delta_sum).astype(np.float32)
+                state.residual = (state.target - state.answer_syn).astype(np.float32)
+                loss_after_structured = _optimization_objective_value(
+                    state.residual,
+                    objective_loss,
+                    state.inv_variance,
+                    objective_loss_weights,
+                )
+                accepted_cost = float(
+                    np.sum(
+                        structured_transport_candidates.edit_cost[structured_transport.accepted_indices],
+                        dtype=np.float64,
+                    )
+                )
+                expected_reduction = structured_swap_advantage_this_iter + lambda_cost * accepted_cost
+                actual_reduction = float(loss_before_structured - loss_after_structured)
+                tolerance = 1.0e-5 * max(1.0, abs(expected_reduction))
+                if abs(actual_reduction - expected_reduction) > tolerance:
+                    raise AssertionError(
+                        "Structured swap measured-loss reduction disagrees with exact advantage: "
+                        f"actual={actual_reduction}, expected={expected_reduction}"
+                    )
+                loss_vec_after_structured = _optimization_loss_vector(
+                    state.residual,
+                    objective_loss,
+                    state.inv_variance,
+                    objective_loss_weights,
+                )
+                state.debt, debt_info = update_query_debt_from_loss_vectors(
+                    state.debt,
+                    loss_vec_before_structured,
+                    loss_vec_after_structured,
+                    debt_decay=debt_decay,
+                    debt_repay=debt_repay,
+                    debt_cap=debt_cap,
+                )
+                last_debt_diagnostics = debt_info
+                stats.num_accepted_edits += structured_transport.count
+                patience = 0
+                structured_swap_apply_time_seconds += time.perf_counter() - structured_stage_start
+            elapsed_structured = time.perf_counter() - structured_start
+            structured_swap_time_seconds += elapsed_structured
         debug_drift = 0.0
 
-        if debug_recompute_after_batch and len(transport.accepted_indices) > 0:
+        if debug_recompute_after_batch and (
+            len(transport.accepted_indices) > 0 or structured_swap_accepted_this_iter > 0
+        ):
             t_recompute = time.perf_counter()
             recomputed = answer_queries(state.X_syn, qcat, batch_size=int(runtime_cfg.get("answer_batch_size", 8192)))
             debug_drift = float(np.max(np.abs(recomputed - state.answer_syn)))
             recomputed_residual = (state.target - recomputed).astype(np.float32)
             recomputed_loss = measured_loss(recomputed_residual, state.inv_variance)
+            recomputed_optimization_objective = _optimization_objective_value(
+                recomputed_residual,
+                objective_loss,
+                state.inv_variance,
+                objective_loss_weights,
+            )
             state.answer_syn = recomputed.astype(np.float32)
             state.residual = recomputed_residual
             stats.time_full_recompute_seconds += time.perf_counter() - t_recompute
@@ -2113,9 +2850,14 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 raise AssertionError(
                     f"Incremental answer drift {debug_drift} exceeds tolerance {residual_drift_tolerance}"
                 )
-            if debug_assert_loss_decrease and recomputed_loss > before_loss + loss_tolerance:
+            if (
+                debug_assert_loss_decrease
+                and recomputed_optimization_objective > before_optimization_objective + loss_tolerance
+            ):
                 raise AssertionError(
-                    f"Accepted batch increased recomputed measured loss: before={before_loss}, after={recomputed_loss}"
+                    "Accepted batch increased recomputed optimization objective: "
+                    f"before={before_optimization_objective}, after={recomputed_optimization_objective}; "
+                    f"measured_loss_before={before_loss}, measured_loss_after={recomputed_loss}"
                 )
 
         if full_recompute_every > 0 and iteration % full_recompute_every == 0:
@@ -2126,14 +2868,30 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             state.residual = (state.target - state.answer_syn).astype(np.float32)
             stats.time_full_recompute_seconds += time.perf_counter() - t_recompute
             log(f"Full recompute iter={iteration}: max_incremental_drift={drift:.6g}")
+            if drift > residual_drift_tolerance:
+                raise AssertionError(
+                    f"Incremental answer drift {drift} exceeds tolerance {residual_drift_tolerance}"
+                )
+
+        if fission_enabled and iteration % fission_checkpoint_interval == 0:
+            fission_checkpoint_iterations.append(int(iteration))
+            fission_checkpoint_tables.append(state.X_syn.copy())
+            fission_checkpoint_answers.append(state.answer_syn.copy())
 
         cur_loss = measured_loss(state.residual, state.inv_variance)
+        cur_optimization_objective = _optimization_objective_value(
+            state.residual,
+            objective_loss,
+            state.inv_variance,
+            objective_loss_weights,
+        )
         cur_unweighted_loss = unweighted_measured_loss(state.residual)
         if iteration == 1 or iteration % log_every == 0 or len(transport.accepted_indices) == 0:
             row = {
                 "iteration": iteration,
                 "wall_time": time.perf_counter() - stats.start_time,
                 "measured_loss": cur_loss,
+                "optimization_objective": cur_optimization_objective,
                 "unweighted_measured_loss": cur_unweighted_loss,
                 "rms_standardized_residual": rms_standardized_residual(cur_loss, qcat.m),
                 "rms_unweighted_residual": rms_unweighted_residual(state.residual),
@@ -2141,6 +2899,14 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 "residual_l1": float(np.sum(np.abs(state.residual))),
                 "active_queries": int(len(active)),
                 "num_candidates": int(candidates.size),
+                "raw_returned_candidates_before_edge_dedup": int(
+                    diag.get("raw_returned_candidates_before_edge_dedup", candidates.size)
+                ),
+                "duplicate_edge_candidates": int(diag.get("duplicate_edge_candidates", 0.0)),
+                "duplicate_edge_rate": float(diag.get("duplicate_edge_rate", 0.0)),
+                "edge_candidates_trimmed_to_return_limit": int(
+                    diag.get("edge_candidates_trimmed_to_return_limit", 0.0)
+                ),
                 "candidates_scored_this_iter": candidates_scored_this_iter,
                 "positive_advantage_rate": positive_rate,
                 "positive_returned_rate": positive_rate,
@@ -2351,6 +3117,18 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 "directed_group_positive_fill_total_accepted": int(
                     transport.diagnostics.get("directed_group_positive_fill_total_accepted", 0)
                 ),
+                "structured_swap_due": int(structured_swap_due),
+                "structured_swap_trigger_rms": float(structured_swap_trigger_rms),
+                "structured_swap_current_rms": float(structured_swap_current_rms),
+                "structured_swap_candidates": int(structured_swap_candidates_this_iter),
+                "structured_swap_accepted": int(structured_swap_accepted_this_iter),
+                "structured_swap_noise_guard_rejections": int(
+                    structured_swap_noise_rejections_this_iter
+                ),
+                "structured_swap_effective_noise_guard_kappa": float(
+                    structured_swap_effective_noise_guard_kappa
+                ),
+                "structured_swap_objective_advantage": float(structured_swap_advantage_this_iter),
                 "incremental_answer_drift": debug_drift,
                 **debt_info,
             }
@@ -2359,7 +3137,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 f"iter={iteration} loss={cur_loss:.6g} unweighted_loss={cur_unweighted_loss:.6g} "
                 f"candidates={candidates.size} "
                 f"positive={positive_rate:.3f} accept_limit={accept_limit} accepted={len(transport.accepted_indices)} "
-                f"batch_adv={transport.batch_advantage:.6g}"
+                f"batch_adv={transport.batch_advantage:.6g} "
+                f"structured_accepted={structured_swap_accepted_this_iter}"
             )
 
         stats.num_iterations = iteration
@@ -2369,6 +3148,154 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         stats.time_generation_seconds += time.perf_counter() - iter_start
 
     stats.time_generation_seconds = time.perf_counter() - generation_start
+    fission_selection: FissionCheckpointSelection | None = None
+    fission_selected_iteration = int(stats.num_iterations)
+    fission_best_iteration = int(stats.num_iterations)
+    fission_terminal_iteration = int(stats.num_iterations)
+    fission_terminal_train_loss = measured_loss(state.residual, state.inv_variance)
+    fission_selected_validation_loss = 0.0
+    fission_best_validation_loss = 0.0
+    fission_terminal_validation_loss = 0.0
+    fission_selected_original_released_loss = 0.0
+    fission_terminal_original_released_loss = 0.0
+    if fission_enabled:
+        if fission_split is None:
+            raise RuntimeError("Fission was enabled but split measurements are unavailable")
+        if fission_holdout_noisy is None or fission_holdout_variance is None:
+            raise RuntimeError("Fission holdout measurements are unavailable")
+        terminal_answers = answer_queries(
+            state.X_syn,
+            qcat,
+            batch_size=int(runtime_cfg.get("answer_batch_size", 8192)),
+        ).astype(np.float32)
+        terminal_residual = (state.target - terminal_answers).astype(np.float32)
+        fission_terminal_train_loss = measured_loss(terminal_residual, state.inv_variance)
+        if (
+            not fission_checkpoint_iterations
+            or fission_checkpoint_iterations[-1] != fission_terminal_iteration
+        ):
+            fission_checkpoint_iterations.append(fission_terminal_iteration)
+            fission_checkpoint_tables.append(state.X_syn.copy())
+            fission_checkpoint_answers.append(terminal_answers.copy())
+        else:
+            fission_checkpoint_tables[-1] = state.X_syn.copy()
+            fission_checkpoint_answers[-1] = terminal_answers.copy()
+        save_npy(state.X_syn, output_dir / "synthetic_train_terminal_encoded.npy")
+
+        checkpoint_answer_matrix = np.stack(fission_checkpoint_answers, axis=0)
+        fission_partition_blocks = [
+            np.asarray(group.query_indices, dtype=np.int32)
+            for group in measurements.groups
+            if bool(group.is_partition) and len(group.query_indices) > 1
+        ]
+        fission_selection = select_fission_checkpoint(
+            checkpoint_answer_matrix,
+            fission_holdout_noisy,
+            fission_holdout_variance,
+            selection_rule=str(
+                fission_cfg.get("selection_rule", "earliest_within_one_se")
+            ),
+            one_se_multiplier=float(fission_cfg.get("one_se_multiplier", 1.0)),
+            partition_blocks=fission_partition_blocks,
+            query_weight_multipliers=objective_query_weight_multipliers,
+        )
+        selected_index = int(fission_selection.selected_index)
+        best_index = int(fission_selection.best_index)
+        fission_selected_iteration = int(fission_checkpoint_iterations[selected_index])
+        fission_best_iteration = int(fission_checkpoint_iterations[best_index])
+        fission_selected_validation_loss = float(
+            fission_selection.validation_losses[selected_index]
+        )
+        fission_best_validation_loss = float(fission_selection.validation_losses[best_index])
+        fission_terminal_validation_loss = float(fission_selection.validation_losses[-1])
+
+        original_variance, original_inv_variance, _ = _objective_variance_arrays(
+            measurements.variances.astype(np.float32),
+            measurements.inv_variances.astype(np.float32),
+            objective_weighting,
+        )
+        del original_variance
+        original_inv_variance = (
+            original_inv_variance * objective_query_weight_multipliers
+        ).astype(np.float32)
+        train_losses: list[float] = []
+        original_released_losses: list[float] = []
+        for checkpoint_answers in fission_checkpoint_answers:
+            train_losses.append(
+                measured_loss(
+                    (state.target - checkpoint_answers).astype(np.float32),
+                    state.inv_variance,
+                )
+            )
+            original_released_losses.append(
+                measured_loss(
+                    (
+                        measurements.target_projected.astype(np.float32)
+                        - checkpoint_answers
+                    ).astype(np.float32),
+                    original_inv_variance,
+                )
+            )
+        fission_selected_original_released_loss = float(
+            original_released_losses[selected_index]
+        )
+        fission_terminal_original_released_loss = float(original_released_losses[-1])
+        checkpoint_rows = []
+        for index, iteration_value in enumerate(fission_checkpoint_iterations):
+            checkpoint_rows.append(
+                {
+                    "index": int(index),
+                    "iteration": int(iteration_value),
+                    "train_measured_loss": float(train_losses[index]),
+                    "original_released_measured_loss": float(
+                        original_released_losses[index]
+                    ),
+                    "validation_loss": float(fission_selection.validation_losses[index]),
+                    "validation_avg_partition_l1": float(
+                        fission_selection.validation_avg_partition_l1[index]
+                    ),
+                    "validation_avg_partition_l2_upper": float(
+                        fission_selection.validation_avg_partition_l2_upper[index]
+                    ),
+                    "standard_error_to_best": float(
+                        fission_selection.standard_errors_to_best[index]
+                    ),
+                    "eligible_within_one_se": bool(fission_selection.eligible[index]),
+                    "is_validation_best": bool(index == best_index),
+                    "is_selected": bool(index == selected_index),
+                }
+            )
+        write_json(
+            {
+                "enabled": True,
+                "optimization_branch": fission_optimization_branch,
+                "holdout_branch": fission_holdout_branch,
+                "selection_rule": str(
+                    fission_cfg.get("selection_rule", "earliest_within_one_se")
+                ),
+                "one_se_multiplier": float(fission_cfg.get("one_se_multiplier", 1.0)),
+                "selected_index": selected_index,
+                "selected_iteration": fission_selected_iteration,
+                "best_index": best_index,
+                "best_iteration": fission_best_iteration,
+                "terminal_iteration": fission_terminal_iteration,
+                "checkpoints": checkpoint_rows,
+            },
+            output_dir / "fission_checkpoints.json",
+        )
+        state.X_syn = fission_checkpoint_tables[selected_index].copy()
+        state.answer_syn = fission_checkpoint_answers[selected_index].copy()
+        state.residual = (state.target - state.answer_syn).astype(np.float32)
+        log(
+            "Fission checkpoint selection: "
+            f"selected_iter={fission_selected_iteration}, "
+            f"best_iter={fission_best_iteration}, "
+            f"terminal_iter={fission_terminal_iteration}, "
+            f"selected_validation_loss={fission_selected_validation_loss:.6g}, "
+            f"best_validation_loss={fission_best_validation_loss:.6g}"
+        )
+        fission_checkpoint_tables.clear()
+
     final_answers = answer_queries(state.X_syn, qcat, batch_size=int(runtime_cfg.get("answer_batch_size", 8192)))
     heldout_final_answers: np.ndarray | None = None
     if heldout_qcat is not None:
@@ -2378,13 +3305,25 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             batch_size=int(runtime_cfg.get("answer_batch_size", 8192)),
         )
     final_incremental_answer_drift = float(np.max(np.abs(final_answers - state.answer_syn)))
+    if final_incremental_answer_drift > residual_drift_tolerance:
+        raise AssertionError(
+            "Final incremental answer drift "
+            f"{final_incremental_answer_drift} exceeds tolerance {residual_drift_tolerance}"
+        )
     state.answer_syn = final_answers.astype(np.float32)
     state.residual = (state.target - state.answer_syn).astype(np.float32)
     final_loss = measured_loss(state.residual, state.inv_variance)
+    final_optimization_objective = _optimization_objective_value(
+        state.residual,
+        objective_loss,
+        state.inv_variance,
+        objective_loss_weights,
+    )
     final_unweighted_loss = unweighted_measured_loss(state.residual)
     final_rms = rms_standardized_residual(final_loss, qcat.m)
     final_unweighted_rms = rms_unweighted_residual(state.residual)
     loss_reduction = float(initial_loss - final_loss)
+    optimization_objective_reduction = float(initial_optimization_objective - final_optimization_objective)
     unweighted_loss_reduction = float(initial_unweighted_loss - final_unweighted_loss)
     log(f"Final measured loss: {final_loss:.6g}")
     log(f"Final unweighted measured loss: {final_unweighted_loss:.6g}")
@@ -2413,6 +3352,9 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "initial_measured_loss": initial_loss,
         "final_measured_loss": final_loss,
         "loss_reduction": loss_reduction,
+        "initial_optimization_objective": initial_optimization_objective,
+        "final_optimization_objective": final_optimization_objective,
+        "optimization_objective_reduction": optimization_objective_reduction,
         "initial_unweighted_measured_loss": initial_unweighted_loss,
         "final_unweighted_measured_loss": final_unweighted_loss,
         "unweighted_measured_loss_reduction": unweighted_loss_reduction,
@@ -2421,6 +3363,20 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "initial_rms_unweighted_residual": initial_unweighted_rms,
         "final_rms_unweighted_residual": final_unweighted_rms,
         "objective_weighting": objective_weighting,
+        "objective_loss": objective_loss,
+        "objective_loss_weight_mean": float(np.mean(objective_loss_weights)),
+        "objective_weight_profile": objective_weight_profile,
+        "objective_query_weight_multiplier_mean": float(
+            np.mean(objective_query_weight_multipliers)
+        ),
+        "objective_query_weight_multiplier_min": float(
+            np.min(objective_query_weight_multipliers)
+        ),
+        "objective_query_weight_multiplier_max": float(
+            np.max(objective_query_weight_multipliers)
+        ),
+        "objective_loss_weight_min": float(np.min(objective_loss_weights)),
+        "objective_loss_weight_max": float(np.max(objective_loss_weights)),
         "objective_variance_mean": float(np.mean(state.variance)),
         "objective_variance_min": float(np.min(state.variance)),
         "objective_variance_max": float(np.max(state.variance)),
@@ -2433,11 +3389,84 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "measurement_inv_variance_mean": float(np.mean(measurement_inv_variance)),
         "measurement_inv_variance_min": float(np.min(measurement_inv_variance)),
         "measurement_inv_variance_max": float(np.max(measurement_inv_variance)),
+        "measurement_fission_enabled": bool(fission_enabled),
+        "measurement_fission_optimization_branch": fission_optimization_branch,
+        "measurement_fission_holdout_branch": fission_holdout_branch,
+        "measurement_fission_train_fraction": float(
+            fission_split.train_fraction if fission_split is not None else 1.0
+        ),
+        "measurement_fission_gamma": float(
+            fission_split.gamma if fission_split is not None else 0.0
+        ),
+        "measurement_fission_reconstruction_max_abs": float(
+            fission_reconstruction_max_abs
+        ),
+        "measurement_fission_checkpoint_interval": int(fission_checkpoint_interval),
+        "measurement_fission_selected_iteration": int(fission_selected_iteration),
+        "measurement_fission_best_iteration": int(fission_best_iteration),
+        "measurement_fission_terminal_iteration": int(fission_terminal_iteration),
+        "measurement_fission_selected_validation_loss": float(
+            fission_selected_validation_loss
+        ),
+        "measurement_fission_best_validation_loss": float(fission_best_validation_loss),
+        "measurement_fission_terminal_validation_loss": float(
+            fission_terminal_validation_loss
+        ),
+        "measurement_fission_terminal_train_loss": float(fission_terminal_train_loss),
+        "measurement_fission_selected_original_released_loss": float(
+            fission_selected_original_released_loss
+        ),
+        "measurement_fission_terminal_original_released_loss": float(
+            fission_terminal_original_released_loss
+        ),
         "final_incremental_answer_drift": final_incremental_answer_drift,
         "num_candidates_scored": int(stats.num_candidates_scored),
         "num_candidates_requested": int(stats.num_candidates_requested),
         "num_candidate_shortfall": int(stats.num_candidate_shortfall),
         "num_accepted_edits": int(stats.num_accepted_edits),
+        "structured_swap_enabled": bool(structured_swap_enabled),
+        "structured_swap_start_iter": int(structured_swap_start_iter),
+        "structured_swap_interval": int(structured_swap_interval),
+        "structured_swap_candidate_units": int(structured_swap_candidate_units),
+        "structured_swap_transport_pool": int(structured_swap_transport_pool),
+        "structured_swap_accept_start": int(structured_swap_accept_start),
+        "structured_swap_accept_end": int(structured_swap_accept_end),
+        "structured_swap_accept_schedule": structured_swap_accept_schedule,
+        "structured_swap_noise_guard_kappa": float(structured_swap_noise_guard_kappa),
+        "structured_swap_noise_guard_mode": structured_swap_noise_guard_mode,
+        "structured_swap_noise_guard_alpha": float(structured_swap_noise_guard_alpha),
+        "structured_swap_max_effective_noise_guard_kappa": float(
+            structured_swap_max_effective_noise_guard_kappa
+        ),
+        "structured_swap_trigger_rms": float(structured_swap_trigger_rms),
+        "structured_swap_delta_backend": structured_swap_delta_backend,
+        "structured_swap_exploration_floor": float(structured_swap_exploration_floor),
+        "structured_swap_policy_decay": float(structured_swap_policy_decay),
+        "structured_swap_policy_prior_strength": float(structured_swap_policy_prior_strength),
+        "structured_swap_total_candidates": int(structured_swap_total_candidates),
+        "structured_swap_total_accepted": int(structured_swap_total_accepted),
+        "structured_swap_total_noise_guard_rejections": int(
+            structured_swap_total_noise_guard_rejections
+        ),
+        "structured_swap_total_objective_advantage": float(
+            structured_swap_total_objective_advantage
+        ),
+        "structured_swap_time_seconds": float(structured_swap_time_seconds),
+        "structured_swap_generation_time_seconds": float(
+            structured_swap_generation_time_seconds
+        ),
+        "structured_swap_scoring_time_seconds": float(structured_swap_scoring_time_seconds),
+        "structured_swap_policy_pool_time_seconds": float(
+            structured_swap_policy_pool_time_seconds
+        ),
+        "structured_swap_delta_time_seconds": float(structured_swap_delta_time_seconds),
+        "structured_swap_transport_time_seconds": float(
+            structured_swap_transport_time_seconds
+        ),
+        "structured_swap_apply_time_seconds": float(structured_swap_apply_time_seconds),
+        "structured_swap_policy_final": (
+            structured_swap_policy.diagnostics() if structured_swap_policy is not None else None
+        ),
         "accepted_per_iter": int(accepted_per_iter),
         "accepted_per_iter_schedule": accepted_per_iter_schedule,
         "accepted_per_iter_start": int(accepted_per_iter_start),
@@ -2639,10 +3668,22 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     runtime_dict["measurement_reused"] = bool(reuse_path is not None)
     runtime_dict["measurement_reuse_from"] = str(reuse_path) if reuse_path is not None else ""
     runtime_dict["objective_weighting"] = objective_weighting
+    runtime_dict["objective_weight_profile"] = objective_weight_profile
+    runtime_dict["objective_query_weight_multiplier_mean"] = float(
+        np.mean(objective_query_weight_multipliers)
+    )
+    runtime_dict["objective_loss"] = objective_loss
+    runtime_dict["objective_loss_weight_mean"] = float(np.mean(objective_loss_weights))
     runtime_dict["objective_variance_mean"] = float(np.mean(state.variance))
     runtime_dict["objective_inv_variance_mean"] = float(np.mean(state.inv_variance))
     runtime_dict["measurement_variance_mean"] = float(np.mean(measurement_variance))
     runtime_dict["measurement_inv_variance_mean"] = float(np.mean(measurement_inv_variance))
+    runtime_dict["measurement_fission_enabled"] = bool(fission_enabled)
+    runtime_dict["measurement_fission_optimization_branch"] = fission_optimization_branch
+    runtime_dict["measurement_fission_holdout_branch"] = fission_holdout_branch
+    runtime_dict["measurement_fission_selected_iteration"] = int(fission_selected_iteration)
+    runtime_dict["measurement_fission_best_iteration"] = int(fission_best_iteration)
+    runtime_dict["measurement_fission_terminal_iteration"] = int(fission_terminal_iteration)
     runtime_dict["gpu_devices"] = [str(d) for d in jax.devices()]
     runtime_dict["score_backend"] = score_backend
     runtime_dict["candidate_backend"] = candidate_backend
@@ -2761,4 +3802,13 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         )
     write_json(runtime_dict, output_dir / "runtime.json")
     (output_dir / "logs.txt").write_text("\n".join(logs) + "\n", encoding="utf-8")
+    write_json(
+        {
+            "status": "completed",
+            "seed": int(seed),
+            "num_iterations": int(stats.num_iterations),
+            "final_measured_loss": float(final_loss),
+        },
+        output_dir / "run_status.json",
+    )
     return final_metrics

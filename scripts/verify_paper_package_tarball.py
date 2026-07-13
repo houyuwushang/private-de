@@ -11,18 +11,17 @@ from collections.abc import Iterable
 from pathlib import Path
 
 try:
-    from path_defaults import paper_package_dir, repo_root
+    from path_defaults import qdte_paper_package_dir, repo_root
 except ModuleNotFoundError:
-    from scripts.path_defaults import paper_package_dir, repo_root
+    from scripts.path_defaults import qdte_paper_package_dir, repo_root
 
 
-DEFAULT_PACKAGE_DIR = paper_package_dir()
+DEFAULT_PACKAGE_DIR = qdte_paper_package_dir()
 DEFAULT_TARBALL = DEFAULT_PACKAGE_DIR.with_suffix(".tar.gz")
 DEFAULT_SHA256_FILE = Path(f"{DEFAULT_TARBALL}.sha256")
 DEFAULT_SHA_DOC_RELPATHS = (
     "docs/PUBLIC_RELEASE_MANIFEST_20260706.md",
-    "docs/USENIX_DRAFT_READINESS_SEED0TO4_20260706.md",
-    "docs/PAPER_ARTIFACT_ARCHIVE_CHECKLIST_20260706.md",
+    "docs/QDTE_SUBMISSION_READINESS_20260711.md",
 )
 SHA256_RE = re.compile(r"\b[a-fA-F0-9]{64}\b")
 

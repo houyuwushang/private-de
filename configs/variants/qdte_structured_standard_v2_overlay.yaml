@@ -1,0 +1,41 @@
+# Predeclared paper-default promotion candidate, superseding v1.
+#
+# V1 permanently replaced 512 Base candidates with structured swaps. Once the
+# released-residual trigger disabled swaps, that left less search than Base.
+# V2 preserves all 4096 Base candidates and runs the same average structured
+# proposal budget as a 2048-unit pulse every four iterations. The pulse also
+# scales the acceptance schedule and transport pool by four, reducing dispatch
+# overhead without using private true answers or offline evaluator feedback.
+
+qdte:
+  total_candidates_per_iter: 4096
+  structured_swap_enabled: true
+  structured_swap_start_iter: 1
+  structured_swap_interval: 4
+  structured_swap_candidate_units: 2048
+  structured_swap_transport_pool: 512
+  structured_swap_accept_start: 64
+  structured_swap_accept_end: 4
+  structured_swap_accept_schedule: cosine
+  structured_swap_noise_guard_kappa: 2.0
+  structured_swap_trigger_rms: 1.0
+  structured_swap_delta_backend: dense_gpu
+  structured_swap_exploration_floor: 0.20
+  structured_swap_policy_decay: 0.95
+  structured_swap_policy_prior_strength: 32.0
+
+evidence_boundary:
+  frozen_at: 2026-07-10
+  status: predeclared_before_v2_fixed_noise_utility_gate
+  supersedes: qdte_structured_standard_v1_overlay
+  supersession_reason: preserve_full_base_search_and_amortize_structured_dispatch
+  measurement_protocol: exact_fixed_noise_reuse
+  base_candidate_units_per_iteration: 4096
+  structured_candidate_units_per_pulse: 2048
+  structured_pulse_interval: 4
+  average_structured_candidate_units_per_iteration_while_active: 512
+  implementation_note: dense_gpu_delta_backend_added_after_br_profile_and_proven_byte_identical
+  structured_rng: independent_from_base_generation_rng
+  proposal_inputs: released_residuals_inverse_variances_public_schema_internal_randomness
+  true_answers_during_generation: forbidden
+  promotion_gate: multi_dataset_fixed_noise_utility_runtime_and_tail_validation

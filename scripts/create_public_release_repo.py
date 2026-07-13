@@ -93,7 +93,7 @@ def create_public_release_repo(
     force: bool = False,
     run_smoke: bool = True,
     commit: bool = False,
-    commit_message: str = "Initial public SAGE/QDTE release",
+    commit_message: str = "Initial public QDTE release",
 ) -> ReleaseRepoResult:
     source_root = source_root.resolve()
     output_dir = output_dir.resolve()
@@ -120,9 +120,9 @@ def create_public_release_repo(
             [
                 "git",
                 "-c",
-                "user.name=SAGE Release Bot",
+                "user.name=QDTE Release Bot",
                 "-c",
-                "user.email=sage-release@example.invalid",
+                "user.email=qdte-release@example.invalid",
                 "commit",
                 "-m",
                 commit_message,
@@ -173,7 +173,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Create a persistent clean public release git repository from the "
-            "current public SAGE/QDTE source surface without modifying the "
+            "current public QDTE source surface without modifying the "
             "active research branch."
         )
     )
@@ -183,7 +183,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Replace an existing output directory.")
     parser.add_argument("--skip-smoke", action="store_true", help="Only run strict release verification.")
     parser.add_argument("--commit", action="store_true", help="Create an initial commit in the generated release repo.")
-    parser.add_argument("--commit-message", default="Initial public SAGE/QDTE release")
+    parser.add_argument("--commit-message", default="Initial public QDTE release")
     return parser.parse_args()
 
 

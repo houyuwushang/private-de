@@ -1,8 +1,8 @@
 # Public Release Manifest
 
-Date: 2026-07-06
+Updated: 2026-07-11
 
-This document defines the intended public GitHub surface for the SAGE/QDTE code release. It separates public reproducibility assets from internal handoff notes, paper drafts, expert memos, and experiment scratch artifacts.
+This document defines the intended public GitHub surface for the QDTE code release. It separates public reproducibility assets from internal handoff notes, paper drafts, expert memos, and experiment scratch artifacts.
 
 The release goal is:
 
@@ -63,6 +63,16 @@ configs/adult_sage_strong.yaml
 configs/acs_sage_strong.yaml
 configs/br2000_sage_strong.yaml
 configs/nltcs_sage_strong.yaml
+configs/integrated_sage_qdte_smoke.yaml
+configs/variants/qdte_gsd_breadth_seed0_manifest.yaml
+configs/variants/qdte_gsd_converged_seed0_manifest.yaml
+configs/variants/qdte_pa_diag16_overlay.yaml
+configs/variants/qdte_structured_breadth_tail_v1.yaml
+configs/variants/qdte_structured_converged_batch_v1.yaml
+configs/variants/qdte_structured_converged_tail_v1.yaml
+configs/variants/qdte_structured_fission_refit_v2_overlay.yaml
+configs/variants/qdte_structured_search_aware_v1_overlay.yaml
+configs/variants/qdte_structured_standard_v2_overlay.yaml
 ```
 
 Optional GPU/debug configs can remain if documented:
@@ -102,6 +112,21 @@ scripts/verify_paper_package.py
 scripts/verify_paper_package_tarball.py
 scripts/verify_paper_claims.py
 scripts/verify_public_release.py
+scripts/plan_public_release_branch.py
+scripts/archive_qdte_paper_package.py
+scripts/audit_qdte_paper_claim_matrix.py
+scripts/package_qdte_paper_results.py
+scripts/plot_qdte_paper_results.py
+scripts/verify_qdte_paper_package.py
+scripts/materialize_gsd_measurement.py
+scripts/run_official_gsd_on_qdte_workload.py
+scripts/run_qdte_fission_refit_external.py
+scripts/run_same_target_gsd_generator.py
+scripts/materialize_row_realizable_target.py
+scripts/materialize_teacher_target.py
+scripts/compute_transfer_gap_diagnostics.py
+scripts/reproject_measurements.py
+scripts/summarize_rtp_transfer_evidence.py
 ```
 
 Include ablation and certified-selector scripts if the final paper reports those artifacts:
@@ -112,6 +137,10 @@ scripts/plan_sage_ablation.py
 scripts/collect_sage_ablation.py
 scripts/run_adaptive_selection_ablation.py
 scripts/plot_certified_adaptive_results.py
+scripts/run_integrated_sage_qdte.py
+scripts/audit_integrated_sage_qdte_run.py
+scripts/run_orthogonal_low_budget_pilot.py
+scripts/run_nonnegative_projection_pilot.py
 ```
 
 Include appendix/audit baseline collection helpers only if their external dependency paths are documented:
@@ -171,7 +200,10 @@ Public docs now available:
 ```text
 docs/REPRODUCIBILITY.md
 docs/DP_BOUNDARY.md
+docs/CODE_REVIEW_GUIDE.md
 docs/EXTERNAL_BASELINES.md
+docs/QDTE_PAPER_CLAIM_MATRIX_20260711.json
+docs/QDTE_PAPER_CLAIM_MATRIX_20260711.md
 ```
 
 Do not publish long working notes as the primary public documentation.
@@ -306,8 +338,8 @@ The current paper artifact should be shipped as a separate result archive, not
 committed to the source repository:
 
 ```text
-paper_package_seed0to4_20260706.tar.gz
-sha256: a918441491334904c21d3b9a509164437731ddf3dddab8f1e4705bfb8d185086
+qdte_paper_package_20260711.tar.gz
+sha256: 7bcacf49270d3f478deca9c8375b3f30b51502ca9d8c54caa812f93ce2972f7b
 ```
 
 Manuscript-local helpers such as `scripts/audit_usenix_pdf_format.py` are not
@@ -353,9 +385,22 @@ git add \
   configs/acs_sage_strong.yaml \
   configs/br2000_sage_strong.yaml \
   configs/nltcs_sage_strong.yaml \
+  configs/integrated_sage_qdte_smoke.yaml \
+  configs/variants/qdte_gsd_breadth_seed0_manifest.yaml \
+  configs/variants/qdte_gsd_converged_seed0_manifest.yaml \
+  configs/variants/qdte_pa_diag16_overlay.yaml \
+  configs/variants/qdte_structured_breadth_tail_v1.yaml \
+  configs/variants/qdte_structured_converged_batch_v1.yaml \
+  configs/variants/qdte_structured_converged_tail_v1.yaml \
+  configs/variants/qdte_structured_fission_refit_v2_overlay.yaml \
+  configs/variants/qdte_structured_search_aware_v1_overlay.yaml \
+  configs/variants/qdte_structured_standard_v2_overlay.yaml \
+  docs/CODE_REVIEW_GUIDE.md \
   docs/DP_BOUNDARY.md \
   docs/EXTERNAL_BASELINES.md \
   docs/PUBLIC_RELEASE_MANIFEST_20260706.md \
+  docs/QDTE_PAPER_CLAIM_MATRIX_20260711.json \
+  docs/QDTE_PAPER_CLAIM_MATRIX_20260711.md \
   docs/REPRODUCIBILITY.md \
   qdte \
   scripts/check_env.py \
@@ -364,9 +409,12 @@ git add \
   scripts/smoke_qdte.py \
   scripts/audit_baseline_admission.py \
   scripts/audit_gpu_provenance.py \
+  scripts/audit_integrated_sage_qdte_run.py \
   scripts/audit_original_protocol_baselines.py \
   scripts/audit_paper_result_state.py \
   scripts/audit_public_release_plan.py \
+  scripts/audit_qdte_paper_claim_matrix.py \
+  scripts/archive_qdte_paper_package.py \
   scripts/collect_baseline_calibration.py \
   scripts/collect_external_results.py \
   scripts/collect_gem_diagnostics.py \
@@ -382,28 +430,45 @@ git add \
   scripts/evaluate_rappp_paper_metrics.py \
   scripts/export_rappp_acs_folktables.py \
   scripts/package_paper_results.py \
+  scripts/package_qdte_paper_results.py \
   scripts/verify_paper_package.py \
   scripts/verify_paper_package_tarball.py \
   scripts/verify_paper_claims.py \
   scripts/plan_baseline_calibration.py \
   scripts/plan_external_experiments.py \
+  scripts/plan_public_release_branch.py \
   scripts/plan_sage_ablation.py \
   scripts/plot_certified_adaptive_results.py \
   scripts/plot_external_results.py \
   scripts/plot_paper_summary_results.py \
+  scripts/plot_qdte_paper_results.py \
   scripts/simulate_public_release.py \
   scripts/rehearse_public_release_branch.py \
   scripts/create_public_release_repo.py \
   scripts/run_ablation.py \
   scripts/run_adaptive_selection_ablation.py \
+  scripts/run_integrated_sage_qdte.py \
+  scripts/run_nonnegative_projection_pilot.py \
+  scripts/run_orthogonal_low_budget_pilot.py \
   scripts/run_privmrf_official.py \
   scripts/run_rappp_official_acs.py \
   scripts/run_rappp_official_paper_grid.py \
   scripts/run_sage_external.py \
+  scripts/run_official_gsd_on_qdte_workload.py \
+  scripts/run_qdte_fission_refit_external.py \
+  scripts/run_same_target_gsd_generator.py \
+  scripts/materialize_gsd_measurement.py \
+  scripts/materialize_row_realizable_target.py \
+  scripts/materialize_teacher_target.py \
+  scripts/compute_transfer_gap_diagnostics.py \
+  scripts/reproject_measurements.py \
+  scripts/summarize_rtp_transfer_evidence.py \
   scripts/verify_public_release.py \
+  scripts/verify_qdte_paper_package.py \
   scripts/write_external_input_profile.py \
   scripts/write_external_workload_groups.py \
   scripts/write_paper_tables.py \
+  tests/conftest.py \
   tests/test_external_evaluator.py \
   tests/test_audit_baseline_admission.py \
   tests/test_audit_gpu_provenance.py \
@@ -416,7 +481,31 @@ git add \
   tests/test_verify_paper_package.py \
   tests/test_verify_paper_package_tarball.py \
   tests/test_verify_paper_claims.py \
-  tests/test_verify_public_release.py
+  tests/test_verify_public_release.py \
+  tests/test_archive_qdte_paper_package.py \
+  tests/test_audit_qdte_paper_claim_matrix.py \
+  tests/test_compute_transfer_gap_diagnostics.py \
+  tests/test_consistency_projection.py \
+  tests/test_dp_boundary_no_true_answers_in_generator.py \
+  tests/test_edit_advantage.py \
+  tests/test_engine_smoke.py \
+  tests/test_gsd_diagnostic_helpers.py \
+  tests/test_hybrid_candidates.py \
+  tests/test_hybrid_transport.py \
+  tests/test_materialize_row_realizable_target.py \
+  tests/test_materialize_teacher_target.py \
+  tests/test_measurement.py \
+  tests/test_measurement_fission.py \
+  tests/test_nonnegative_projection_theorem.py \
+  tests/test_package_qdte_paper_results.py \
+  tests/test_plot_qdte_paper_results.py \
+  tests/test_run_official_gsd_on_qdte_workload.py \
+  tests/test_run_integrated_sage_qdte.py \
+  tests/test_run_nonnegative_projection_pilot.py \
+  tests/test_run_orthogonal_low_budget_pilot.py \
+  tests/test_run_qdte_fission_refit_external.py \
+  tests/test_reproject_measurements.py \
+  tests/test_verify_qdte_paper_package.py
 
 python3 scripts/verify_public_release.py --strict
 conda run -n qdte python scripts/simulate_public_release.py --output-dir /tmp/private_de_public_release_strict_check --force
@@ -546,7 +635,7 @@ outputs/
 
 ## README Verification Before Public Release
 
-The README has been updated toward the paper-facing SAGE/QDTE story. Before release, verify it still states:
+The README has been updated toward the paper-facing QDTE story. Before release, verify it still states:
 
 1. The paper-facing generator uses variance-aware QDTE over noisy/projected measurements.
 2. Strong configs are:
@@ -560,7 +649,8 @@ configs/nltcs_sage_strong.yaml
 
 3. Exact true answers are offline evaluation only.
 4. Main experiments use a static public heterogeneous measurement schedule.
-5. Certified adaptive SAGE-Select experiments use transcript-only selection.
+5. Structured and FissionRefit are qualified profiles, not silent replacements
+   for QDTE-Standard.
 6. External baseline wrappers require separate environments and are not vendored.
 
 ## Release Verification Checklist

@@ -29,6 +29,9 @@ class RuntimeStats:
     num_source_filter_attempts: int = 0
     num_source_filter_failures: int = 0
     num_candidates_returned_to_cpu: int = 0
+    num_raw_candidates_returned_before_edge_dedup: int = 0
+    num_duplicate_edge_candidates_filtered: int = 0
+    num_edge_candidates_trimmed_to_return_limit: int = 0
     num_positive_returned_candidates: int = 0
     num_selected_nonconflicting_candidates: int = 0
 
@@ -76,6 +79,11 @@ class RuntimeStats:
             "num_source_filter_attempts": int(self.num_source_filter_attempts),
             "num_source_filter_failures": int(self.num_source_filter_failures),
             "num_candidates_returned_to_cpu": int(self.num_candidates_returned_to_cpu),
+            "num_raw_candidates_returned_before_edge_dedup": int(
+                self.num_raw_candidates_returned_before_edge_dedup
+            ),
+            "num_duplicate_edge_candidates_filtered": int(self.num_duplicate_edge_candidates_filtered),
+            "num_edge_candidates_trimmed_to_return_limit": int(self.num_edge_candidates_trimmed_to_return_limit),
             "num_positive_returned_candidates": int(self.num_positive_returned_candidates),
             "num_selected_nonconflicting_candidates": int(self.num_selected_nonconflicting_candidates),
             "accepted_rate": float(accepted_rate),

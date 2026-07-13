@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -34,6 +36,71 @@ DEFAULT_CONFIGS = {
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _source_tree_hash(root: Path) -> str:
+    paths = sorted((root / "qdte").rglob("*.py"))
+    paths.append(Path(__file__).resolve())
+    digest = hashlib.sha256(b"sage-qdte-static-source-tree-v1\0")
+    for path in sorted(set(paths)):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "little"))
+        digest.update(relative)
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _git_revision(path: Path) -> dict[str, Any]:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        tracked_diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD"],
+            cwd=path,
+            check=True,
+            capture_output=True,
+        ).stdout
+        return {
+            "commit": commit,
+            "worktree_dirty": bool(status.strip()),
+            "status_sha256": hashlib.sha256(status.encode("utf-8")).hexdigest(),
+            "tracked_diff_sha256": hashlib.sha256(tracked_diff).hexdigest(),
+        }
+    except (OSError, subprocess.CalledProcessError) as error:
+        return {"commit": None, "worktree_dirty": None, "provenance_error": str(error)}
+
+
+def _artifact_hashes(paths: dict[str, Path]) -> dict[str, dict[str, Any]]:
+    artifacts: dict[str, dict[str, Any]] = {}
+    for name, path in paths.items():
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing required static SAGE artifact {name}: {path}")
+        artifacts[name] = {
+            "path": str(path),
+            "bytes": int(path.stat().st_size),
+            "sha256": _sha256_file(path),
+        }
+    return artifacts
 
 
 def _git_commit(path: Path) -> str:
@@ -91,9 +158,21 @@ def _apply_override_pairs(config: dict[str, Any], override_pairs: list[str]) -> 
     return resolved
 
 
+def _merge_config_overlay(config: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    resolved = copy.deepcopy(config)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(resolved.get(key), dict):
+            resolved[key] = _merge_config_overlay(resolved[key], value)
+        else:
+            resolved[key] = copy.deepcopy(value)
+    return resolved
+
+
 def _prepare_config(args: argparse.Namespace, n_real: int) -> tuple[dict[str, Any], Path]:
     config_path = _default_config_path(str(args.dataset), args.input_dir, args.config)
     config = load_yaml(config_path)
+    for overlay_path in list(getattr(args, "overlay", []) or []):
+        config = _merge_config_overlay(config, load_yaml(Path(overlay_path)))
     config = _apply_override_pairs(config, list(args.override or []))
     config = copy.deepcopy(config)
 
@@ -196,6 +275,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     metadata.update(
         {
             "config_path": str(config_path),
+            "config_overlays": [str(path) for path in list(getattr(args, "overlay", []) or [])],
             "start_time": start_iso,
             "end_time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "runtime_seconds": float(end - start),
@@ -212,6 +292,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "gpu_devices": gpu_devices,
             "notes": {
                 "config_path": str(config_path),
+                "config_overlays": [str(path) for path in list(getattr(args, "overlay", []) or [])],
                 "max_iters": config.get("qdte", {}).get("max_iters"),
                 "n_syn": config.get("init", {}).get("N_syn"),
                 "true_metrics_disabled_during_run": True,
@@ -231,6 +312,88 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         encoding="utf-8",
     )
     (args.output_dir / "stderr.log").write_text("", encoding="utf-8")
+    protocol_id = getattr(args, "protocol_id", None)
+    if protocol_id is not None:
+        input_metadata = read_json(args.input_dir / "metadata.json")
+        artifacts = _artifact_hashes(
+            {
+                "resolved_config": args.output_dir / "config_resolved.yaml",
+                "schema": args.output_dir / "schema.json",
+                "query_catalogue": args.output_dir / "queries.json",
+                "measurement": args.output_dir / "measurements.json",
+                "synthetic": args.output_dir / "synthetic_encoded.npy",
+                "generator_metrics": args.output_dir / "metrics_final.json",
+                "generator_timeseries": args.output_dir / "metrics_timeseries.csv",
+                "runtime": args.output_dir / "runtime.json",
+                "logs": args.output_dir / "logs.txt",
+                "run_metadata": args.output_dir / "run_metadata.json",
+                "stdout": args.output_dir / "stdout.log",
+                "stderr": args.output_dir / "stderr.log",
+            }
+        )
+        expected_schema_hash = input_metadata.get("schema_sha256")
+        expected_queries_hash = input_metadata.get("queries_sha256")
+        checks = {
+            "mode_is_dp": str(config.get("privacy", {}).get("mode")) == "dp",
+            "rho_matches": float(config.get("privacy", {}).get("rho_total"))
+            == float(args.rho_total),
+            "delta_matches": float(config.get("privacy", {}).get("delta")) == float(args.delta),
+            "true_metrics_disabled_during_generation": not any(
+                bool(config.get("evaluation", {}).get(key, False))
+                for key in ("compute_true_query_error", "compute_heldout_query_error", "downstream_ml")
+            ),
+            "objective_is_variance": str(config.get("qdte", {}).get("objective_weighting"))
+            == "variance",
+            "transport_is_atom_flow": str(config.get("qdte", {}).get("transport_mode"))
+            == "atom_flow",
+            "schema_matches_canonical_input": expected_schema_hash is None
+            or artifacts["schema"]["sha256"] == expected_schema_hash,
+            "queries_match_canonical_input": expected_queries_hash is None
+            or artifacts["query_catalogue"]["sha256"] == expected_queries_hash,
+        }
+        manifest = {
+            "protocol_id": str(protocol_id),
+            "paper_evidence_candidate": True,
+            "paper_evidence_qualified": bool(all(checks.values())),
+            "method": {
+                "label": str(args.method_label),
+                "wrapper": "sage",
+                "measurement_schedule": "public_static_all_workload_groups",
+                "projection_profile": "P1_lightweight",
+                "generator_profile": "qdte_standard",
+                "max_iters": int(config.get("qdte", {}).get("max_iters", 0)),
+            },
+            "dataset": str(args.dataset),
+            "seed": int(args.seed),
+            "privacy": {
+                "mode": "dp",
+                "adjacency": "add_remove_one",
+                "rho_total": float(args.rho_total),
+                "delta": float(args.delta),
+                "epsilon_recomputed": final_metrics.get("epsilon_delta"),
+            },
+            "canonical_input": {
+                "path": str(args.input_dir),
+                "raw_sha256": input_metadata.get("raw_sha256"),
+                "schema_sha256": expected_schema_hash,
+                "queries_sha256": expected_queries_hash,
+            },
+            "checks": checks,
+            "artifacts": artifacts,
+            "source_tree_sha256": _source_tree_hash(ROOT),
+            "git": _git_revision(ROOT),
+            "environment": {
+                "python": sys.version,
+                "platform": platform.platform(),
+                "numpy": np.__version__,
+                "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                "configured_device": config.get("run", {}).get("device"),
+            },
+        }
+        _write_json(args.output_dir / "sage_static_manifest.json", manifest)
+        if not manifest["paper_evidence_qualified"]:
+            failed = sorted(name for name, passed in checks.items() if not passed)
+            raise RuntimeError(f"Static SAGE evidence checks failed: {failed}")
     return metadata
 
 
@@ -250,10 +413,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--n-syn", default="same_as_real")
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--overlay", action="append", type=Path, default=[])
     parser.add_argument("--max-iters", type=int)
     parser.add_argument("--override", action="append", default=[])
     parser.add_argument("--save-synthetic-csv", action="store_true")
     parser.add_argument("--xla-preallocate", action="store_true")
+    parser.add_argument(
+        "--protocol-id",
+        help="Write and enforce a paper-evidence manifest under this frozen protocol ID.",
+    )
     return parser.parse_args()
 
 

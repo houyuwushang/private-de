@@ -1,6 +1,6 @@
 # Reproducibility Guide
 
-This guide describes the public reproduction path for SAGE/QDTE experiments. It assumes the repository contains code, configs, scripts, and tests, while large generated outputs and external baseline repositories are stored outside this source tree.
+This guide describes the public reproduction path for QDTE experiments. It assumes the repository contains code, configs, scripts, and tests, while large generated outputs and external baseline repositories are stored outside this source tree.
 
 ## 1. Environment
 
@@ -11,7 +11,7 @@ conda run -n qdte python scripts/check_env.py
 conda run -n qdte pytest -q
 ```
 
-GPU-backed SAGE runs require a JAX/CUDA environment. `scripts/check_env.py` reports visible JAX devices.
+GPU-backed QDTE runs require a JAX/CUDA environment. `scripts/check_env.py` reports visible JAX devices.
 
 The helper scripts use portable defaults under `external_workspace/`. Set these
 environment variables to reuse an existing external experiment workspace:
@@ -22,6 +22,7 @@ export SAGE_EXTERNAL_INPUTS=$SAGE_BASELINE_ROOT/external_inputs
 export SAGE_EXTERNAL_RUNS=$SAGE_BASELINE_ROOT/external_runs
 export SAGE_EXTERNAL_RESULTS=$SAGE_BASELINE_ROOT/external_results
 export SAGE_PAPER_PACKAGE_DIR=$SAGE_EXTERNAL_RESULTS/paper_package_seed0to4_20260706
+export QDTE_PAPER_PACKAGE_DIR=$SAGE_EXTERNAL_RESULTS/qdte_paper_package_20260711
 ```
 
 ## 2. Input Package Format
@@ -39,7 +40,7 @@ external_inputs/<dataset>/
   true_answers_cache.npz        # optional evaluator cache
 ```
 
-The true-answer cache is for offline evaluation only. It must not be used by SAGE during measurement, generation, selection, stopping, or hyperparameter selection.
+The true-answer cache is for offline evaluation only. It must not be used by QDTE during measurement, generation, selection, stopping, or hyperparameter selection.
 
 ## 3. Smoke Run
 
@@ -192,30 +193,18 @@ conda run -n qdte python scripts/plot_external_results.py \
 Generate paper tables and package results:
 
 ```bash
-conda run -n qdte python scripts/write_paper_tables.py
-conda run -n qdte python scripts/package_paper_results.py
-tar -C "$SAGE_EXTERNAL_RESULTS" \
-  -czf "$SAGE_EXTERNAL_RESULTS/paper_package_seed0to4_20260706.tar.gz" \
-  paper_package_seed0to4_20260706
-python3 scripts/verify_paper_package.py
-python3 scripts/verify_paper_package_tarball.py
-python3 scripts/verify_paper_claims.py
+conda run -n qdte python scripts/package_qdte_paper_results.py --force
+conda run -n qdte python scripts/verify_qdte_paper_package.py
+conda run -n qdte python scripts/plot_qdte_paper_results.py
+conda run -n qdte python scripts/archive_qdte_paper_package.py
+conda run -n qdte python scripts/verify_paper_package_tarball.py
 ```
 
-`scripts/package_paper_results.py` regenerates the package manifest, checksum
-manifest, LaTeX table bundle, main figures, and `summary_figures/` bar plots in
-`external_results/paper_package_seed0to4_20260706` by default. The package
-verifier checks that the filelist, checksum manifest, actual package contents,
-and source appendix artifacts agree. The tarball verifier checks that the
-distributable `.tar.gz` exactly matches the package directory. The claim
-verifier checks the packaged main-table methods, baseline admission tiers, and
-known SAGE-vs-baseline win counts before the claims are copied into the
-manuscript. The package also includes
-`tables/paper_claim_traceability_20260707.csv` and `.md`, which map the main
-experimental claims to the exact package artifacts and verifier gates. During
-packaging, text artifacts are sanitized so paths under the external workspace
-are recorded as `$SAGE_BASELINE_ROOT/...` rather than as machine-local absolute
-paths.
+The QDTE package builder reconstructs tables and figures from declared source
+artifacts, records a source hash manifest, and parameterizes external-workspace
+paths. The verifier checks package hashes, source hashes, claim facts, and the
+absence of machine-local paths. The deterministic archive and sidecar are then
+checked byte-for-byte against the package directory.
 
 Audit the current paper-result state without launching experiments:
 
@@ -233,7 +222,7 @@ Audit paper-facing GPU provenance without launching experiments:
 python3 scripts/audit_gpu_provenance.py
 ```
 
-This audit verifies the recorded GPU metadata for SAGE, Private-GSD, and RAP
+This audit verifies the recorded GPU metadata for QDTE-Standard, Private-GSD, and RAP
 rows in the strict same-protocol evidence, and records AIM/MST as CPU-native
 Private-PGM baselines.
 
@@ -261,7 +250,60 @@ tarball integrity, claim traceability, original-protocol baseline evidence, GPU
 provenance, public-release audit, strict public-release simulation, and
 whitespace checks.
 
-## 9. Original-Protocol Reproduced Baselines
+## 9. Current QDTE Paper Package
+
+The paper-facing method names and claim boundaries are frozen in:
+
+```text
+docs/QDTE_PAPER_CLAIM_MATRIX_20260711.json
+docs/QDTE_PAPER_CLAIM_MATRIX_20260711.md
+```
+
+`QDTE-Standard` is the end-to-end DP default. `QDTE-Structured` is the stronger
+same-target controlled-generator profile and is not promoted to the DP default.
+`QDTE-FissionRefit` is a released-only two-pass MAE/RMSE variant. RTP and
+teacher-target experiments remain transfer-gap diagnostics.
+
+Build, verify, plot, and archive the latest evidence package with:
+
+```bash
+conda run -n qdte python scripts/audit_qdte_paper_claim_matrix.py
+conda run -n qdte python scripts/package_qdte_paper_results.py --force
+conda run -n qdte python scripts/verify_qdte_paper_package.py
+conda run -n qdte python scripts/plot_qdte_paper_results.py
+conda run -n qdte python scripts/archive_qdte_paper_package.py
+conda run -n qdte python scripts/verify_paper_package_tarball.py
+```
+
+The package is written to the external-results workspace as
+`qdte_paper_package_20260711/`; generated runs are not committed to the code
+repository. Its deterministic archive is:
+
+```text
+qdte_paper_package_20260711.tar.gz
+sha256: 7bcacf49270d3f478deca9c8375b3f30b51502ca9d8c54caa812f93ce2972f7b
+```
+
+Controlled generator reproduction uses the exact public target materializer,
+the upstream official GSD runner, and frozen public manifests:
+
+```text
+scripts/materialize_gsd_measurement.py
+scripts/run_official_gsd_on_qdte_workload.py
+configs/variants/qdte_gsd_converged_seed0_manifest.yaml
+configs/variants/qdte_gsd_breadth_seed0_manifest.yaml
+```
+
+FissionRefit uses `scripts/run_qdte_fission_refit_external.py` and the
+Standard-v2, search-aware, and fission-refit-v2 overlays. These runners use
+released measurements for generation and selection; exact true answers are
+opened only by the completed-run evaluator.
+
+Encoded column cardinalities are treated as public known schema information.
+When no separate schema file is supplied, the loader infers them from the input
+CSV as an input convenience, not as a private schema-estimation contribution.
+
+## 10. Original-Protocol Reproduced Baselines
 
 The strict same-protocol table and the upstream original-protocol reproduced
 tables are separate. RAP++ official and PrivMRF official require their upstream
@@ -283,9 +325,9 @@ The generated CSV/Markdown outputs should be stored under the external results
 workspace and packaged as paper artifacts, not committed to the source
 repository.
 
-## 10. Expected Output Files
+## 11. Expected Output Files
 
-A SAGE run should write:
+A QDTE run should write:
 
 ```text
 config_resolved.yaml
@@ -308,7 +350,7 @@ An external evaluation adds:
 evaluation.json
 ```
 
-## 11. Public Release Notes
+## 12. Public Release Notes
 
 Large generated outputs, local baseline repositories, and paper scratch notes are not part of the source release. See:
 
@@ -339,6 +381,6 @@ clean `public-release-sage` Git branch in a separate repository containing only
 the public source surface. The current paper package archive is:
 
 ```text
-paper_package_seed0to4_20260706.tar.gz
-sha256: a918441491334904c21d3b9a509164437731ddf3dddab8f1e4705bfb8d185086
+qdte_paper_package_20260711.tar.gz
+sha256: 7bcacf49270d3f478deca9c8375b3f30b51502ca9d8c54caa812f93ce2972f7b
 ```

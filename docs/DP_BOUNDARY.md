@@ -1,197 +1,141 @@
-# Differential Privacy Boundary
+# QDTE Differential-Privacy Boundary
 
-This document states the DP boundary enforced by SAGE/QDTE. It is intended for public reproducibility and reviewer audit.
+This document states the data-flow boundary enforced by the public QDTE code.
+It distinguishes the released mechanism from offline evaluation.
 
-## 1. Core Rule
+## 1. Public Inputs
 
-In:
+Before private data are accessed, a run fixes:
+
+- the encoded schema and attribute cardinalities;
+- query definitions and measurement groups;
+- sensitivity bounds and the zCDP budget split;
+- projection and clipping rules;
+- the synthetic row count;
+- QDTE candidate, transport, stopping, and random-seed configuration.
+
+Cardinalities are treated as public known schema information. Inferring them
+from an input CSV when no separate schema file is supplied is an input-loader
+convenience, not a private schema-estimation mechanism.
+
+## 2. Private Measurement
+
+For each public measurement group `j`, the mechanism releases a Gaussian noisy
+answer with variance calibrated to its public L2 sensitivity and allocated
+zCDP budget:
 
 ```text
-privacy.mode = dp
+rho_j = sensitivity_l2_j^2 / (2 * noise_variance_j)
+sum_j rho_j <= rho_total
 ```
 
-QDTE optimizes only against noisy or projected measurements and their public variances. Exact true answers are allowed only in the offline evaluator after a synthetic table has already been produced.
+Projection, clipping, partition repair, variance post-processing, and row
+generation are post-processing when they read only these releases and public
+information.
 
-## 2. Generator Invariants
+### Optional Certified Private Selection
 
-The row generator must preserve the following objective definitions:
+The default static profile has no private selection step. A transcript-only
+adaptive selector is also post-processing and spends no selection privacy.
+
+The experimental private-selection path may access exact private block answers
+only inside a registered exponential mechanism. That path is accepted only
+when all of the following are explicit:
+
+- a fixed public candidate set;
+- a proved round-conditional global sensitivity;
+- exponential-mechanism sampling rather than an unnoised private argmax;
+- a charged selection ledger composed with Gaussian measurement spending; and
+- no exact private score entering QDTE or a released output artifact.
+
+Conditional on the previous DP transcript, a base measure computed only from
+that transcript does not change the current private-score sensitivity. The
+research implementation records this distinction, but the conditional privacy
+argument and any score used for a paper claim must still be reviewed together
+with the exact adaptive-composition protocol.
+
+## 3. QDTE Objective
+
+The implementation preserves these invariants:
 
 ```text
 residual[q] = target_projected[q] - answer_syn[q]
 measured_loss = 0.5 * sum_q residual[q]^2 * inv_variance[q]
 delta[q] = phi_q(x_new) - phi_q(x_old)
-edit advantage =
-  delta @ (residual * inv_variance)
-  - 0.5 * ((delta * delta) @ inv_variance)
-  - lambda_cost * edit_cost
+edit_advantage = delta @ (residual * inv_variance)
+                 - 0.5 * ((delta * delta) @ inv_variance)
+                 - lambda_cost * edit_cost
 ```
 
-For paper-facing strong configs:
+In `privacy.mode=dp`, candidates, exact delta scoring, transport, stopping, and
+config selection may use only released noisy/projected measurements, their
+released variances, public queries/schema, synthetic state, and internal
+randomness.
 
-```text
-qdte.objective_weighting = variance
+They must not read exact private answers or offline utility metrics.
+
+## 4. Standard and Structured
+
+`QDTE-Standard` is the end-to-end DP default. `QDTE-Structured` adds exact
+aggregate-delta two-row transport units and released-residual triggers. It uses
+the same released objective and consumes no additional privacy budget.
+
+Structured search can fit released noise more aggressively. This is a utility
+and generalization issue, not an additional privacy query. The paper therefore
+keeps Structured as a controlled-generator profile rather than silently
+replacing Standard.
+
+## 5. Gaussian Fission and Refit
+
+`QDTE-FissionRefit` draws fresh auxiliary Gaussian randomness and derives train
+and validation views from an already released Gaussian measurement. Checkpoint
+selection reads the validation view, and the refit reads the original released
+target. Neither stage reads exact private answers.
+
+Fission is randomized post-processing of the original release. It does not
+create a second private measurement or spend a second privacy budget.
+
+## 6. Offline Evaluation
+
+Only after a complete synthetic table exists may the evaluator compute exact
+answers on `real_encoded.npy` and `synthetic_encoded.npy`. It reports pointwise
+MAE/RMSE/MaxError and block AvgTVD/MaxTVD after normalizing each answer vector
+by its table row count.
+
+Outside a sensitivity-certified and privacy-charged selector, these exact true
+answers are offline evaluation artifacts only. They must not feed back into:
+
+- query or scope selection;
+- candidate generation or scoring;
+- transport or stopping;
+- checkpoint/config/hyperparameter selection;
+- release decisions based on private utility.
+
+Research runs may persist `full_true_*` metrics and `private_*` selector
+diagnostics for internal auditing. These fields are not DP releases and must be
+removed from any public result artifact. The public source repository includes
+the runners so that this boundary can be reviewed; publishing source code is
+not equivalent to publishing those private diagnostic outputs.
+
+## 7. Controlled No-Noise Diagnostics
+
+The same-target no-noise QDTE/GSD comparison is a generator diagnostic, not an
+end-to-end DP release. Its exact target is used only under that explicitly
+non-DP experimental protocol. It does not weaken the DP boundary of the primary
+QDTE-Standard runs.
+
+## 8. Enforcement
+
+The public checks include:
+
+```bash
+conda run -n qdte pytest -q tests/test_dp_boundary_no_true_answers_in_generator.py
+conda run -n qdte pytest -q tests/test_edit_advantage.py
+conda run -n qdte pytest -q tests/test_measurement_fission.py
+conda run -n qdte pytest -q tests/test_run_integrated_sage_qdte.py
+conda run -n qdte pytest -q tests/test_run_orthogonal_low_budget_pilot.py
+conda run -n qdte python scripts/smoke_qdte.py --mode dp --rows 120 --max-iters 2
 ```
 
-so:
-
-```text
-inv_variance[q] = 1 / variance[q]
-```
-
-after measurement/projection uncertainty propagation.
-
-## 3. Static Measurement Route
-
-The strict main SAGE/QDTE table uses:
-
-```text
-privacy.measurement_mode = static_all
-```
-
-The measured workload schedule and budget split are public. There is no data-dependent query selection in this route.
-
-The privacy cost is Gaussian zCDP measurement:
-
-```text
-rho_total = sum_j Delta_2(M_j)^2 / (2 * sigma_j^2)
-```
-
-Projection and QDTE generation are post-processing.
-
-## 4. Projection Boundary
-
-Measurement post-processing may include:
-
-```text
-partition simplex projection
-non-partition clipping
-prefix monotonicity projection
-optional consistency projection
-projection-aware variance propagation
-```
-
-These operations are privacy-free only because they consume noisy measurements, public query definitions, public constraints, and public variances. They must not access exact true answers in DP mode.
-
-## 5. Disallowed True-Answer Uses
-
-In DP mode, exact true answers must not be used for:
-
-```text
-active query selection
-candidate generation
-candidate scoring
-transport
-stopping
-hyperparameter selection
-generation-time logging that affects control flow
-```
-
-They also must not be written into `measurements.json`.
-
-## 6. Allowed True-Answer Uses
-
-Exact true answers may be used for:
-
-```text
-Gaussian measurement of selected public blocks
-offline external evaluation
-offline diagnostic reports after a run is complete
-```
-
-The external evaluator may read:
-
-```text
-true_answers_cache.npz
-```
-
-but the SAGE/QDTE run itself must not use this cache for active decisions.
-
-## 7. SAGE-Select Privacy Routes
-
-SAGE-Select has two distinct privacy routes.
-
-### Exponential-Mechanism Route
-
-If the proof-closed ordered-gain SAGE-Select score is evaluated directly on private data, the unit-sensitivity theorem permits exponential-mechanism selection:
-
-```text
-Pr[M] proportional to mu(M) * exp(epsilon_t * S(D, M) / 2)
-```
-
-Conservative zCDP accounting:
-
-```text
-rho_select,t <= epsilon_t^2 / 2
-```
-
-Sharper bounded-range EM accounting, if invoked:
-
-```text
-rho_select,t <= epsilon_t^2 / 8
-```
-
-The selected block still pays Gaussian measurement cost:
-
-```text
-rho_measure,t = Delta_2(M_t)^2 / (2 * sigma_t^2)
-```
-
-### Transcript-Only Route
-
-The certified adaptive runner uses transcript-only scoring:
-
-```text
-selection_input = transcript
-selection_ledger = measurement_only
-selection_rule = argmax
-```
-
-The score is computed from previous noisy/projected transcript answers, public variances, public query definitions, and current synthetic answers. It does not use exact true answers for candidate scoring.
-
-Selection is therefore post-processing:
-
-```text
-rho_select,t = 0
-```
-
-Only the selected measurement pays privacy.
-
-These privacy routes certify the proof-closed ordered-gain SAGE-Select score.
-They do not certify exploratory rank-mask or other VOI scores unless a separate
-sensitivity proof is supplied.
-
-## 8. External Baseline Boundary
-
-External baselines may use their own DP mechanisms. For fair comparison, they must output a row-level:
-
-```text
-synthetic_encoded.npy
-```
-
-Then the shared offline evaluator computes true utility metrics. Those true metrics must not feed back into the baseline run or SAGE run.
-
-Upstream original-protocol reproduced baselines, such as RAP++ official and
-PrivMRF official, may use native metrics and data interfaces. They must be
-reported separately from the strict same-protocol row-level table.
-
-## 9. Audit Checks
-
-Before treating a run as DP-valid, check:
-
-```text
-privacy.mode = dp
-privacy.measurement_mode is public or certified
-evaluation.compute_true_query_error is false inside active SAGE external runs
-synthetic generation reads only measurements/projections/variances
-offline evaluation happens after synthetic_encoded.npy exists
-```
-
-For public release, the core invariant tests are in:
-
-```text
-tests/test_edit_advantage.py
-tests/test_measurement.py
-tests/test_external_evaluator.py
-tests/test_run_sage_external.py
-tests/test_engine_smoke.py
-```
+The DP smoke logs the privacy ledger and prints a separate marker immediately
+before exact true answers are opened for offline evaluation.

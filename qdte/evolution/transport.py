@@ -98,11 +98,26 @@ def batch_advantage(
     cost_sum: float,
     lambda_cost: float,
 ) -> float:
-    d = delta_sum.astype(np.float32)
-    w = residual.astype(np.float32) * inv_variance.astype(np.float32)
+    d = delta_sum.astype(np.float64)
+    inv = inv_variance.astype(np.float64)
+    w = residual.astype(np.float64) * inv
     linear = float(d @ w)
-    quad = float((d * d) @ inv_variance.astype(np.float32))
+    quad = float((d * d) @ inv)
     return linear - 0.5 * quad - float(lambda_cost) * float(cost_sum)
+
+
+def batch_advantage_l1(
+    residual: np.ndarray,
+    weights: np.ndarray,
+    delta_sum: np.ndarray,
+    cost_sum: float,
+    lambda_cost: float,
+) -> float:
+    d = delta_sum.astype(np.float64)
+    r = residual.astype(np.float64)
+    w = weights.astype(np.float64)
+    component = float((np.abs(r) - np.abs(r - d)) @ w)
+    return component - float(lambda_cost) * float(cost_sum)
 
 
 def _finite_candidate_pool(
@@ -901,7 +916,9 @@ def _choose_delta_prefix_jit(
     last_positive_idx = jnp.max(jnp.where(positive, jnp.arange(prefix_advantages.shape[0], dtype=jnp.int32), -1))
     use_best = strategy_code == jnp.int32(1)
     chosen_idx = jnp.where(use_best, best_idx.astype(jnp.int32), last_positive_idx)
-    chosen_adv = jnp.where(chosen_idx >= 0, prefix_advantages[chosen_idx], jnp.max(prefix_advantages))
+    best_adv = jnp.max(prefix_advantages)
+    chosen_idx = jnp.where(best_adv > 0.0, chosen_idx, -1)
+    chosen_adv = jnp.where(chosen_idx >= 0, prefix_advantages[chosen_idx], best_adv)
     chosen_delta = jnp.where(
         chosen_idx >= 0,
         delta_prefix[chosen_idx],
@@ -929,6 +946,44 @@ def _choose_delta_prefix_fixed_jit(
     raw_prefix_advantages = (
         delta_prefix @ weights
         - 0.5 * ((delta_prefix * delta_prefix) @ inv)
+        - lambda_cost.astype(jnp.float32) * cost_prefix
+    )
+    valid = jnp.arange(raw_prefix_advantages.shape[0], dtype=jnp.int32) < valid_count.astype(jnp.int32)
+    prefix_advantages = jnp.where(valid, raw_prefix_advantages, -jnp.inf)
+    best_idx = jnp.argmax(prefix_advantages)
+    positive = prefix_advantages > 0.0
+    last_positive_idx = jnp.max(jnp.where(positive, jnp.arange(prefix_advantages.shape[0], dtype=jnp.int32), -1))
+    use_best = strategy_code == jnp.int32(1)
+    chosen_idx = jnp.where(use_best, best_idx.astype(jnp.int32), last_positive_idx)
+    best_adv = jnp.max(prefix_advantages)
+    chosen_idx = jnp.where(best_adv > 0.0, chosen_idx, -1)
+    chosen_adv = jnp.where(chosen_idx >= 0, prefix_advantages[chosen_idx], best_adv)
+    chosen_delta = jnp.where(
+        chosen_idx >= 0,
+        delta_prefix[chosen_idx],
+        jnp.zeros((residual.shape[0],), dtype=jnp.float32),
+    )
+    accepted_count = jnp.maximum(chosen_idx + 1, 0)
+    return accepted_count.astype(jnp.int32), chosen_delta.astype(jnp.float32), chosen_adv.astype(jnp.float32)
+
+
+@jax.jit
+def _choose_delta_prefix_fixed_l1_jit(
+    deltas: jax.Array,
+    edit_cost: jax.Array,
+    valid_count: jax.Array,
+    residual: jax.Array,
+    weights: jax.Array,
+    lambda_cost: jax.Array,
+    strategy_code: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    d = deltas.astype(jnp.float32)
+    delta_prefix = jnp.cumsum(d, axis=0)
+    cost_prefix = jnp.cumsum(edit_cost.astype(jnp.float32))
+    r = residual.astype(jnp.float32)
+    w = weights.astype(jnp.float32)
+    raw_prefix_advantages = (
+        (jnp.abs(r).reshape(1, -1) - jnp.abs(r.reshape(1, -1) - delta_prefix)) @ w
         - lambda_cost.astype(jnp.float32) * cost_prefix
     )
     valid = jnp.arange(raw_prefix_advantages.shape[0], dtype=jnp.int32) < valid_count.astype(jnp.int32)
@@ -1088,6 +1143,8 @@ def choose_atom_flow_batch_transport(
     max_pool: int = 0,
     prefix_strategy: str = "best_advantage",
     delta_index: QueryDeltaIndex | None = None,
+    objective: str = "quadratic",
+    objective_weights: np.ndarray | None = None,
 ) -> TransportResult:
     """Choose an atom-flow batch with one residual update per accepted prefix.
 
@@ -1156,12 +1213,15 @@ def choose_atom_flow_batch_transport(
             dtype=jnp.int8,
         )
         delta_backend = 1
-    pool_quad_jax = _delta_quad_jit(
-        deltas_jax,
-        jnp.asarray(inv_variance, dtype=jnp.float32),
-    )
+    if objective == "l1":
+        pool_quad = np.ones(len(pool_indices), dtype=np.float32)
+    else:
+        pool_quad_jax = _delta_quad_jit(
+            deltas_jax,
+            jnp.asarray(inv_variance, dtype=jnp.float32),
+        )
+        pool_quad = np.asarray(pool_quad_jax, dtype=np.float32)[: len(pool_indices)]
     pool_advantages = advantages[pool_indices].astype(np.float32, copy=False)
-    pool_quad = np.asarray(pool_quad_jax, dtype=np.float32)[: len(pool_indices)]
     selected_indices, selected_local, grouped_edges, source_count, target_count = _select_batch_atom_flow_units(
         candidates,
         pool_indices,
@@ -1190,15 +1250,27 @@ def choose_atom_flow_batch_transport(
     padded_edit_cost = np.zeros(prefix_capacity, dtype=np.float32)
     if len(selected_indices) > 0:
         padded_edit_cost[: len(selected_indices)] = candidates.edit_cost[selected_indices].astype(np.float32, copy=False)
-    accepted_count, delta_sum, batch_adv = _choose_delta_prefix_fixed_jit(
-        deltas_jax[jnp.asarray(padded_selected_local, dtype=jnp.int32)],
-        jnp.asarray(padded_edit_cost, dtype=jnp.float32),
-        jnp.asarray(len(selected_indices), dtype=jnp.int32),
-        jnp.asarray(residual, dtype=jnp.float32),
-        jnp.asarray(inv_variance, dtype=jnp.float32),
-        jnp.asarray(lambda_cost, dtype=jnp.float32),
-        jnp.asarray(strategy_code, dtype=jnp.int32),
-    )
+    if objective == "l1":
+        weights = objective_weights if objective_weights is not None else np.ones_like(residual, dtype=np.float32)
+        accepted_count, delta_sum, batch_adv = _choose_delta_prefix_fixed_l1_jit(
+            deltas_jax[jnp.asarray(padded_selected_local, dtype=jnp.int32)],
+            jnp.asarray(padded_edit_cost, dtype=jnp.float32),
+            jnp.asarray(len(selected_indices), dtype=jnp.int32),
+            jnp.asarray(residual, dtype=jnp.float32),
+            jnp.asarray(weights, dtype=jnp.float32),
+            jnp.asarray(lambda_cost, dtype=jnp.float32),
+            jnp.asarray(strategy_code, dtype=jnp.int32),
+        )
+    else:
+        accepted_count, delta_sum, batch_adv = _choose_delta_prefix_fixed_jit(
+            deltas_jax[jnp.asarray(padded_selected_local, dtype=jnp.int32)],
+            jnp.asarray(padded_edit_cost, dtype=jnp.float32),
+            jnp.asarray(len(selected_indices), dtype=jnp.int32),
+            jnp.asarray(residual, dtype=jnp.float32),
+            jnp.asarray(inv_variance, dtype=jnp.float32),
+            jnp.asarray(lambda_cost, dtype=jnp.float32),
+            jnp.asarray(strategy_code, dtype=jnp.int32),
+        )
     count = int(np.asarray(accepted_count))
     batch_adv_float = float(np.asarray(batch_adv))
     diagnostics["atom_flow_batch_advantage_check"] = batch_adv_float
@@ -1861,7 +1933,9 @@ def _choose_transport_prefix_jit(
     last_positive_idx = jnp.max(jnp.where(positive, jnp.arange(prefix_advantages.shape[0], dtype=jnp.int32), -1))
     use_best = strategy_code == jnp.int32(1)
     chosen_idx = jnp.where(use_best, best_idx.astype(jnp.int32), last_positive_idx)
-    chosen_adv = jnp.where(chosen_idx >= 0, prefix_advantages[chosen_idx], jnp.max(prefix_advantages))
+    best_adv = jnp.max(prefix_advantages)
+    chosen_idx = jnp.where(best_adv > 0.0, chosen_idx, -1)
+    chosen_adv = jnp.where(chosen_idx >= 0, prefix_advantages[chosen_idx], best_adv)
     chosen_delta = jnp.where(
         chosen_idx >= 0,
         delta_prefix[chosen_idx],

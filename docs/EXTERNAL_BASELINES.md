@@ -1,6 +1,6 @@
 # External Baselines
 
-This document describes how SAGE/QDTE external baseline comparisons are organized. Baseline repositories are not vendored into this source repository.
+This document describes how QDTE external baseline comparisons are organized. Baseline repositories are not vendored into this source repository.
 
 ## 1. Shared Contract
 
@@ -65,14 +65,14 @@ privsyn_unofficial
 The main paper table should use the strict, best-audited same-protocol rows:
 
 ```text
-SAGE
+QDTE-Standard
 RAP softmax
 Private-GSD GPU 1M/full-N
 Private-PGM AIM
 Private-PGM MST
 ```
 
-GEM, PrivBayes, PrivSyn, and SAGE-canonical PrivMRF wrappers are diagnostic or
+GEM, PrivBayes, PrivSyn, and QDTE-canonical PrivMRF wrappers are diagnostic or
 audit baselines unless their wrappers satisfy the same evidence bar. RAP++
 official and PrivMRF official are tracked as upstream original-protocol
 reproductions and must be reported separately from the strict same-protocol
@@ -95,14 +95,14 @@ python3 scripts/audit_gpu_provenance.py
 The audit checks the current seed0-4 paper-facing runs:
 
 ```text
-SAGE/QDTE
+QDTE-Standard
 Private-GSD GPU 1M/full-N
 RAP softmax
 Private-PGM AIM
 Private-PGM MST
 ```
 
-SAGE, Private-GSD, and RAP are required to expose GPU evidence through
+QDTE-Standard, Private-GSD, and RAP are required to expose GPU evidence through
 `runtime.json`, `metrics_final.json`, or `run_metadata.json`. Private-PGM AIM
 and MST are marked `cpu_native` because the upstream MBI/private-pgm path is
 not GPU-native in this environment. This distinction is important: a CPU-native
@@ -113,7 +113,7 @@ The external planner also performs an execution-time preflight for selected
 GPU-required environments. With the default `--gpu-preflight` setting,
 `scripts/plan_external_experiments.py` prints one probe per selected
 environment in dry-run mode and runs the same probe before experiments under
-`--execute`. The current probes are JAX GPU visibility for SAGE/QDTE and
+`--execute`. The current probes are JAX GPU visibility for QDTE and
 Private-GSD GPU, Torch CUDA visibility for RAP/GEM, and CuPy device visibility
 for `privmrf_gpu`. Use `--no-gpu-preflight` only for deliberate CPU debugging;
 paper-facing GPU-capable rows still need to pass `scripts/audit_gpu_provenance.py`.
@@ -167,7 +167,7 @@ conda run -n qdte python scripts/plan_external_experiments.py \
 ```
 
 The default run plan includes GPU preflight commands before the experiment
-commands for SAGE, Private-GSD GPU, and RAP. These probes are intentionally
+commands for QDTE-Standard, Private-GSD GPU, and RAP. These probes are intentionally
 outside the privacy accounting because they inspect only the local execution
 environment.
 
@@ -207,7 +207,7 @@ The older 200k-generation, `N_prime=2048`, early-stop configuration is retained
 only as a configuration/runtime sensitivity row. It should not be described as
 the current main Private-GSD comparison.
 
-The high-power GSD row changes the claim: SAGE wins MAE, RMSE, and MaxErr on
+The high-power GSD row changes the claim: QDTE-Standard wins MAE, RMSE, and MaxErr on
 all four datasets and wins all five metrics on Adult and NLTCS, while
 high-power GSD is lower on AvgTVD and MaxTVD for ACS and BR2000.
 
@@ -229,13 +229,36 @@ max_model_size
 failure log or reason for fallback
 ```
 
+The frozen strong AIM workloads are run serially and require the Linux host
+setting below:
+
+```text
+vm.max_map_count >= 262144
+```
+
+On the 32-core evaluation host, ACS and NLTCS exceeded the Linux default of
+65,530 executable mappings during JAX/XLA compilation even though more than
+100 GiB of physical memory remained available. The resulting LLVM section
+allocation error is a host resource ceiling, not an AIM model-size failure.
+The WP4 runner checks this setting before launching incomplete AIM jobs and
+records both the setting and inherited CPU affinity in every execution record.
+For a temporary setting that lasts until reboot:
+
+```bash
+sudo sysctl -w vm.max_map_count=262144
+```
+
+Do not reduce `rounds`, `max_iters`, or `max_model_size` to bypass this gate.
+If the precondition cannot be met, preserve the failure as missing baseline
+evidence rather than silently substituting a weaker AIM configuration.
+
 ## 9. Additional Baseline Wrappers And Diagnostics
 
 ### RAP
 
 RAP softmax is now primary row-level evidence when run through the shared
 evaluator. It should still be described distinctly because its optimization and
-row-generation path differ from SAGE, Private-GSD, AIM, and MST.
+row-generation path differ from QDTE-Standard, Private-GSD, AIM, and MST.
 
 Current paper-package RAP rows are seed0-4 GPU-backed `rap_softmax` runs in the
 `tddpm` environment with `torch_cuda_available=True`,
@@ -256,7 +279,7 @@ RAP++ evidence.
 Paper-facing RAP++ admission should first use the original repository's own
 interface and defaults, or the paper-aligned settings reported by the authors.
 If that route reaches the originally advertised level, it should be treated as
-a comparable external baseline. SAGE-specific shared-budget and shared-workload
+a comparable external baseline. QDTE-specific shared-budget and shared-workload
 runs are still useful, but they belong in controlled mechanism comparisons or
 ablation sections rather than serving as a way to weaken an external method.
 
@@ -300,10 +323,10 @@ results/sync_data/RAP(Marginal&Halfspace)/acs_CA_income/1.00/(1, 1)/0/synthetic.
 This official ACS output is not directly comparable to the current
 `acs_sage_strong` main-table row: RAP++ uses raw Folktables ACS features with
 continuous columns and target-conditioned halfspaces, while `acs_sage_strong`
-uses a 23-column encoded canonical package and a heterogeneous SAGE workload
+uses a 23-column encoded canonical package and a heterogeneous QDTE workload
 without halfspace queries. To promote official RAP++ into a paper-facing
 comparison, create a separate same-protocol ACS/Folktables experiment and run
-SAGE/QDTE and RAP++ under that shared input, workload, budget, and evaluator.
+QDTE-Standard and RAP++ under that shared input, workload, budget, and evaluator.
 
 The first same-protocol smoke package is now available:
 
@@ -339,9 +362,9 @@ scripts/encode_external_synthetic_csv.py
 configs/acs_ca_income_rappp_sage.yaml
 ```
 
-This smoke confirms that a same-protocol SAGE-versus-RAP++ ACS bridge can run
+This smoke confirms that a same-protocol QDTE-versus-RAP++ ACS bridge can run
 end-to-end. It is not final same-protocol evidence: the bridge has only small
-RAP++ projection-count probes and short SAGE iteration sweeps. The official
+RAP++ projection-count probes and short QDTE iteration sweeps. The official
 RAP++ evidence used for paper coverage is the upstream original-protocol
 seed0-4 grid above, not this bridge smoke.
 
@@ -355,7 +378,7 @@ top_q = 5
 dp_select_epochs = 50
 ```
 
-For reproduction, call it with `--upstream-epsilon 1.0`. For SAGE budget
+For reproduction, call it with `--upstream-epsilon 1.0`. For QDTE budget
 alignment, call it with `--rho-total ...`; the wrapper records the conversion
 in `run_metadata.json`.
 
@@ -394,7 +417,7 @@ RAP++ synthetic LR macro F1              = 0.935469
 ```
 
 These metrics are closer to RAP++'s original paper protocol than the shared
-SAGE evaluator. Use them when deciding whether RAP++ has been reproduced at
+QDTE evaluator. Use them when deciding whether RAP++ has been reproduced at
 its claimed level.
 
 Historical seed0-only archive, superseded by the seed0-4 grid above:
@@ -456,9 +479,9 @@ Historical admission note:
 
 - The current paper-facing decision is the seed0-4 original-protocol reproduced
   row above.
-- Do not force RAP++ into SAGE's internal hyperparameter choices for the main
+- Do not force RAP++ into QDTE's internal hyperparameter choices for the main
   baseline comparison.
-- Use SAGE-matched parameters only for controlled ablations and mechanism
+- Use QDTE-matched parameters only for controlled ablations and mechanism
   studies, where the purpose is to isolate query selection, measurement, and
   generation choices rather than to reproduce an external method at its best
   reported operating point.
@@ -484,10 +507,10 @@ Current original-protocol status:
 
 | Method | Current status | Paper-facing decision |
 |---|---|---|
-| DataSynthesizer PrivBayes | Official package/notebook entry exists; local `baseline_datasynth` import works; current result is one Adult strong seed-0 SAGE-canonical audit row. | Appendix/audit now. If upgraded, first reproduce the DataSynthesizer correlated-attribute notebook/public-data protocol rather than expanding SAGE-tuned parameters. |
+| DataSynthesizer PrivBayes | Official package/notebook entry exists; local `baseline_datasynth` import works; current result is one Adult strong seed-0 QDTE-canonical audit row. | Appendix/audit now. If upgraded, first reproduce the DataSynthesizer correlated-attribute notebook/public-data protocol rather than expanding QDTE-tuned parameters. |
 | DPMM PrivBayes | Public library entry exists and imports in `baseline_dpmm`, but current Adult calibration is very weak. | Calibration/failure appendix unless a different implementation or research question is chosen. |
 | PrivSyn | Local repository is an unofficial course-project implementation with notebook-first assumptions and wrapper-generated configuration patches. | Transparency appendix only; label `unofficial`. Do not promote without an official artifact/protocol. |
-| PrivMRF | Official repository and `script.py` reproduction entry exist; the local official TVD grid now runs through `scripts/run_privmrf_official.py` for `nltcs`, `acs`, `adult`, and `br2000`. | Original-protocol reproduced evidence for TVD. Keep separate from SAGE's shared evaluator; use SAGE-matched PrivMRF rows only for ablations. |
+| PrivMRF | Official repository and `script.py` reproduction entry exist; the local official TVD grid now runs through `scripts/run_privmrf_official.py` for `nltcs`, `acs`, `adult`, and `br2000`. | Original-protocol reproduced evidence for TVD. Keep separate from QDTE's shared evaluator; use QDTE-matched PrivMRF rows only for ablations. |
 
 Known current audit values:
 
@@ -575,7 +598,7 @@ $SAGE_BASELINE_ROOT/external_results/privmrf_official_full_tvd_epsgrid_m300_2026
 | br2000 | 3.2 | 0.016800 | 0.033197 | 0.058994 |
 
 This is original-protocol reproduced evidence for PrivMRF's TVD experiment. It
-should not be merged into the strict SAGE evaluator table because the metric,
+should not be merged into the strict QDTE evaluator table because the metric,
 budget convention, and workload are PrivMRF-native.
 
 PrivMRF uses an upstream internal dataset-name switch for some algorithm branches. The planners now default to:
@@ -584,7 +607,7 @@ PrivMRF uses an upstream internal dataset-name switch for some algorithm branche
 --privmrf-data-name auto
 ```
 
-This maps canonical datasets such as `adult_sage_strong` and `br2000_sage_strong` back to the upstream names `adult` and `br2000`, which is necessary for the original PrivMRF GPU path. Keep this field in run metadata when reporting PrivMRF official reproduced evidence or SAGE-matched PrivMRF audit rows.
+This maps canonical datasets such as `adult_sage_strong` and `br2000_sage_strong` back to the upstream names `adult` and `br2000`, which is necessary for the original PrivMRF GPU path. Keep this field in run metadata when reporting PrivMRF official reproduced evidence or QDTE-matched PrivMRF audit rows.
 
 ## 9. Collecting Results
 
@@ -615,7 +638,7 @@ python3 scripts/audit_original_protocol_baselines.py
 ```
 
 This verifies the RAP++ official ACS grid protocol and the PrivMRF official TVD
-epsilon grid separately from the strict SAGE shared-evaluator table.
+epsilon grid separately from the strict QDTE shared-evaluator table.
 
 ## 10. Fairness Notes
 

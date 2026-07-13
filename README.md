@@ -1,14 +1,28 @@
-# private-de / SAGE-QDTE
+# SAGE-QDTE
 
-本仓库实现了面向表格数据的 SAGE/QDTE 合成数据生成器。当前 paper-facing 路线是：从真实 CSV 构建异构查询 workload，在 DP measurement 下得到 noisy/projected 目标统计量，然后通过 variance-aware QDTE edit optimizer 生成 row-level synthetic table，并使用共享 external evaluator 输出可审计的质量、运行时和 workload 报告。
+本仓库实现面向表格数据的 SAGE-QDTE 差分隐私合成系统。论文的科学主线是
+Directed Evolution / QDTE：QDTE 把已发布的异构查询 residual 转换成
+variance-aware 的精确 row-edit objective decrease。SAGE 是完整系统外壳，负责
+公开 workload、SAGE-Select、DP measurement ledger、projection 和 QDTE
+generation 的组织。
 
-当前主表实验使用公开的 static heterogeneous measurement schedule。SAGE-Select adaptive selector 是单独的理论和实验模块：paper-facing certified runner 使用 transcript-only selection，不能和主表的 static measurement 口径混写。
+当前 paper-facing 方法明确区分：
 
-当前 paper-facing 证据分三层：
+- `SAGE-QDTE-Static`：静态完整 workload、P1 post-processing 和
+  `QDTE-Standard`。
+- `SAGE-QDTE-Adaptive`：只使用 released transcript 的 SAGE-Select、冻结的
+  measurement ledger、P1 和 `QDTE-Standard`；当前作为完整选择变体报告，
+  不替换 `SAGE-QDTE-Static` 默认配置。
+- `QDTE-Structured-v2`、`QDTE-PA-Diag16`、Query-LSQ 和 RTP-local：固定目标
+  生成器或 transfer/projection diagnostics，不替换默认完整方法。
 
-- strict same-protocol row-level table：SAGE/QDTE、RAP softmax、Private-GSD GPU 1M/full-N、Private-PGM AIM、Private-PGM MST 使用相同 canonical evaluator 和 seed0-4 网格。
-- original-protocol reproduced baselines：RAP++ official 和 PrivMRF official 使用各自 upstream public-code protocol/native metrics，单独报告，不能和 strict same-protocol error ratio 混合。
-- appendix/audit rows：single-seed、unofficial、calibration-limited、marginal-only 或 wrapper-limited 的方法保留为透明性证据。
+当前 E1 冻结矩阵已经完成 340/340：四数据集、五个 epsilon、Static/Adaptive
+SAGE-QDTE，以及强配置 AIM、MST 和官方 1M/full-N Private-GSD。E2--E6 分别
+隔离 selector、projection、orthogonal workload、generator 和 component
+composition。完整 E1 显示方法优势随 privacy regime 和 metric 变化：AIM 在最低
+epsilon 的平均指标上很强，SAGE-QDTE 在中高 epsilon 的 RMSE/MaxError 更有优势，
+Private-GSD 在部分 MaxTVD 单元领先。因此论文不主张逐数据集逐指标全面支配。
+旧的 rho=1 QDTE package 保留为历史诊断，不是当前 SAGE-QDTE 主张来源。
 
 ## 当前能力
 
@@ -63,7 +77,6 @@
   - metrics timeseries
 - 支持 held-out workload 离线评估，用于比较 measured workload 和未优化查询上的 true-query error。
 - 支持 external row-level evaluator 和 paper table/figure packaging 脚本。
-- 支持 transcript-only adaptive selection ablation runner，用于 SAGE-Select 选择器实验。
 
 ## 隐私边界
 
@@ -81,7 +94,17 @@ edit advantage =
 
 当前 paper-facing strong 配置使用 `qdte.objective_weighting: variance`。也就是说，QDTE 使用 measurement variances 构造 `inv_variance[q]`，低噪声 measurement 在 edit advantage 中权重更高。`qdte.objective_weighting: unweighted` 保留为消融或调试配置。
 
-exact true answers 只能用于离线 evaluation metrics。它们不会用于 active query selection、candidate generation、scoring、transport、stopping 或 hyperparameter selection，也不会写入 `measurements.json`。
+默认 Static 和 transcript-only Adaptive 路径不会把 exact true answers 用于
+active query selection。实验性的 private-EM 路径只允许在具有显式全局敏感度
+证明、指数机制采样和 selection privacy ledger 的受控 selector 内访问 exact
+private block answers。无论使用哪条路径，exact truth 都不会进入 QDTE candidate
+generation、scoring、transport、stopping 或 hyperparameter selection，也不会写入
+`measurements.json`。
+
+研究 runner 可能保存 `full_true_*` 和 `private_*` 离线审计字段。这些字段不是
+可公开的 DP output；对外 release 只能包含声明的 noisy transcript、synthetic data
+和 public metadata。完整边界见 `docs/DP_BOUNDARY.md`，外部代码审查入口见
+`docs/CODE_REVIEW_GUIDE.md`。
 
 held-out workload 也只用于离线评估：它不会进入 measurement 或 optimization loop。
 
@@ -313,6 +336,36 @@ evaluation:
 - `metrics_holdout.json`
 - `metrics_by_family_holdout.json`
 
+## Paper-facing QDTE profiles
+
+The current paper-facing method family is frozen as:
+
+- `QDTE-Standard`: the end-to-end DP default.
+- `QDTE-Structured`: the stronger controlled-generator profile using exact
+  aggregate-delta two-row transport; it is not the DP default.
+- `QDTE-FissionRefit`: a released-only, two-pass MAE/RMSE alignment variant.
+
+Encoded attribute cardinalities are treated as public and known. The CSV loader
+may infer them as a convenience when no separate schema file is supplied; this
+is not a private schema-estimation claim.
+
+Generate and verify the current external evidence package with:
+
+```bash
+conda run -n qdte python scripts/package_qdte_paper_results.py --force
+conda run -n qdte python scripts/verify_qdte_paper_package.py
+conda run -n qdte python scripts/archive_qdte_paper_package.py
+conda run -n qdte python scripts/verify_paper_package_tarball.py
+```
+
+The controlled same-target GSD comparison uses
+`scripts/materialize_gsd_measurement.py`,
+`scripts/run_official_gsd_on_qdte_workload.py`, and the frozen manifests under
+`configs/variants/qdte_gsd_*_seed0_manifest.yaml`. FissionRefit uses
+`scripts/run_qdte_fission_refit_external.py` with the Standard-v2,
+search-aware, and fission-refit-v2 overlays. Exact true answers remain offline
+evaluation artifacts and never select a DP candidate, checkpoint, or config.
+
 ## 当前测试状态
 
 推荐验证命令：
@@ -333,7 +386,7 @@ Paper-facing GPU provenance audit：
 python3 scripts/audit_gpu_provenance.py
 ```
 
-该 audit 检查当前 strict same-protocol 结果中 SAGE、Private-GSD 和 RAP
+该 audit 检查当前 strict same-protocol 结果中 QDTE-Standard、Private-GSD 和 RAP
 的 GPU metadata，并把 AIM/MST 明确标记为 CPU-native 行。
 
 Original-protocol reproduced baseline audit：
@@ -387,7 +440,7 @@ sparse-delta GPU 50-iter scoring time: about 14.26s
 - `orthogonal_kway_mixed` 用完整 equality/range Cartesian partition 构造互斥 mixed queries；range term 来自等分的 disjoint intervals，因此每个 group 的 sensitivity 为 `1`。当前 halfspace query 仍是单阈值 `<=` 表示，不能直接表达互斥 linear slabs。
 - halfspace 的 GPU fused single-query candidate repair 已支持 `jax_repair` / `gpu_repair`。复杂 CPU-only compilers 仍需要 `qdte.candidate_backend: cpu_repair`。
 - `sparse_delta_gpu` 已使用 multi-word `uint32` query-scope bitsets，去掉了原先 31 个 encoded attributes 的单 word 限制；仍需保证 `gpu_sparse_changed_attr_capacity` 覆盖候选可能修改的属性数。
-- 主表强配置使用 public static measurement schedule；adaptive SAGE-Select 是单独 runner，不应描述成主表机制。
+- 主表强配置使用 public static measurement schedule；旧 adaptive selector runner 不属于当前 QDTE 论文主张。
 - external baseline repositories 不 vendored 到本仓库；相关 wrapper/collector 依赖外部 baseline workspace 和独立 conda 环境。
 - baseline 证据分层以 `docs/EXTERNAL_BASELINES.md` 和 `docs/PUBLIC_RELEASE_MANIFEST_20260706.md` 为准；official 原协议复现结果作为 paper artifact 保存，不进入源码仓库。
 - public schema loader 仍不完整；公开复现建议从 CSV 和 config 重新生成 schema/workload。

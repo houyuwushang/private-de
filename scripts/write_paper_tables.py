@@ -568,9 +568,9 @@ def original_protocol_baselines_table(results_dir: Path) -> str:
     lines.extend([r"\bottomrule", r"\end{tabular}"])
     caption = (
         "Original-protocol reproduced baseline evidence. These rows run upstream public-code "
-        "protocols and native metrics rather than the strict SAGE row-level evaluator, so they "
-        "are reported separately from Table~\\ref{tab:main-results}. They support baseline "
-        "coverage and reproducibility, not direct same-protocol utility ratios."
+        "protocols and native metrics rather than the strict common row-level evaluator used in "
+        "Figures~\\ref{fig:epsilon-mae-rmse} and~\\ref{fig:epsilon-avgtvd}. They support "
+        "baseline coverage and reproducibility, not direct same-protocol utility ratios."
     )
     return table_env("tab:original-protocol-baselines", caption, "\n".join(lines))
 

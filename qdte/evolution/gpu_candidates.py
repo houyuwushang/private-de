@@ -44,6 +44,8 @@ class GpuCandidateContext:
     random_per_device: int
     source_draws: int
     local_top_k: int
+    return_top_k: int
+    return_oversample_factor: int
     active_query_capacity: int
     total_candidates: int
     batches_per_iter: int
@@ -272,15 +274,40 @@ def _random_mutation_rows(
     cardinalities: jax.Array,
 ) -> jax.Array:
     n = old_rows.shape[0]
-    attr_pos = jax.random.randint(key, (n,), minval=0, maxval=mutable_attrs.shape[0], dtype=jnp.int32)
+    attr_key, value_key = jax.random.split(key)
+    attr_pos = jax.random.randint(attr_key, (n,), minval=0, maxval=mutable_attrs.shape[0], dtype=jnp.int32)
     attrs = mutable_attrs[attr_pos]
     row_idx = jnp.arange(n, dtype=jnp.int32)
     old = old_rows[row_idx, attrs]
     card = cardinalities[attrs]
-    raw = jax.random.randint(key, (n,), minval=0, maxval=jnp.iinfo(jnp.int32).max, dtype=jnp.int32)
+    raw = jax.random.randint(value_key, (n,), minval=0, maxval=jnp.iinfo(jnp.int32).max, dtype=jnp.int32)
     vals = raw % jnp.maximum(card - 1, 1)
     vals = vals + (vals >= old)
+    vals = jnp.where(card > 1, vals, old)
     return old_rows.at[row_idx, attrs].set(vals.astype(jnp.int32))
+
+
+def _mask_noop_candidate_scores(
+    scores: jax.Array,
+    old_rows: jax.Array,
+    new_rows: jax.Array,
+) -> jax.Array:
+    """Keep unchanged rows from occupying the fused GPU top-k."""
+    changed = jnp.any(old_rows != new_rows, axis=1)
+    return jnp.where(changed, scores, jnp.asarray(-jnp.inf, dtype=scores.dtype))
+
+
+def _deduplicate_candidate_edges(row_ids: np.ndarray, new_rows: np.ndarray, scores: np.ndarray) -> np.ndarray:
+    """Return score-ordered indices for unique (row id, destination row) edits."""
+    if len(row_ids) == 0:
+        return np.empty(0, dtype=np.int32)
+    order = np.argsort(-np.asarray(scores, dtype=np.float32), kind="stable")
+    edge_keys = np.concatenate(
+        [np.asarray(row_ids, dtype=np.int32).reshape(-1, 1), np.asarray(new_rows, dtype=np.int32)],
+        axis=1,
+    )
+    _, first_positions = np.unique(edge_keys[order], axis=0, return_index=True)
+    return order[np.sort(first_positions)].astype(np.int32, copy=False)
 
 
 def _eval_candidate_source_satisfaction(
@@ -550,6 +577,8 @@ def _score_rows_sparse_delta(
     sparse_changed_attr_capacity: int,
     real_query_count: int,
 ) -> jax.Array:
+    changed_count = jnp.sum(old_rows != new_rows, axis=1)
+    changed_overflow = changed_count > jnp.int32(sparse_changed_attr_capacity)
     changed_attrs, changed_words = _changed_attrs_sorted(old_rows, new_rows, sparse_changed_attr_capacity)
     weights = residual.astype(jnp.float32) * inv_variance.astype(jnp.float32)
     linear = jnp.zeros((old_rows.shape[0],), dtype=jnp.float32)
@@ -627,7 +656,8 @@ def _score_rows_sparse_delta(
         return jax.lax.fori_loop(0, sparse_query_block_count, block_body, (linear_acc, quad_acc))
 
     linear, quad = jax.lax.fori_loop(0, sparse_changed_attr_capacity, attr_body, (linear, quad))
-    return linear - 0.5 * quad - lambda_cost.astype(jnp.float32) * edit_cost
+    scores = linear - 0.5 * quad - lambda_cost.astype(jnp.float32) * edit_cost
+    return jnp.where(changed_overflow, jnp.asarray(-jnp.inf, dtype=scores.dtype), scores)
 
 
 @partial(
@@ -833,6 +863,7 @@ def _generate_score_candidates_pmap(
             linear_num_terms,
             lambda_cost,
         )
+    scores = _mask_noop_candidate_scores(scores, old_rows, new_rows)
     if 0 < local_top_k < per_device_total:
         scores, top_idx = jax.lax.top_k(scores, local_top_k)
         row_ids = row_ids[top_idx]
@@ -956,6 +987,7 @@ def prepare_gpu_candidate_context(qcat: QueryCatalogue, schema: TableSchema, con
     lambda_cost = float(cfg.get("lambda_cost", 0.01))
     source_draws = int(cfg.get("gpu_source_draws", 8))
     gpu_return_top_k = int(cfg.get("gpu_return_top_k", 0))
+    return_oversample_factor = max(1, int(cfg.get("gpu_return_oversample_factor", 2)))
     active_query_capacity = int(cfg.get("num_active_targets", 64))
     batches_per_iter = max(1, int(cfg.get("gpu_batches_per_iter", 1)))
     score_query_block_size = max(0, int(cfg.get("gpu_score_query_block_size", 0)))
@@ -964,7 +996,7 @@ def prepare_gpu_candidate_context(qcat: QueryCatalogue, schema: TableSchema, con
     ndev = max(1, jax.local_device_count())
     per_device_total = int(math.ceil(total_candidates / ndev))
     total_padded = per_device_total * ndev
-    local_top_k = max(0, min(per_device_total, gpu_return_top_k))
+    local_top_k = max(0, min(per_device_total, gpu_return_top_k * return_oversample_factor))
     random_total = int(round(total_padded * min(1.0, max(0.0, random_fraction))))
     random_per_device = max(0, min(per_device_total, int(round(random_total / ndev))))
     mutable_attrs = np.flatnonzero(schema.cardinalities > 1).astype(np.int32)
@@ -1002,10 +1034,18 @@ def prepare_gpu_candidate_context(qcat: QueryCatalogue, schema: TableSchema, con
         pad_value=qcat.m,
     )
     query_attr_words = np.pad(delta_index.query_attr_words(num_attrs=schema.d), ((0, 1), (0, 0)), constant_values=0)
-    sparse_changed_attr_capacity = min(
-        int(schema.d),
-        max(1, int(cfg.get("gpu_sparse_changed_attr_capacity", max(1, qcat.max_terms)))),
+    requested_changed_attr_capacity = max(
+        1,
+        int(cfg.get("gpu_sparse_changed_attr_capacity", max(1, qcat.max_terms))),
     )
+    required_changed_attr_capacity = min(int(schema.d), max(1, int(qcat.max_terms)))
+    if sparse_score_mode and requested_changed_attr_capacity < required_changed_attr_capacity:
+        raise ValueError(
+            "qdte.gpu_sparse_changed_attr_capacity must be at least "
+            f"min(schema.d, qcat.max_terms)={required_changed_attr_capacity}; "
+            f"got {requested_changed_attr_capacity}"
+        )
+    sparse_changed_attr_capacity = min(int(schema.d), requested_changed_attr_capacity)
     return GpuCandidateContext(
         attrs=jax.device_put(jnp.asarray(attrs, dtype=jnp.int32)),
         ops=jax.device_put(jnp.asarray(ops, dtype=jnp.int32)),
@@ -1027,6 +1067,8 @@ def prepare_gpu_candidate_context(qcat: QueryCatalogue, schema: TableSchema, con
         random_per_device=random_per_device,
         source_draws=max(1, source_draws),
         local_top_k=local_top_k,
+        return_top_k=max(0, min(per_device_total, gpu_return_top_k)),
+        return_oversample_factor=return_oversample_factor,
         active_query_capacity=active_query_capacity,
         total_candidates=total_candidates,
         batches_per_iter=batches_per_iter,
@@ -1112,13 +1154,21 @@ def generate_and_score_candidates_gpu(
         row_ids, old_rows, new_rows, target_qids, edit_cost, repair_type, scores = [
             np.asarray(x).reshape((-1,) + tuple(x.shape[2:])) for x in result
         ]
-        row_id_parts.append(row_ids.reshape(-1)[:returned_count].astype(np.int32, copy=False))
-        old_row_parts.append(old_rows.reshape(-1, schema.d)[:returned_count].astype(np.int32, copy=False))
-        new_row_parts.append(new_rows.reshape(-1, schema.d)[:returned_count].astype(np.int32, copy=False))
-        target_qid_parts.append(target_qids.reshape(-1)[:returned_count].astype(np.int32, copy=False))
-        edit_cost_parts.append(edit_cost.reshape(-1)[:returned_count].astype(np.float32, copy=False))
-        repair_type_parts.append(repair_type.reshape(-1)[:returned_count].astype(np.int32, copy=False))
-        score_parts.append(scores.reshape(-1)[:returned_count].astype(np.float32, copy=False))
+        row_ids = row_ids.reshape(-1)[:returned_count].astype(np.int32, copy=False)
+        old_rows = old_rows.reshape(-1, schema.d)[:returned_count].astype(np.int32, copy=False)
+        new_rows = new_rows.reshape(-1, schema.d)[:returned_count].astype(np.int32, copy=False)
+        target_qids = target_qids.reshape(-1)[:returned_count].astype(np.int32, copy=False)
+        edit_cost = edit_cost.reshape(-1)[:returned_count].astype(np.float32, copy=False)
+        repair_type = repair_type.reshape(-1)[:returned_count].astype(np.int32, copy=False)
+        scores = scores.reshape(-1)[:returned_count].astype(np.float32, copy=False)
+        valid = np.isfinite(scores) & np.any(old_rows != new_rows, axis=1)
+        row_id_parts.append(row_ids[valid])
+        old_row_parts.append(old_rows[valid])
+        new_row_parts.append(new_rows[valid])
+        target_qid_parts.append(target_qids[valid])
+        edit_cost_parts.append(edit_cost[valid])
+        repair_type_parts.append(repair_type[valid])
+        score_parts.append(scores[valid])
     row_ids = np.concatenate(row_id_parts, axis=0)
     old_rows = np.concatenate(old_row_parts, axis=0)
     new_rows = np.concatenate(new_row_parts, axis=0)
@@ -1126,6 +1176,22 @@ def generate_and_score_candidates_gpu(
     edit_cost = np.concatenate(edit_cost_parts, axis=0)
     repair_type = np.concatenate(repair_type_parts, axis=0)
     scores = np.concatenate(score_parts, axis=0)
+    raw_returned_count = int(len(row_ids))
+    keep = _deduplicate_candidate_edges(row_ids, new_rows, scores)
+    unique_edge_count = int(len(keep))
+    if context.return_top_k > 0:
+        desired_return_count = min(
+            int(total_candidates * context.batches_per_iter),
+            int(context.return_top_k * ndev * context.batches_per_iter),
+        )
+        keep = keep[:desired_return_count]
+    row_ids = row_ids[keep]
+    old_rows = old_rows[keep]
+    new_rows = new_rows[keep]
+    target_qids = target_qids[keep]
+    edit_cost = edit_cost[keep]
+    repair_type = repair_type[keep]
+    scores = scores[keep]
     random_produced = int(np.sum(target_qids < 0))
     scored_per_batch = int(context.per_device_total * ndev)
     effective_requested = int(total_candidates * context.batches_per_iter)
@@ -1141,6 +1207,13 @@ def generate_and_score_candidates_gpu(
             "requested_candidates": float(effective_requested),
             "scored_candidates": float(effective_scored),
             "produced_candidates": float(len(row_ids)),
+            "raw_returned_candidates_before_edge_dedup": float(raw_returned_count),
+            "unique_edge_candidates_before_return_trim": float(unique_edge_count),
+            "duplicate_edge_candidates": float(raw_returned_count - unique_edge_count),
+            "duplicate_edge_rate": float((raw_returned_count - unique_edge_count) / max(1, raw_returned_count)),
+            "edge_candidates_trimmed_to_return_limit": float(unique_edge_count - len(keep)),
+            "gpu_return_top_k": float(context.return_top_k),
+            "gpu_return_oversample_factor": float(context.return_oversample_factor),
             "directed_candidates": float(len(row_ids) - random_produced),
             "random_candidates": float(random_produced),
             "candidate_shortfall": 0.0,

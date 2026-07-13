@@ -75,9 +75,92 @@ class QueryCatalogue:
             "families": self.families,
         }
 
+    def validate(self, cardinalities: np.ndarray | None = None) -> None:
+        if int(self.m) < 0:
+            raise ValueError("Query catalogue size must be non-negative")
+        if int(self.max_terms) <= 0:
+            raise ValueError("Query catalogue max_terms must be positive")
+        matrix_shape = (int(self.m), int(self.max_terms))
+        for name, values in (
+            ("attrs", self.attrs),
+            ("ops", self.ops),
+            ("values", self.values),
+            ("lows", self.lows),
+            ("highs", self.highs),
+            ("linear_attrs", self.linear_attrs),
+            ("linear_weights", self.linear_weights),
+        ):
+            if np.asarray(values).shape != matrix_shape:
+                raise ValueError(f"Query catalogue {name} must have shape {matrix_shape}")
+        for name, values in (
+            ("num_terms", self.num_terms),
+            ("linear_thresholds", self.linear_thresholds),
+            ("linear_num_terms", self.linear_num_terms),
+        ):
+            if np.asarray(values).shape != (int(self.m),):
+                raise ValueError(f"Query catalogue {name} must have shape ({int(self.m)},)")
+        for name, values in (("names", self.names), ("groups", self.groups), ("families", self.families)):
+            if len(values) != int(self.m):
+                raise ValueError(f"Query catalogue {name} must contain {int(self.m)} entries")
+        if not np.all(np.isfinite(np.asarray(self.linear_weights, dtype=np.float64))):
+            raise ValueError("Query catalogue linear weights must be finite")
+        if not np.all(np.isfinite(np.asarray(self.linear_thresholds, dtype=np.float64))):
+            raise ValueError("Query catalogue linear thresholds must be finite")
+
+        cards: np.ndarray | None = None
+        if cardinalities is not None:
+            cards = np.asarray(cardinalities, dtype=np.int64)
+            if cards.ndim != 1 or cards.size == 0 or np.any(cards <= 0):
+                raise ValueError("Public query cardinalities must be a non-empty positive 1D vector")
+
+        valid_ops = {OP_EQ, OP_LE, OP_GE, OP_RANGE}
+        for qid in range(int(self.m)):
+            num_terms = int(self.num_terms[qid])
+            linear_num_terms = int(self.linear_num_terms[qid])
+            if not 0 <= num_terms <= int(self.max_terms):
+                raise ValueError(f"Query {qid} has invalid num_terms={num_terms}")
+            if not 0 <= linear_num_terms <= int(self.max_terms):
+                raise ValueError(f"Query {qid} has invalid linear_num_terms={linear_num_terms}")
+            if num_terms + linear_num_terms == 0:
+                raise ValueError(f"Query {qid} has no active terms")
+            if num_terms > 0 and linear_num_terms > 0:
+                raise ValueError(f"Query {qid} mixes ordinary and linear terms, which is not supported")
+
+            ordinary_attrs = np.asarray(self.attrs[qid], dtype=np.int64)
+            if np.any(ordinary_attrs[:num_terms] < 0) or np.any(ordinary_attrs[num_terms:] != -1):
+                raise ValueError(f"Query {qid} ordinary terms are not canonically packed")
+            if len(np.unique(ordinary_attrs[:num_terms])) != num_terms:
+                raise ValueError(f"Query {qid} contains duplicate ordinary attributes")
+            for term in range(num_terms):
+                attr = int(ordinary_attrs[term])
+                op = int(self.ops[qid, term])
+                if op not in valid_ops:
+                    raise ValueError(f"Query {qid} has unknown op {op}")
+                if cards is not None:
+                    if attr >= len(cards):
+                        raise ValueError(f"Query {qid} references out-of-range attribute {attr}")
+                    cardinality = int(cards[attr])
+                    if op == OP_RANGE:
+                        lo = int(self.lows[qid, term])
+                        hi = int(self.highs[qid, term])
+                        if not 0 <= lo <= hi < cardinality:
+                            raise ValueError(f"Query {qid} has range [{lo}, {hi}] outside attribute {attr}")
+                    else:
+                        value = int(self.values[qid, term])
+                        if not 0 <= value < cardinality:
+                            raise ValueError(f"Query {qid} has value {value} outside attribute {attr}")
+
+            linear_attrs = np.asarray(self.linear_attrs[qid], dtype=np.int64)
+            if np.any(linear_attrs[:linear_num_terms] < 0) or np.any(linear_attrs[linear_num_terms:] != -1):
+                raise ValueError(f"Query {qid} linear terms are not canonically packed")
+            if len(np.unique(linear_attrs[:linear_num_terms])) != linear_num_terms:
+                raise ValueError(f"Query {qid} contains duplicate linear attributes")
+            if cards is not None and np.any(linear_attrs[:linear_num_terms] >= len(cards)):
+                raise ValueError(f"Query {qid} references an out-of-range linear attribute")
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QueryCatalogue":
-        return cls(
+        catalogue = cls(
             m=int(data["m"]),
             max_terms=int(data["max_terms"]),
             attrs=np.asarray(data["attrs"], dtype=np.int32),
@@ -96,8 +179,11 @@ class QueryCatalogue:
             groups=list(data["groups"]),
             families=list(data["families"]),
         )
+        catalogue.validate()
+        return catalogue
 
     def save_json(self, path: str | Path) -> None:
+        self.validate()
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(orjson.dumps(self.to_dict(), option=orjson.OPT_INDENT_2))
@@ -274,7 +360,7 @@ class QueryBuilder:
 
     def build(self) -> QueryCatalogue:
         m = len(self.names)
-        return QueryCatalogue(
+        catalogue = QueryCatalogue(
             m=m,
             max_terms=self.max_terms,
             attrs=np.asarray(self._attrs, dtype=np.int32).reshape(m, self.max_terms),
@@ -291,3 +377,5 @@ class QueryBuilder:
             groups=self.groups,
             families=self.families,
         )
+        catalogue.validate()
+        return catalogue

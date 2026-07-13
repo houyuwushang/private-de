@@ -196,6 +196,144 @@ def edit_advantage_from_delta(
     return linear - 0.5 * quad - float(lambda_cost) * edit_cost.astype(np.float32)
 
 
+def l1_advantage_from_delta(
+    residual: np.ndarray,
+    weights: np.ndarray,
+    delta: np.ndarray,
+    edit_cost: np.ndarray,
+    lambda_cost: float,
+) -> np.ndarray:
+    d = delta.astype(np.float32)
+    r = residual.astype(np.float32)
+    w = weights.astype(np.float32)
+    before = np.abs(r).reshape(1, -1)
+    after = np.abs(r.reshape(1, -1) - d)
+    component = (before - after) @ w
+    return component.astype(np.float32) - float(lambda_cost) * edit_cost.astype(np.float32)
+
+
+@jax.jit
+def _score_candidates_l1_jit(
+    old_rows: jax.Array,
+    new_rows: jax.Array,
+    residual: jax.Array,
+    weights: jax.Array,
+    edit_cost: jax.Array,
+    attrs: jax.Array,
+    ops: jax.Array,
+    values: jax.Array,
+    lows: jax.Array,
+    highs: jax.Array,
+    linear_attrs: jax.Array,
+    linear_weights: jax.Array,
+    linear_thresholds: jax.Array,
+    linear_num_terms: jax.Array,
+    lambda_cost: jax.Array,
+) -> jax.Array:
+    phi_old = eval_records_queries_arrays(
+        old_rows,
+        attrs,
+        ops,
+        values,
+        lows,
+        highs,
+        linear_attrs,
+        linear_weights,
+        linear_thresholds,
+        linear_num_terms,
+    )
+    phi_new = eval_records_queries_arrays(
+        new_rows,
+        attrs,
+        ops,
+        values,
+        lows,
+        highs,
+        linear_attrs,
+        linear_weights,
+        linear_thresholds,
+        linear_num_terms,
+    )
+    delta = phi_new.astype(jnp.float32) - phi_old.astype(jnp.float32)
+    component = (jnp.abs(residual).reshape(1, -1) - jnp.abs(residual.reshape(1, -1) - delta)) @ weights
+    return component - lambda_cost.astype(jnp.float32) * edit_cost.astype(jnp.float32)
+
+
+@partial(jax.pmap, in_axes=(0, 0, None, None, 0, None, None))
+def _score_candidates_l1_pmap(
+    old_rows: jax.Array,
+    new_rows: jax.Array,
+    residual: jax.Array,
+    weights: jax.Array,
+    edit_cost: jax.Array,
+    qarrays: tuple[jax.Array, ...],
+    lambda_cost: jax.Array,
+) -> jax.Array:
+    phi_old = eval_records_queries_arrays(old_rows, *qarrays)
+    phi_new = eval_records_queries_arrays(new_rows, *qarrays)
+    delta = phi_new.astype(jnp.float32) - phi_old.astype(jnp.float32)
+    component = (jnp.abs(residual).reshape(1, -1) - jnp.abs(residual.reshape(1, -1) - delta)) @ weights
+    return component - lambda_cost.astype(jnp.float32) * edit_cost.astype(jnp.float32)
+
+
+def score_candidates_l1(
+    candidates: CandidateBatch,
+    residual: np.ndarray,
+    weights: np.ndarray,
+    qcat: QueryCatalogue,
+    lambda_cost: float,
+    chunk_size: int = 4096,
+    use_pmap: bool = True,
+    context: ScoreCandidateContext | None = None,
+) -> np.ndarray:
+    if candidates.size == 0:
+        return np.empty(0, dtype=np.float32)
+    qarrays = context.qarrays if context is not None else _qarrays(qcat)
+    residual_j = jnp.asarray(residual, dtype=jnp.float32)
+    weights_j = jnp.asarray(weights, dtype=jnp.float32)
+    lambda_j = jnp.asarray(lambda_cost, dtype=jnp.float32)
+    out: list[np.ndarray] = []
+    ndev = jax.local_device_count()
+    can_pmap = bool(use_pmap and ndev > 1)
+    for start in range(0, candidates.size, chunk_size):
+        end = min(start + chunk_size, candidates.size)
+        old = candidates.old_rows[start:end]
+        new = candidates.new_rows[start:end]
+        cost = candidates.edit_cost[start:end]
+        if can_pmap and len(old) >= ndev:
+            pad = (-len(old)) % ndev
+            if pad:
+                old_p = np.concatenate([old, np.repeat(old[-1:], pad, axis=0)], axis=0)
+                new_p = np.concatenate([new, np.repeat(new[-1:], pad, axis=0)], axis=0)
+                cost_p = np.concatenate([cost, np.repeat(cost[-1:], pad, axis=0)], axis=0)
+            else:
+                old_p, new_p, cost_p = old, new, cost
+            per_dev = old_p.shape[0] // ndev
+            scores = _score_candidates_l1_pmap(
+                jnp.asarray(old_p.reshape(ndev, per_dev, old_p.shape[1]), dtype=jnp.int32),
+                jnp.asarray(new_p.reshape(ndev, per_dev, new_p.shape[1]), dtype=jnp.int32),
+                residual_j,
+                weights_j,
+                jnp.asarray(cost_p.reshape(ndev, per_dev), dtype=jnp.float32),
+                qarrays,
+                lambda_j,
+            )
+            arr = np.asarray(scores).reshape(-1)[: len(old)]
+        else:
+            scores = _score_candidates_l1_jit(
+                jnp.asarray(old, dtype=jnp.int32),
+                jnp.asarray(new, dtype=jnp.int32),
+                residual_j,
+                weights_j,
+                jnp.asarray(cost, dtype=jnp.float32),
+                *qarrays,
+                lambda_j,
+            )
+            arr = np.asarray(scores)
+        out.append(arr.astype(np.float32))
+    return np.concatenate(out, axis=0)
+
+
 def score_candidates_sparse(
     candidates: CandidateBatch,
     residual: np.ndarray,

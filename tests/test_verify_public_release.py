@@ -37,6 +37,9 @@ def test_release_audit_allows_known_tracked_internal_as_warning(tmp_path: Path) 
     assert "scripts/smoke_qdte.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/run_ablation.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/run_adaptive_selection_ablation.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "scripts/run_integrated_sage_qdte.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "scripts/run_nonnegative_projection_pilot.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "scripts/run_orthogonal_low_budget_pilot.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/audit_public_release_plan.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/audit_original_protocol_baselines.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/create_public_release_repo.py" in mod.PUBLIC_VISIBLE_PATHS
@@ -46,6 +49,10 @@ def test_release_audit_allows_known_tracked_internal_as_warning(tmp_path: Path) 
     assert "tests/test_rehearse_public_release_branch.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "tests/test_audit_original_protocol_baselines.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "tests/test_create_public_release_repo.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "tests/test_run_integrated_sage_qdte.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "tests/test_run_orthogonal_low_budget_pilot.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "tests/test_nonnegative_projection_theorem.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "docs/CODE_REVIEW_GUIDE.md" in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/verify_paper_package_tarball.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "tests/test_verify_paper_package_tarball.py" in mod.PUBLIC_VISIBLE_PATHS
 

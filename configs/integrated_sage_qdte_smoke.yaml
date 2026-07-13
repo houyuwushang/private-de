@@ -1,0 +1,89 @@
+run:
+  dataset_name: integrated_sage_qdte_smoke
+  input_csv: outputs/smoke_input.csv
+  output_dir: outputs/integrated_sage_qdte_smoke
+  seed: 0
+  device: gpu
+
+preprocess:
+  numerical_bins: 8
+  missing_token: __MISSING__
+  label_column: label
+  numerical_columns: [c, d]
+  categorical_columns: [a, b, label]
+
+workload:
+  include_oneway: true
+  include_2way_cat: true
+  include_prefix: true
+  include_range: true
+  include_mixed: true
+  max_queries: 400
+  max_terms: 4
+  range_intervals_per_num_attr: 8
+  mixed_queries_per_pair: 8
+  max_2way_cells: 150
+  exact_group_sensitivity_max_cells: 200000
+  random_seed: 0
+
+privacy:
+  mode: dp
+  rho_total: 1.0
+  delta: 1.0e-9
+  measurement_mode: static_all
+  measurement_allocation:
+    oneway: 0.25
+    twoway: 0.25
+    prefix: 0.15
+    range: 0.15
+    mixed: 0.20
+
+projection:
+  project_partitions: true
+  clip_nonpartition: true
+  prefix_monotonicity: false
+  consistency:
+    enabled: false
+    method: query_space_lsq
+    max_constraints: 1000
+    solver_max_iterations: 1000
+
+init:
+  N_syn: same_as_real
+  method: independent_oneway
+
+qdte:
+  objective_weighting: variance
+  score_backend: dense_gpu
+  transport_mode: atom_flow
+  atom_flow_update_mode: batch
+  atom_flow_pool_multiplier: 4
+  atom_flow_max_pool: 0
+  transport_prefix_strategy: best_advantage
+  max_iters: 10
+  num_active_targets: 8
+  candidates_per_target: 8
+  total_candidates_per_iter: 64
+  accepted_per_iter: 4
+  kappa_noise: 1.0
+  allow_below_noise_fallback: false
+  lambda_cost: 0.01
+  numerical_distance_gamma: 0.1
+  random_candidate_fraction: 0.05
+  source_over_sample_factor: 8
+  full_recompute_every: 5
+  stop_patience: 10
+  min_advantage: 1.0e-6
+  log_every: 1
+
+runtime:
+  use_pmap: false
+  scoring_chunk_size: 64
+  answer_batch_size: 512
+  xla_preallocate: false
+  log_measurement_groups: false
+
+evaluation:
+  compute_true_query_error: false
+  downstream_ml: false
+  save_synthetic_csv: false

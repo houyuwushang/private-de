@@ -36,8 +36,16 @@ def query_error_metrics(
     n_syn: int,
     prefix: str = "true_query",
 ) -> dict[str, float]:
-    true_rate = true_answers.astype(np.float64) / float(n_real)
-    syn_rate = syn_answers.astype(np.float64) / float(n_syn)
+    true_answers = np.asarray(true_answers, dtype=np.float64)
+    syn_answers = np.asarray(syn_answers, dtype=np.float64)
+    if true_answers.ndim != 1 or syn_answers.shape != true_answers.shape or true_answers.size == 0:
+        raise ValueError("true_answers and syn_answers must be non-empty matching 1D vectors")
+    if int(n_real) <= 0 or int(n_syn) <= 0:
+        raise ValueError("n_real and n_syn must be positive")
+    if not np.all(np.isfinite(true_answers)) or not np.all(np.isfinite(syn_answers)):
+        raise ValueError("Query answers must be finite")
+    true_rate = true_answers / float(n_real)
+    syn_rate = syn_answers / float(n_syn)
     diff = syn_rate - true_rate
     return {
         f"{prefix}_mae": float(np.mean(np.abs(diff))),

@@ -1608,10 +1608,18 @@ def generate_candidates(
         if len(active_qids) == 0:
             return
         end_limit = min(directed_budget, produced_count() + int(budget))
-        for qid_raw in active_qids.tolist():
-            if produced_count() >= end_limit:
-                break
-            qid = int(qid_raw)
+        query_visit = 0
+        stale_visits = 0
+        max_stale_visits = max(1, len(active_qids))
+        max_query_visits = len(active_qids) if shortfall_policy == "random" else None
+        while (
+            produced_count() < end_limit
+            and stale_visits < max_stale_visits
+            and (max_query_visits is None or query_visit < max_query_visits)
+        ):
+            qid = int(active_qids[query_visit % len(active_qids)])
+            query_visit += 1
+            before_query = produced_count()
             need_enter = residual[qid] > 0
             need_source_sat = not need_enter
             picked = 0
@@ -1643,6 +1651,10 @@ def generate_candidates(
                 before = produced_count()
                 append_chunk(selected_ids, old, new, qid, rtype)
                 picked += produced_count() - before
+            if produced_count() == before_query:
+                stale_visits += 1
+            else:
+                stale_visits = 0
 
     def dense_candidate_deltas(
         old_rows: np.ndarray,

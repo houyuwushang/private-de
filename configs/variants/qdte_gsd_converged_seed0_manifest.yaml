@@ -1,0 +1,43 @@
+protocol:
+  name: qdte_vs_official_gsd_converged_no_noise_v1
+  frozen_at: 2026-07-10
+  seed: 0
+  datasets: [acs_sage_strong, br2000_sage_strong]
+  primary_endpoint: exact_mixed_target_count_loss
+  secondary_endpoints: [mae, rmse, max_error, avg_tvd, max_tvd, time_to_quality]
+  extension_rule: extend_only_hard_cap_if_final_ten_percent_improves_over_0p1_percent
+
+qdte:
+  source_family: qdte_base_impl_audit_mixed_no_noise_final
+  phase_a_config: configs/variants/qdte_structured_converged_batch_v1.yaml
+  phase_b_config: configs/variants/qdte_structured_converged_tail_v1.yaml
+  extended_phase_b_config: configs/variants/qdte_structured_converged_tail_v1_extended.yaml
+  refinement_seed: 20260710
+  include_base_runtime_in_total: true
+
+official_gsd:
+  implementation: genetic_sd.generator.generator_genetic_sd.GeneticSD
+  initialization: native
+  genetic_operators: [mutate, swap, cross]
+  num_generations_cap: 5000000
+  extended_num_generations_cap: 10000000
+  plateau_min_generation: 1000000
+  plateau_relative_improvement: 1.0e-5
+  plateau_checkpoints: 10
+  seed_streams: [jax, python_random, numpy]
+  proposals_per_generation: 50
+
+paths:
+  input_root: $SAGE_BASELINE_ROOT/external_inputs
+  query_root: $SAGE_BASELINE_ROOT/external_runs/sage
+  output_root: $SAGE_BASELINE_ROOT/external_runs/qdte_gsd_converged_no_noise_v1
+
+extension_resolution:
+  trigger_observed_on_both_acs_arms: true
+  trigger_basis: improvement_over_final_ten_percent_exceeded_0p1_percent
+  planned_execution: rerun_continuously_from_original_start_with_doubled_hard_cap
+  actual_execution: stopped_by_explicit_study_decision_after_initial_acs_endpoints
+  partial_acs_qdte_extension_role: abandoned_not_used_for_comparison
+  br2000_resolution: superseded_by_cross_dataset_breadth_protocol
+  further_extensions: false
+  accepted_acs_label: initial_high_cap_endpoint_not_strict_plateau

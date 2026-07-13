@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -22,8 +23,25 @@ def _validate_choice(section: dict[str, Any], key: str, allowed: set[str], defau
         raise ValueError(f"{dotted} must be one of: {allowed_text}; got {normalized!r}")
 
 
+def _finite_float(section: dict[str, Any], key: str, default: float, dotted: str) -> float:
+    value = float(section.get(key, default))
+    if not math.isfinite(value):
+        raise ValueError(f"{dotted} must be finite")
+    return value
+
+
+def _positive_int(section: dict[str, Any], key: str, default: int, dotted: str, *, allow_zero: bool = False) -> int:
+    value = int(section.get(key, default))
+    invalid = value < 0 if allow_zero else value <= 0
+    if invalid:
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise ValueError(f"{dotted} must be {qualifier}")
+    return value
+
+
 def validate_config(config: dict[str, Any]) -> None:
     privacy = _section(config, "privacy")
+    run = _section(config, "run")
     workload = _section(config, "workload")
     evaluation = _section(config, "evaluation")
     init = _section(config, "init")
@@ -31,6 +49,53 @@ def validate_config(config: dict[str, Any]) -> None:
     projection = _section(config, "projection")
     measurement = _section(config, "measurement")
     population = _section(config, "population")
+    preprocess = _section(config, "preprocess")
+    runtime = _section(config, "runtime")
+    debug = _section(config, "debug")
+
+    _positive_int(run, "seed", 0, "run.seed", allow_zero=True)
+    _positive_int(workload, "random_seed", 0, "workload.random_seed", allow_zero=True)
+
+    _validate_choice(privacy, "mode", {"dp", "oracle"}, "dp", "privacy.mode")
+    privacy_mode = str(privacy.get("mode", "dp")).lower()
+    rho_total = _finite_float(privacy, "rho_total", 1.0, "privacy.rho_total")
+    if privacy_mode == "dp" and rho_total <= 0.0:
+        raise ValueError("privacy.rho_total must be positive in DP mode")
+    if privacy_mode == "oracle" and rho_total < 0.0:
+        raise ValueError("privacy.rho_total must be non-negative")
+    delta = _finite_float(privacy, "delta", 1.0e-9, "privacy.delta")
+    if not 0.0 < delta < 1.0:
+        raise ValueError("privacy.delta must be in (0, 1)")
+    if _finite_float(privacy, "min_variance", 1.0e-6, "privacy.min_variance") <= 0.0:
+        raise ValueError("privacy.min_variance must be positive")
+    if _finite_float(privacy, "oracle_variance", 1.0, "privacy.oracle_variance") <= 0.0:
+        raise ValueError("privacy.oracle_variance must be positive")
+    allocation = privacy.get("measurement_allocation", {})
+    if allocation is not None and not isinstance(allocation, dict):
+        raise ValueError("privacy.measurement_allocation must be a mapping")
+
+    _positive_int(workload, "max_queries", 10_000, "workload.max_queries")
+    _positive_int(workload, "max_terms", 4, "workload.max_terms")
+    _positive_int(workload, "max_2way_cells", 5_000, "workload.max_2way_cells", allow_zero=True)
+    _positive_int(
+        workload,
+        "exact_group_sensitivity_max_cells",
+        200_000,
+        "workload.exact_group_sensitivity_max_cells",
+    )
+    _positive_int(preprocess, "numerical_bins", 32, "preprocess.numerical_bins")
+    _positive_int(
+        preprocess,
+        "auto_numeric_min_unique",
+        10,
+        "preprocess.auto_numeric_min_unique",
+    )
+    _positive_int(runtime, "answer_batch_size", 8192, "runtime.answer_batch_size")
+    _positive_int(runtime, "scoring_chunk_size", 4096, "runtime.scoring_chunk_size")
+    if _finite_float(debug, "residual_drift_tolerance", 1.0e-5, "debug.residual_drift_tolerance") < 0.0:
+        raise ValueError("debug.residual_drift_tolerance must be non-negative")
+    if _finite_float(debug, "loss_tolerance", 1.0e-4, "debug.loss_tolerance") < 0.0:
+        raise ValueError("debug.loss_tolerance must be non-negative")
 
     measurement_mode = str(privacy.get("measurement_mode", "static_all")).lower()
     if measurement_mode != "static_all":
@@ -41,6 +106,69 @@ def validate_config(config: dict[str, Any]) -> None:
     reuse_from = measurement.get("reuse_from", measurement.get("artifact_dir"))
     if reuse_from is not None and str(reuse_from) == "":
         raise ValueError("measurement.reuse_from must be a non-empty path when provided")
+    fission = measurement.get("fission", {})
+    if fission is None:
+        fission = {}
+    if not isinstance(fission, dict):
+        raise ValueError("measurement.fission must be a mapping")
+    if bool(fission.get("enabled", False)):
+        if privacy_mode != "dp":
+            raise ValueError("measurement.fission.enabled currently requires privacy.mode='dp'")
+        train_fraction = _finite_float(
+            fission,
+            "train_fraction",
+            0.8,
+            "measurement.fission.train_fraction",
+        )
+        if not 0.0 < train_fraction < 1.0:
+            raise ValueError("measurement.fission.train_fraction must be in (0, 1)")
+        _positive_int(
+            fission,
+            "checkpoint_interval",
+            100,
+            "measurement.fission.checkpoint_interval",
+        )
+        _positive_int(
+            fission,
+            "seed_offset",
+            51_771,
+            "measurement.fission.seed_offset",
+            allow_zero=True,
+        )
+        one_se_multiplier = _finite_float(
+            fission,
+            "one_se_multiplier",
+            1.0,
+            "measurement.fission.one_se_multiplier",
+        )
+        if one_se_multiplier < 0.0:
+            raise ValueError("measurement.fission.one_se_multiplier must be non-negative")
+        _validate_choice(
+            fission,
+            "selection_rule",
+            {
+                "earliest_within_one_se",
+                "validation_minimum",
+                "l2_one_se_tvd_minimum",
+                "l2_one_se_tvd_upper_minimum",
+            },
+            "earliest_within_one_se",
+            "measurement.fission.selection_rule",
+        )
+        _validate_choice(
+            fission,
+            "optimization_branch",
+            {"train", "validation"},
+            "train",
+            "measurement.fission.optimization_branch",
+        )
+        uncertainty = projection.get("uncertainty", {})
+        if uncertainty is not None and not isinstance(uncertainty, dict):
+            raise ValueError("projection.uncertainty must be a mapping")
+        if isinstance(uncertainty, dict) and bool(uncertainty.get("enabled", False)):
+            raise ValueError(
+                "measurement.fission currently requires projection.uncertainty.enabled=false"
+            )
 
     heldout_workload = evaluation.get("heldout_workload", {})
     if heldout_workload is not None:
@@ -60,12 +188,67 @@ def validate_config(config: dict[str, Any]) -> None:
     candidate_backend = str(qdte.get("candidate_backend", "cpu_repair"))
     score_backend = str(qdte.get("score_backend", "dense_gpu"))
     candidate_compiler = str(qdte.get("candidate_compiler", "single_query"))
+    if "eval_every" in qdte:
+        raise ValueError(
+            "qdte.eval_every is not implemented; use qdte.log_every for public objective logging "
+            "and keep true-answer evaluation offline"
+        )
     if score_backend == "sparse_delta_gpu" and candidate_backend not in {"jax_repair", "gpu_repair"}:
         raise ValueError("qdte.score_backend='sparse_delta_gpu' requires qdte.candidate_backend to be jax_repair or gpu_repair")
+    if candidate_backend in {"jax_repair", "gpu_repair"} and score_backend not in {
+        "dense_gpu",
+        "sparse_delta_gpu",
+    }:
+        raise ValueError(
+            "GPU candidate backends use fused scoring and require "
+            "qdte.score_backend to be dense_gpu or sparse_delta_gpu"
+        )
     if candidate_compiler != "single_query" and candidate_backend in {"jax_repair", "gpu_repair"}:
         raise NotImplementedError(
             "qdte.candidate_compiler other than 'single_query' currently requires qdte.candidate_backend=cpu_repair"
         )
+
+    _positive_int(qdte, "max_iters", 5000, "qdte.max_iters", allow_zero=True)
+    _positive_int(qdte, "num_active_targets", 64, "qdte.num_active_targets")
+    _positive_int(qdte, "candidates_per_target", 64, "qdte.candidates_per_target")
+    _positive_int(qdte, "total_candidates_per_iter", 4096, "qdte.total_candidates_per_iter")
+    _positive_int(qdte, "source_over_sample_factor", 8, "qdte.source_over_sample_factor")
+    _positive_int(qdte, "full_recompute_every", 0, "qdte.full_recompute_every", allow_zero=True)
+    _positive_int(qdte, "stop_patience", 50, "qdte.stop_patience")
+    _positive_int(qdte, "log_every", 100, "qdte.log_every")
+    _positive_int(qdte, "gpu_return_top_k", 0, "qdte.gpu_return_top_k", allow_zero=True)
+    _positive_int(qdte, "gpu_return_oversample_factor", 2, "qdte.gpu_return_oversample_factor")
+    _positive_int(qdte, "gpu_source_draws", 8, "qdte.gpu_source_draws")
+    _positive_int(qdte, "gpu_batches_per_iter", 1, "qdte.gpu_batches_per_iter")
+    _positive_int(
+        qdte,
+        "gpu_score_query_block_size",
+        0,
+        "qdte.gpu_score_query_block_size",
+        allow_zero=True,
+    )
+    _positive_int(qdte, "gpu_sparse_query_block_size", 64, "qdte.gpu_sparse_query_block_size")
+    _positive_int(qdte, "gpu_sparse_changed_attr_capacity", 1, "qdte.gpu_sparse_changed_attr_capacity")
+    if _finite_float(qdte, "kappa_noise", 1.0, "qdte.kappa_noise") < 0.0:
+        raise ValueError("qdte.kappa_noise must be non-negative")
+    if _finite_float(qdte, "lambda_cost", 0.01, "qdte.lambda_cost") < 0.0:
+        raise ValueError("qdte.lambda_cost must be non-negative")
+    if _finite_float(qdte, "numerical_distance_gamma", 0.1, "qdte.numerical_distance_gamma") < 0.0:
+        raise ValueError("qdte.numerical_distance_gamma must be non-negative")
+    random_fraction = _finite_float(qdte, "random_candidate_fraction", 0.05, "qdte.random_candidate_fraction")
+    if random_fraction < 0.0 or random_fraction > 1.0:
+        raise ValueError("qdte.random_candidate_fraction must be in [0, 1]")
+    if _finite_float(qdte, "min_advantage", 1.0e-6, "qdte.min_advantage") < 0.0:
+        raise ValueError("qdte.min_advantage must be non-negative")
+    if _finite_float(qdte, "debt_alpha", 0.0, "qdte.debt_alpha") < 0.0:
+        raise ValueError("qdte.debt_alpha must be non-negative")
+    debt_decay = _finite_float(qdte, "debt_decay", 0.95, "qdte.debt_decay")
+    if debt_decay < 0.0 or debt_decay > 1.0:
+        raise ValueError("qdte.debt_decay must be in [0, 1]")
+    if _finite_float(qdte, "debt_repay", 1.0, "qdte.debt_repay") < 0.0:
+        raise ValueError("qdte.debt_repay must be non-negative")
+    if _finite_float(qdte, "debt_cap", 1.0e6, "qdte.debt_cap") <= 0.0:
+        raise ValueError("qdte.debt_cap must be positive")
 
     consistency = projection.get("consistency", {})
     if consistency is not None:
@@ -110,6 +293,23 @@ def validate_config(config: dict[str, Any]) -> None:
                     raise ValueError("projection.consistency.solver_ftol must be non-negative")
                 if int(consistency.get("max_dense_constraint_cells", 20_000_000)) <= 0:
                     raise ValueError("projection.consistency.max_dense_constraint_cells must be positive")
+            if method == "query_space_feasible_lsq":
+                if float(consistency.get("certificate_feasibility_tolerance", 1.0e-6)) < 0.0:
+                    raise ValueError(
+                        "projection.consistency.certificate_feasibility_tolerance must be non-negative"
+                    )
+                if float(consistency.get("certificate_gap_absolute_tolerance", 1.0e-7)) < 0.0:
+                    raise ValueError(
+                        "projection.consistency.certificate_gap_absolute_tolerance must be non-negative"
+                    )
+                if float(consistency.get("certificate_gap_relative_tolerance", 1.0e-8)) < 0.0:
+                    raise ValueError(
+                        "projection.consistency.certificate_gap_relative_tolerance must be non-negative"
+                    )
+                if int(consistency.get("certificate_max_iterations", 1_000)) <= 0:
+                    raise ValueError(
+                        "projection.consistency.certificate_max_iterations must be positive"
+                    )
             if method == "local_table_feasible_jax":
                 if int(consistency.get("jax_iterations", 1_000)) <= 0:
                     raise ValueError("projection.consistency.jax_iterations must be positive")
@@ -146,6 +346,9 @@ def validate_config(config: dict[str, Any]) -> None:
     init_method = init.get("method")
     if init_method is not None and str(init_method) != "independent_oneway":
         raise ValueError(f"init.method must be 'independent_oneway'; got {init_method!r}")
+    n_syn = init.get("N_syn", "same_as_real")
+    if n_syn is not None and str(n_syn) != "same_as_real" and int(n_syn) <= 0:
+        raise ValueError("init.N_syn must be positive or 'same_as_real'")
 
     _validate_choice(qdte, "candidate_backend", {"cpu_repair", "jax_repair", "gpu_repair"}, "cpu_repair", "qdte.candidate_backend")
     _validate_choice(
@@ -256,10 +459,75 @@ def validate_config(config: dict[str, Any]) -> None:
     )
     _validate_choice(
         qdte,
+        "objective_weight_profile",
+        {"none", "joint_utility_envelope"},
+        "none",
+        "qdte.objective_weight_profile",
+    )
+    _validate_choice(
+        qdte,
+        "objective_loss",
+        {"quadratic", "tvd_l1"},
+        "quadratic",
+        "qdte.objective_loss",
+    )
+    objective_loss = str(qdte.get("objective_loss", "quadratic"))
+    objective_weighting = str(qdte.get("objective_weighting", "variance"))
+    if bool(fission.get("enabled", False)):
+        supported_fission_objective = (
+            objective_loss == "quadratic" and objective_weighting == "variance"
+        ) or (
+            objective_loss == "tvd_l1" and objective_weighting == "unweighted"
+        )
+        if not supported_fission_objective:
+            raise ValueError(
+                "measurement.fission requires either variance-weighted quadratic "
+                "or unweighted tvd_l1 optimization"
+            )
+    transport_mode = str(qdte.get("transport_mode", "microbatch_greedy"))
+    atom_flow_update_mode = str(qdte.get("atom_flow_update_mode", "batch"))
+    if objective_loss == "tvd_l1":
+        if candidate_backend != "cpu_repair":
+            raise ValueError("qdte.objective_loss='tvd_l1' currently requires qdte.candidate_backend='cpu_repair'")
+        if transport_mode != "atom_flow" or atom_flow_update_mode != "batch":
+            raise ValueError(
+                "qdte.objective_loss='tvd_l1' currently requires "
+                "qdte.transport_mode='atom_flow' and qdte.atom_flow_update_mode='batch'"
+            )
+    _validate_choice(
+        qdte,
         "accepted_per_iter_schedule",
         {"fixed", "none", "linear", "cosine", "exponential"},
         "fixed",
         "qdte.accepted_per_iter_schedule",
+    )
+    _validate_choice(
+        qdte,
+        "structured_swap_accept_schedule",
+        {"fixed", "none", "linear", "cosine", "exponential"},
+        "cosine",
+        "qdte.structured_swap_accept_schedule",
+    )
+    _validate_choice(
+        qdte,
+        "structured_swap_delta_backend",
+        {"sparse_cpu", "dense_gpu"},
+        "sparse_cpu",
+        "qdte.structured_swap_delta_backend",
+    )
+    _validate_choice(
+        qdte,
+        "structured_swap_noise_guard_mode",
+        {"fixed", "bonferroni"},
+        "fixed",
+        "qdte.structured_swap_noise_guard_mode",
+    )
+    _validate_choice(
+        qdte,
+        "transport_prefix_strategy",
+        {"largest_positive", "best_advantage"},
+        "largest_positive",
+        "qdte.transport_prefix_strategy",
     )
     _validate_choice(
         qdte,
@@ -325,6 +593,50 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("qdte.accepted_per_iter_warmup_iters must be non-negative")
     if "accepted_per_iter_anneal_iters" in qdte and int(qdte["accepted_per_iter_anneal_iters"]) <= 0:
         raise ValueError("qdte.accepted_per_iter_anneal_iters must be positive")
+    for key in (
+        "structured_swap_start_iter",
+        "structured_swap_interval",
+        "structured_swap_candidate_units",
+        "structured_swap_transport_pool",
+        "structured_swap_accept_start",
+        "structured_swap_accept_end",
+    ):
+        if key in qdte and int(qdte[key]) <= 0:
+            raise ValueError(f"qdte.{key} must be positive")
+    if (
+        "structured_swap_accept_start" in qdte
+        and "structured_swap_accept_end" in qdte
+        and int(qdte["structured_swap_accept_start"]) < int(qdte["structured_swap_accept_end"])
+    ):
+        raise ValueError("qdte.structured_swap_accept_start must be at least structured_swap_accept_end")
+    for key in (
+        "structured_swap_noise_guard_kappa",
+        "structured_swap_trigger_rms",
+        "structured_swap_policy_prior_strength",
+    ):
+        if key in qdte and float(qdte[key]) < 0.0:
+            raise ValueError(f"qdte.{key} must be non-negative")
+    if "structured_swap_noise_guard_alpha" in qdte and not 0.0 < float(
+        qdte["structured_swap_noise_guard_alpha"]
+    ) < 1.0:
+        raise ValueError("qdte.structured_swap_noise_guard_alpha must be in (0, 1)")
+    if "structured_swap_exploration_floor" in qdte and not 0.0 <= float(
+        qdte["structured_swap_exploration_floor"]
+    ) <= 1.0:
+        raise ValueError("qdte.structured_swap_exploration_floor must be in [0, 1]")
+    if "structured_swap_policy_decay" in qdte and not 0.0 <= float(
+        qdte["structured_swap_policy_decay"]
+    ) < 1.0:
+        raise ValueError("qdte.structured_swap_policy_decay must be in [0, 1)")
+    if bool(qdte.get("structured_swap_enabled", False)) and objective_loss == "tvd_l1":
+        if float(qdte.get("structured_swap_noise_guard_kappa", 2.0)) != 0.0:
+            raise ValueError(
+                "structured TVD-L1 currently requires qdte.structured_swap_noise_guard_kappa=0"
+            )
+        if str(qdte.get("structured_swap_noise_guard_mode", "fixed")) != "fixed":
+            raise ValueError(
+                "structured TVD-L1 currently requires qdte.structured_swap_noise_guard_mode='fixed'"
+            )
     if "directed_candidate_count" in qdte and int(qdte["directed_candidate_count"]) < 0:
         raise ValueError("qdte.directed_candidate_count must be non-negative")
     if "constructive_pair_pool_multiplier" in qdte and int(qdte["constructive_pair_pool_multiplier"]) < 0:
@@ -368,6 +680,11 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("qdte.random_group_min_size must be positive")
     if "random_group_max_size" in qdte and int(qdte["random_group_max_size"]) < 0:
         raise ValueError("qdte.random_group_max_size must be non-negative")
+    if (
+        int(qdte.get("random_group_max_size", 0)) > 0
+        and int(qdte.get("random_group_max_size", 0)) < int(qdte.get("random_group_min_size", 2))
+    ):
+        raise ValueError("qdte.random_group_max_size must be zero or at least random_group_min_size")
     if "random_group_pool_multiplier" in qdte and int(qdte["random_group_pool_multiplier"]) < 0:
         raise ValueError("qdte.random_group_pool_multiplier must be non-negative")
     if "random_group_max_pool" in qdte and int(qdte["random_group_max_pool"]) < 0:
@@ -378,6 +695,11 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("qdte.directed_group_min_size must be positive")
     if "directed_group_max_size" in qdte and int(qdte["directed_group_max_size"]) < 0:
         raise ValueError("qdte.directed_group_max_size must be non-negative")
+    if (
+        int(qdte.get("directed_group_max_size", 0)) > 0
+        and int(qdte.get("directed_group_max_size", 0)) < int(qdte.get("directed_group_min_size", 1))
+    ):
+        raise ValueError("qdte.directed_group_max_size must be zero or at least directed_group_min_size")
     if "directed_group_pool_multiplier" in qdte and int(qdte["directed_group_pool_multiplier"]) < 0:
         raise ValueError("qdte.directed_group_pool_multiplier must be non-negative")
     if "directed_group_max_pool" in qdte and int(qdte["directed_group_max_pool"]) < 0:
@@ -413,6 +735,14 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("qdte.directed_group_augment_min_size must be positive")
     if "directed_group_augment_max_size" in qdte and int(qdte["directed_group_augment_max_size"]) < 0:
         raise ValueError("qdte.directed_group_augment_max_size must be non-negative")
+    if (
+        int(qdte.get("directed_group_augment_max_size", 0)) > 0
+        and int(qdte.get("directed_group_augment_max_size", 0))
+        < int(qdte.get("directed_group_augment_min_size", qdte.get("directed_group_min_size", 1)))
+    ):
+        raise ValueError(
+            "qdte.directed_group_augment_max_size must be zero or at least directed_group_augment_min_size"
+        )
     if "directed_group_augment_pool_multiplier" in qdte and int(qdte["directed_group_augment_pool_multiplier"]) < 0:
         raise ValueError("qdte.directed_group_augment_pool_multiplier must be non-negative")
     if "directed_group_augment_max_pool" in qdte and int(qdte["directed_group_augment_max_pool"]) < 0:

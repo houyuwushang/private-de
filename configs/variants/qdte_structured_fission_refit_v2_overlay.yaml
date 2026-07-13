@@ -1,0 +1,21 @@
+# Gaussian-fission selection for full-information refit.
+# Apply after qdte_structured_standard_v2_overlay.yaml and
+# qdte_structured_search_aware_v1_overlay.yaml.
+
+measurement:
+  fission:
+    enabled: true
+    train_fraction: 0.8
+    checkpoint_interval: 100
+    selection_rule: validation_minimum
+    one_se_multiplier: 1.0
+    seed_offset: 51771
+
+evidence_boundary:
+  frozen_at: 2026-07-11
+  status: predeclared_before_seed2_generation
+  method_name: QDTE-Structured-FissionRefit-v2
+  selection: minimum_independent_fission_validation_loss
+  final_output: full_released_measurement_refit
+  true_answers_during_generation_or_selection: forbidden
+  measurement_protocol: exact_fixed_noise_reuse_then_dp_postprocessing

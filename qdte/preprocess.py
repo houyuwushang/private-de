@@ -129,6 +129,21 @@ def load_and_preprocess_csv(config: dict[str, Any]) -> PreprocessResult:
     df = pd.read_csv(input_csv)
     raw_columns = [str(c) for c in df.columns.tolist()]
     df.columns = raw_columns
+    if len(df) == 0 or len(raw_columns) == 0:
+        raise ValueError("Input CSV must contain at least one row and one column")
+    configured_columns = numerical_columns | categorical_columns
+    unknown_columns = sorted(configured_columns - set(raw_columns))
+    if unknown_columns:
+        raise ValueError(f"Configured preprocess columns are missing from the CSV: {unknown_columns}")
+    overlapping_columns = sorted(numerical_columns & categorical_columns)
+    if overlapping_columns:
+        raise ValueError(f"Columns cannot be both numerical and categorical: {overlapping_columns}")
+    if label_column is not None and str(label_column) not in raw_columns:
+        raise ValueError(f"preprocess.label_column {label_column!r} is missing from the CSV")
+    if numerical_bins <= 0:
+        raise ValueError("preprocess.numerical_bins must be positive")
+    if auto_numeric_min_unique <= 0:
+        raise ValueError("preprocess.auto_numeric_min_unique must be positive")
 
     encoded_cols: list[np.ndarray] = []
     schema_cols: list[ColumnSchema] = []
@@ -149,18 +164,22 @@ def load_and_preprocess_csv(config: dict[str, Any]) -> PreprocessResult:
 
     X = np.stack(encoded_cols, axis=1).astype(np.int32)
     schema = TableSchema(columns=schema_cols, label_column=str(label_column) if label_column is not None else None)
+    schema.validate()
     return PreprocessResult(X=X, schema=schema, raw_columns=raw_columns)
 
 
 def decode_array(X: np.ndarray, schema: TableSchema) -> pd.DataFrame:
+    schema.validate()
+    X = np.asarray(X)
+    if X.ndim != 2 or X.shape[1] != schema.d or not np.issubdtype(X.dtype, np.integer):
+        raise ValueError(f"X must be a two-dimensional integer table with {schema.d} columns")
     out: dict[str, list[str]] = {}
     for idx, col in enumerate(schema.columns):
         reps = col.representatives or col.categories or [str(i) for i in range(col.cardinality)]
         values = []
         for code in X[:, idx].astype(int).tolist():
-            if 0 <= code < len(reps):
-                values.append(str(reps[code]))
-            else:
-                values.append(str(reps[0]))
+            if not 0 <= code < int(col.cardinality):
+                raise ValueError(f"Encoded value {code} is outside the public domain for column {col.name!r}")
+            values.append(str(reps[code]))
         out[col.name] = values
     return pd.DataFrame(out)

@@ -26,6 +26,9 @@ def test_public_release_paths_include_release_verifiers() -> None:
     assert "qdte/eval/external.py" not in paths
     assert "scripts/run_qdte.py" in paths
     assert "scripts/smoke_qdte.py" in paths
+    assert "scripts/run_integrated_sage_qdte.py" in paths
+    assert "scripts/run_orthogonal_low_budget_pilot.py" in paths
+    assert "scripts/run_nonnegative_projection_pilot.py" in paths
     assert "scripts/audit_public_release_plan.py" in paths
     assert "scripts/verify_public_release.py" in paths
     assert "scripts/simulate_public_release.py" in paths
@@ -33,8 +36,12 @@ def test_public_release_paths_include_release_verifiers() -> None:
     assert "scripts/create_public_release_repo.py" in paths
     assert "scripts/verify_paper_package_tarball.py" in paths
     assert "tests/test_simulate_public_release.py" in paths
+    assert "tests/conftest.py" in paths
     assert "tests/test_rehearse_public_release_branch.py" in paths
     assert "tests/test_create_public_release_repo.py" in paths
+    assert "tests/test_run_integrated_sage_qdte.py" in paths
+    assert "tests/test_nonnegative_projection_theorem.py" in paths
+    assert "docs/CODE_REVIEW_GUIDE.md" in paths
     assert "docs/HANDOFF.md" not in paths
 
 

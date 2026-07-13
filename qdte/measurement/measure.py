@@ -58,6 +58,7 @@ class Measurements:
     delta: float
     projection_diagnostics: dict[str, Any] | None = None
     projection_uncertainty_bias: np.ndarray | None = None
+    num_rows: int | None = None
 
     def to_public_dict(self) -> dict:
         return {
@@ -71,6 +72,7 @@ class Measurements:
             "variances": self.variances.tolist(),
             "groups": [g.to_dict() for g in self.groups],
             "projection_diagnostics": self.projection_diagnostics or {},
+            "num_rows": self.num_rows,
         }
 
 
@@ -88,20 +90,31 @@ def measurement_group_from_dict(data: dict[str, Any]) -> MeasurementGroup:
 
 
 def measurements_from_public_dict(data: dict[str, Any]) -> Measurements:
+    target_noisy = np.asarray(data["target_noisy"], dtype=np.float32)
+    target_projected = np.asarray(data["target_projected"], dtype=np.float32)
     variances = np.asarray(data["variances"], dtype=np.float32)
+    if target_noisy.ndim != 1 or target_projected.shape != target_noisy.shape or variances.shape != target_noisy.shape:
+        raise ValueError("Serialized measurement targets and variances must be one-dimensional with matching shapes")
+    if not np.all(np.isfinite(target_noisy)) or not np.all(np.isfinite(target_projected)):
+        raise ValueError("Serialized measurement targets must be finite")
+    if not np.all(np.isfinite(variances)) or np.any(variances <= 0.0):
+        raise ValueError("Serialized measurement variances must be finite and positive")
     inv_variances = 1.0 / np.maximum(variances, 1.0e-12)
+    groups = [measurement_group_from_dict(group) for group in data.get("groups", [])]
+    _validate_measurement_groups(len(target_noisy), groups)
     return Measurements(
-        target_noisy=np.asarray(data["target_noisy"], dtype=np.float32),
-        target_projected=np.asarray(data["target_projected"], dtype=np.float32),
+        target_noisy=target_noisy,
+        target_projected=target_projected,
         variances=variances,
         inv_variances=inv_variances.astype(np.float32),
-        groups=[measurement_group_from_dict(group) for group in data.get("groups", [])],
+        groups=groups,
         mode=str(data["mode"]),
         rho_total=float(data["rho_total"]),
         rho_spent=float(data["rho_spent"]),
         epsilon_delta=float(data["epsilon_delta"]),
         delta=float(data["delta"]),
         projection_diagnostics=dict(data.get("projection_diagnostics", {})),
+        num_rows=int(data["num_rows"]) if data.get("num_rows") is not None else None,
     )
 
 
@@ -110,6 +123,29 @@ def _family_counts(groups: list[WorkloadGroup]) -> dict[str, int]:
     for group in groups:
         counts[group.family] = counts.get(group.family, 0) + 1
     return counts
+
+
+def _validate_measurement_groups(num_queries: int, groups: list[WorkloadGroup | MeasurementGroup]) -> None:
+    coverage = np.zeros(int(num_queries), dtype=np.int32)
+    for group in groups:
+        idx = np.asarray(group.query_indices, dtype=np.int32)
+        if idx.ndim != 1 or idx.size == 0:
+            raise ValueError(f"Measurement group {group.name!r} must contain a non-empty 1D query index vector")
+        if np.any(idx < 0) or np.any(idx >= int(num_queries)):
+            raise ValueError(f"Measurement group {group.name!r} has out-of-range query indices")
+        if len(np.unique(idx)) != len(idx):
+            raise ValueError(f"Measurement group {group.name!r} contains duplicate query indices")
+        sensitivity = float(group.sensitivity_l2)
+        if not np.isfinite(sensitivity) or sensitivity <= 0.0:
+            raise ValueError(f"Measurement group {group.name!r} must have positive finite L2 sensitivity")
+        coverage[idx] += 1
+    missing = np.flatnonzero(coverage == 0)
+    overlapping = np.flatnonzero(coverage > 1)
+    if len(missing) or len(overlapping):
+        raise ValueError(
+            "Static measurement groups must cover every query exactly once; "
+            f"missing={len(missing)}, overlapping={len(overlapping)}"
+        )
 
 
 def _allocate_group_budgets(groups: list[WorkloadGroup], privacy_cfg: dict[str, Any]) -> dict[str, float]:
@@ -171,8 +207,16 @@ def project_targets(
 
 def _cardinalities_for_projection(X_real: np.ndarray, cardinalities: np.ndarray | None) -> np.ndarray:
     if cardinalities is not None:
-        return np.asarray(cardinalities, dtype=np.int32)
-    return np.max(X_real, axis=0).astype(np.int32) + 1
+        cards = np.asarray(cardinalities, dtype=np.int32)
+    else:
+        cards = np.max(X_real, axis=0).astype(np.int32) + 1
+    if cards.shape != (X_real.shape[1],) or np.any(cards <= 0):
+        raise ValueError(f"cardinalities must have shape ({X_real.shape[1]},) with positive entries")
+    for attr, cardinality in enumerate(cards.tolist()):
+        values = X_real[:, attr]
+        if np.any(values < 0) or np.any(values >= int(cardinality)):
+            raise ValueError(f"X_real has values outside the public domain for attribute {attr}")
+    return cards
 
 
 def _apply_configured_projection(
@@ -238,6 +282,18 @@ def _apply_configured_projection(
                 solver_ftol=float(consistency_cfg.get("solver_ftol", 1.0e-9)),
                 solver_max_iterations=int(consistency_cfg.get("solver_max_iterations", 1_000)),
                 max_dense_constraint_cells=int(consistency_cfg.get("max_dense_constraint_cells", 20_000_000)),
+                certificate_feasibility_tolerance=float(
+                    consistency_cfg.get("certificate_feasibility_tolerance", 1.0e-6)
+                ),
+                certificate_gap_absolute_tolerance=float(
+                    consistency_cfg.get("certificate_gap_absolute_tolerance", 1.0e-7)
+                ),
+                certificate_gap_relative_tolerance=float(
+                    consistency_cfg.get("certificate_gap_relative_tolerance", 1.0e-8)
+                ),
+                certificate_max_iterations=int(
+                    consistency_cfg.get("certificate_max_iterations", 1_000)
+                ),
             )
         elif method == "local_table_feasible_lsq":
             consistency_result = project_local_table_feasible_lsq(
@@ -406,6 +462,11 @@ def measure_real_dataset(
     batch_size: int = 8192,
     cardinalities: np.ndarray | None = None,
 ) -> Measurements:
+    X_real = np.asarray(X_real)
+    if X_real.ndim != 2 or X_real.shape[0] <= 0 or X_real.shape[1] <= 0:
+        raise ValueError("X_real must be a non-empty two-dimensional encoded table")
+    if qcat.m <= 0:
+        raise ValueError("Static measurement requires at least one query")
     privacy_cfg = config.get("privacy", {})
     projection_cfg = config.get("projection", {})
     mode = str(privacy_cfg.get("mode", "dp")).lower()
@@ -417,7 +478,15 @@ def measure_real_dataset(
         )
     rho_total = float(privacy_cfg.get("rho_total", 1.0))
     delta = float(privacy_cfg.get("delta", 1.0e-9))
+    if mode == "dp" and rho_total <= 0.0:
+        raise ValueError("privacy.rho_total must be positive in DP mode")
     epsilon_delta = zcdp_epsilon(rho_total, delta)
+
+    _validate_measurement_groups(qcat.m, workload_groups)
+    if mode == "dp" and cardinalities is None:
+        raise ValueError("DP measurement requires public schema cardinalities; private-data inference is disabled")
+    cards = _cardinalities_for_projection(X_real, cardinalities)
+    qcat.validate(cards)
 
     true_answers = answer_queries(X_real, qcat, batch_size=batch_size)
     target = np.zeros(qcat.m, dtype=np.float32)
@@ -466,8 +535,9 @@ def measure_real_dataset(
         raise ValueError(f"privacy.mode must be 'dp' or 'oracle', got {mode!r}")
 
     min_variance = float(privacy_cfg.get("min_variance", 1.0e-6))
+    if not np.isfinite(min_variance) or min_variance <= 0.0:
+        raise ValueError("privacy.min_variance must be positive and finite")
     variances = np.maximum(variances, min_variance).astype(np.float32)
-    cards = _cardinalities_for_projection(X_real, cardinalities)
     projected, projection_diagnostics = _apply_configured_projection(
         target,
         qcat,
@@ -490,6 +560,12 @@ def measure_real_dataset(
         min_variance=min_variance,
     )
     projection_diagnostics["uncertainty"] = uncertainty_diagnostics
+    if not np.all(np.isfinite(target)) or not np.all(np.isfinite(projected)):
+        raise RuntimeError("Measurement or projection produced non-finite targets")
+    if not np.all(np.isfinite(variances)) or np.any(variances <= 0.0):
+        raise RuntimeError("Measurement or projection produced invalid variances")
+    if rho_spent > rho_total + 1.0e-10 * max(1.0, abs(rho_total)):
+        raise RuntimeError(f"Measurement spent rho={rho_spent} above configured rho_total={rho_total}")
     inv_variances = (1.0 / variances).astype(np.float32)
     return Measurements(
         target_noisy=target.astype(np.float32),
@@ -504,4 +580,5 @@ def measure_real_dataset(
         delta=delta,
         projection_diagnostics=projection_diagnostics,
         projection_uncertainty_bias=uncertainty_bias,
+        num_rows=int(X_real.shape[0]),
     )

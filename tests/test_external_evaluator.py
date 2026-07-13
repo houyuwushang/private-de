@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 import orjson
+import pytest
 
 from qdte.eval.external import evaluate_external_synthetic
 from qdte.queries.types import OP_EQ, QueryBuilder
@@ -90,3 +91,45 @@ def test_external_evaluator_query_and_tvd_metrics(tmp_path) -> None:
     assert hit_metrics["true_answers_cache"]["status"] == "hit"
     assert math.isclose(hit_metrics["full_true_rmse"], metrics["full_true_rmse"])
     assert math.isclose(hit_metrics["full_true_max_tvd"], metrics["full_true_max_tvd"])
+
+
+def test_external_evaluator_rejects_invalid_or_incomplete_partition_metadata(tmp_path) -> None:
+    schema = TableSchema(
+        columns=[
+            ColumnSchema(name="a", kind="categorical", cardinality=2),
+            ColumnSchema(name="b", kind="categorical", cardinality=2),
+        ]
+    )
+    builder = QueryBuilder(max_terms=1)
+    builder.add([(0, OP_EQ, 0, 0, 0)], name="a=0", group="a", family="oneway")
+    builder.add([(0, OP_EQ, 1, 1, 1)], name="a=1", group="a", family="oneway")
+    builder.add([(1, OP_EQ, 0, 0, 0)], name="b=0", group="b", family="oneway")
+    builder.add([(1, OP_EQ, 1, 1, 1)], name="b=1", group="b", family="oneway")
+    qcat = builder.build()
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    schema.save_json(input_dir / "schema.json")
+    qcat.save_json(input_dir / "queries_full.json")
+    real = np.asarray([[0, 0], [0, 0], [0, 0], [0, 0]], dtype=np.int32)
+    np.save(input_dir / "real_encoded.npy", real)
+    synthetic_path = tmp_path / "synthetic_encoded.npy"
+    np.save(synthetic_path, real)
+
+    (input_dir / "workload_groups.json").write_bytes(
+        orjson.dumps(
+            [
+                {"name": "bad", "family": "oneway", "query_indices": [0, 2], "is_partition": True},
+                {"name": "rest", "family": "oneway", "query_indices": [1, 3], "is_partition": False},
+            ]
+        )
+    )
+    with pytest.raises(ValueError, match="incomplete for real data"):
+        evaluate_external_synthetic(input_dir, synthetic_path)
+
+    (input_dir / "workload_groups.json").write_bytes(
+        orjson.dumps(
+            [{"name": "bad", "family": "oneway", "query_indices": [0, 1, 2, 9], "is_partition": True}]
+        )
+    )
+    with pytest.raises(ValueError, match="out-of-range"):
+        evaluate_external_synthetic(input_dir, synthetic_path)

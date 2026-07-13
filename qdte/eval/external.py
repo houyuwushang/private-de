@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import hashlib
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -143,12 +144,23 @@ def _group_indices(labels: list[str]) -> dict[str, np.ndarray]:
 def _load_partition_blocks(input_dir: Path, qcat: QueryCatalogue) -> list[dict[str, Any]]:
     path = input_dir / "workload_groups.json"
     if not path.exists():
-        return []
+        raise FileNotFoundError(f"External evaluation requires workload_groups.json: {path}")
     raw_groups = orjson.loads(path.read_bytes())
+    if not isinstance(raw_groups, list):
+        raise ValueError("workload_groups.json must contain a list")
     blocks: list[dict[str, Any]] = []
-    for raw in raw_groups:
+    coverage = np.zeros(qcat.m, dtype=np.int32)
+    for group_id, raw in enumerate(raw_groups):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Workload group {group_id} must be a mapping")
         idx = np.asarray(raw.get("query_indices", []), dtype=np.int32)
-        idx = idx[(idx >= 0) & (idx < qcat.m)]
+        if idx.ndim != 1 or idx.size == 0:
+            raise ValueError(f"Workload group {group_id} must contain a non-empty 1D query index vector")
+        if np.any(idx < 0) or np.any(idx >= qcat.m):
+            raise ValueError(f"Workload group {group_id} has out-of-range query indices")
+        if len(np.unique(idx)) != len(idx):
+            raise ValueError(f"Workload group {group_id} contains duplicate query indices")
+        coverage[idx] += 1
         if idx.size <= 1 or not bool(raw.get("is_partition", False)):
             continue
         blocks.append(
@@ -158,6 +170,13 @@ def _load_partition_blocks(input_dir: Path, qcat: QueryCatalogue) -> list[dict[s
                 "query_indices": idx,
             }
         )
+    if np.any(coverage != 1):
+        raise ValueError(
+            "workload_groups.json must cover every query exactly once; "
+            f"missing={int(np.sum(coverage == 0))}, overlapping={int(np.sum(coverage > 1))}"
+        )
+    if not blocks:
+        raise ValueError("External TVD evaluation requires at least one partition block")
     return blocks
 
 
@@ -197,6 +216,18 @@ def _vector_block_tvd(
     for block in sorted(blocks, key=lambda item: str(item["name"])):
         idx = np.asarray(block["query_indices"], dtype=np.int32)
         family = str(block["family"])
+        true_mass = float(np.sum(true_answers[idx]))
+        syn_mass = float(np.sum(syn_answers[idx]))
+        if not math.isclose(true_mass, float(n_real), rel_tol=0.0, abs_tol=1.0e-5):
+            raise ValueError(
+                f"Partition block {block['name']!r} is incomplete for real data: "
+                f"sum={true_mass}, expected={n_real}"
+            )
+        if not math.isclose(syn_mass, float(n_syn), rel_tol=0.0, abs_tol=1.0e-5):
+            raise ValueError(
+                f"Partition block {block['name']!r} is incomplete for synthetic data: "
+                f"sum={syn_mass}, expected={n_syn}"
+            )
         tvd = float(0.5 * np.sum(np.abs(syn_rate[idx] - true_rate[idx])))
         details.append(
             {
@@ -231,6 +262,8 @@ def evaluate_external_synthetic(
     synthetic_path = Path(synthetic_path)
     schema = TableSchema.from_dict(_read_json(input_dir / "schema.json"))
     qcat = QueryCatalogue.from_dict(_read_json(input_dir / "queries_full.json"))
+    schema.validate()
+    qcat.validate(schema.cardinalities)
     real = _validate_encoded_table(np.load(input_dir / "real_encoded.npy"), schema, "real_encoded")
     synthetic = _validate_encoded_table(np.load(synthetic_path), schema, "synthetic_encoded")
     if real.shape[0] <= 0:

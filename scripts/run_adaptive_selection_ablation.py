@@ -22,12 +22,14 @@ from qdte.config import apply_overrides, load_yaml, save_yaml, set_nested
 from qdte.dataio import ensure_dir, read_json, write_json
 from qdte.eval.metrics import query_error_metrics
 from qdte.evolution.engine import run_qdte
-from qdte.measurement.measure import MeasurementGroup, _apply_configured_projection
+from qdte.measurement.measure import Measurements, MeasurementGroup, _apply_configured_projection
 from qdte.preprocess import load_and_preprocess_csv
 from qdte.privacy.accountant import zcdp_epsilon
+from qdte.privacy.exponential import sample_exponential_mechanism
 from qdte.queries.eval_jax import answer_queries, eval_records_queries
 from qdte.queries.types import OP_EQ, OP_GE, OP_LE, OP_RANGE, QueryCatalogue, filter_query_catalogue
 from qdte.queries.workload import WorkloadGroup, build_workload
+from qdte.schema import TableSchema
 
 
 _NORMAL = NormalDist()
@@ -49,6 +51,9 @@ class AdaptiveBlock:
 class MeasurementRecord:
     block_id: int
     noisy: np.ndarray
+    measurement_sigma: float | None = None
+    selection_epsilon: float | None = None
+    selection_rho: float | None = None
 
 
 @dataclass(frozen=True)
@@ -61,10 +66,128 @@ class BudgetConfig:
 
 
 @dataclass(frozen=True)
+class MeasurementRoundPlan:
+    sigma: float
+    rho: float
+    exhausts_budget: bool
+
+
+@dataclass(frozen=True)
+class PrivateRoundPlan:
+    measurement_sigma: float
+    measurement_rho: float
+    selection_epsilon: float
+    selection_rho: float
+    exhausts_budget: bool
+
+
+@dataclass(frozen=True)
 class QueryRepairPlan:
     target_qids: np.ndarray
     cell_indices: tuple[np.ndarray, ...]
     noise_counts: np.ndarray
+
+
+def _plan_annealed_measurement_round(
+    *,
+    current_sigma: float,
+    remaining_rho: float,
+    remaining_rounds: int,
+) -> MeasurementRoundPlan:
+    """Match AIM's final-round budget handling without reading private answers."""
+    if not np.isfinite(current_sigma) or float(current_sigma) <= 0.0:
+        raise ValueError("current_sigma must be positive and finite")
+    if not np.isfinite(remaining_rho) or float(remaining_rho) <= 0.0:
+        raise ValueError("remaining_rho must be positive and finite")
+    if int(remaining_rounds) <= 0:
+        raise ValueError("remaining_rounds must be positive")
+
+    nominal_rho = 1.0 / (2.0 * float(current_sigma) ** 2)
+    tolerance = 1.0e-12 * max(1.0, float(remaining_rho), nominal_rho)
+    exhausts_budget = (
+        int(remaining_rounds) == 1
+        or float(remaining_rho) < 2.0 * nominal_rho - tolerance
+    )
+    round_rho = float(remaining_rho) if exhausts_budget else nominal_rho
+    round_sigma = math.sqrt(1.0 / (2.0 * round_rho))
+    return MeasurementRoundPlan(
+        sigma=float(round_sigma),
+        rho=float(round_rho),
+        exhausts_budget=bool(exhausts_budget),
+    )
+
+
+def _plan_annealed_private_round(
+    *,
+    current_measurement_sigma: float,
+    current_selection_epsilon: float,
+    remaining_rho: float,
+    remaining_rounds: int,
+    charge_selection: bool,
+) -> PrivateRoundPlan:
+    """Plan one AIM-style round while accounting measurement and EM together."""
+    if not np.isfinite(current_measurement_sigma) or float(current_measurement_sigma) <= 0.0:
+        raise ValueError("current_measurement_sigma must be positive and finite")
+    if not np.isfinite(current_selection_epsilon) or float(current_selection_epsilon) < 0.0:
+        raise ValueError("current_selection_epsilon must be finite and non-negative")
+    if bool(charge_selection) and float(current_selection_epsilon) <= 0.0:
+        raise ValueError("A charged private-selection round needs positive epsilon")
+    if not np.isfinite(remaining_rho) or float(remaining_rho) <= 0.0:
+        raise ValueError("remaining_rho must be positive and finite")
+    if int(remaining_rounds) <= 0:
+        raise ValueError("remaining_rounds must be positive")
+
+    nominal_measurement_rho = 1.0 / (2.0 * float(current_measurement_sigma) ** 2)
+    nominal_selection_rho = (
+        float(current_selection_epsilon) ** 2 / 8.0 if bool(charge_selection) else 0.0
+    )
+    nominal_total_rho = nominal_measurement_rho + nominal_selection_rho
+    tolerance = 1.0e-12 * max(1.0, float(remaining_rho), nominal_total_rho)
+    exhausts_budget = (
+        int(remaining_rounds) == 1
+        or float(remaining_rho) < 2.0 * nominal_total_rho - tolerance
+    )
+    if exhausts_budget:
+        measurement_share = nominal_measurement_rho / nominal_total_rho
+        measurement_rho = float(remaining_rho) * measurement_share
+        selection_rho = float(remaining_rho) - measurement_rho
+    else:
+        measurement_rho = nominal_measurement_rho
+        selection_rho = nominal_selection_rho
+    measurement_sigma = math.sqrt(1.0 / (2.0 * measurement_rho))
+    selection_epsilon = math.sqrt(8.0 * selection_rho) if charge_selection else 0.0
+    return PrivateRoundPlan(
+        measurement_sigma=float(measurement_sigma),
+        measurement_rho=float(measurement_rho),
+        selection_epsilon=float(selection_epsilon),
+        selection_rho=float(selection_rho),
+        exhausts_budget=bool(exhausts_budget),
+    )
+
+
+def _released_model_change_anneal_diagnostic(
+    *,
+    before_answers: np.ndarray,
+    after_answers: np.ndarray,
+    query_indices: np.ndarray,
+    noise_std: float,
+) -> tuple[float, float, bool]:
+    """Return AIM's L1 annealing signal using released-state predictions only."""
+    idx = np.asarray(query_indices, dtype=np.int32)
+    if idx.ndim != 1 or idx.size == 0:
+        raise ValueError("query_indices must be a non-empty vector")
+    if not np.isfinite(noise_std) or float(noise_std) < 0.0:
+        raise ValueError("noise_std must be finite and non-negative")
+    before = np.asarray(before_answers, dtype=np.float64)
+    after = np.asarray(after_answers, dtype=np.float64)
+    if before.shape != after.shape or before.ndim != 1:
+        raise ValueError("before_answers and after_answers must be same-shape vectors")
+    if int(np.max(idx)) >= int(before.size) or int(np.min(idx)) < 0:
+        raise ValueError("query_indices are outside the answer vectors")
+
+    model_change_l1 = float(np.sum(np.abs(after[idx] - before[idx])))
+    expected_noise_l1 = float(noise_std) * math.sqrt(2.0 / math.pi) * float(idx.size)
+    return model_change_l1, expected_noise_l1, bool(model_change_l1 <= expected_noise_l1)
 
 
 @dataclass
@@ -6418,6 +6541,19 @@ def _scheme_allows_repeat(scheme: str) -> bool:
     return scheme.endswith("_repeat")
 
 
+def _certified_private_selection_sensitivity(scheme: str) -> float:
+    base_scheme = _scheme_base(scheme)
+    if base_scheme in {
+        "voi_sageordergain_harmonic_qproject",
+        "aim_l1",
+        "aim_l1_floor",
+    }:
+        return 1.0
+    raise ValueError(
+        f"Scheme {base_scheme!r} has no registered private-selection sensitivity certificate"
+    )
+
+
 def _scheme_has_modifier(scheme: str, modifier: str) -> bool:
     base = scheme[:-7] if scheme.endswith("_repeat") else scheme
     return base.endswith(f"_{modifier}")
@@ -6904,12 +7040,71 @@ def _build_blocks(groups: list[WorkloadGroup], qcat: QueryCatalogue) -> list[Ada
     return _attach_coverage_weights(blocks)
 
 
-def _sample_exponential(scores: np.ndarray, epsilon: float, rng: np.random.Generator) -> int:
-    scaled = 0.5 * float(epsilon) * scores.astype(np.float64)
-    scaled = scaled - float(np.max(scaled))
-    probs = np.exp(scaled)
-    probs = probs / float(np.sum(probs))
-    return int(rng.choice(len(scores), p=probs))
+def _sample_exponential(
+    scores: np.ndarray,
+    epsilon: float,
+    rng: np.random.Generator,
+    *,
+    sensitivity: float = 1.0,
+) -> int:
+    return sample_exponential_mechanism(
+        scores,
+        float(epsilon),
+        float(sensitivity),
+        rng,
+    )
+
+
+def _rank_log_base_measure(scores: np.ndarray, *, max_odds: float) -> np.ndarray:
+    """Map released scores to a bounded, scale-free conditional base measure."""
+    values = np.asarray(scores, dtype=np.float64)
+    if values.ndim != 1 or values.size == 0:
+        raise ValueError("Base-measure scores must be a non-empty vector")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("Base-measure scores must be finite")
+    if not np.isfinite(max_odds) or float(max_odds) < 1.0:
+        raise ValueError("max_odds must be finite and at least one")
+    if values.size == 1 or math.isclose(float(max_odds), 1.0):
+        return np.zeros(values.size, dtype=np.float64)
+
+    order = np.argsort(values, kind="stable")
+    sorted_values = values[order]
+    percentile = np.empty(values.size, dtype=np.float64)
+    start = 0
+    while start < values.size:
+        stop = start + 1
+        while stop < values.size and sorted_values[stop] == sorted_values[start]:
+            stop += 1
+        average_rank = 0.5 * float(start + stop - 1)
+        percentile[order[start:stop]] = average_rank / float(values.size - 1)
+        start = stop
+    # The additive shift is immaterial to sampling. Keeping the best log weight
+    # at zero makes the base-measure odds easy to audit.
+    return math.log(float(max_odds)) * (percentile - 1.0)
+
+
+def _apply_released_score_base_measure(
+    private_scores: np.ndarray,
+    released_scores: np.ndarray,
+    *,
+    epsilon: float,
+    sensitivity: float,
+    max_odds: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Add a released-transcript prior without changing private sensitivity."""
+    private = np.asarray(private_scores, dtype=np.float64)
+    released = np.asarray(released_scores, dtype=np.float64)
+    if private.shape != released.shape or private.ndim != 1:
+        raise ValueError("Private and released score vectors must have the same shape")
+    if not np.isfinite(epsilon) or float(epsilon) <= 0.0:
+        raise ValueError("epsilon must be positive and finite")
+    if not np.isfinite(sensitivity) or float(sensitivity) <= 0.0:
+        raise ValueError("sensitivity must be positive and finite")
+    log_base_measure = _rank_log_base_measure(released, max_odds=float(max_odds))
+    adjusted = private + (
+        2.0 * float(sensitivity) / float(epsilon)
+    ) * log_base_measure
+    return adjusted, log_base_measure
 
 
 def _select_from_scores(
@@ -6918,9 +7113,10 @@ def _select_from_scores(
     rule: str,
     epsilon: float,
     rng: np.random.Generator,
+    sensitivity: float = 1.0,
 ) -> int:
     if rule == "sample":
-        return _sample_exponential(scores, epsilon, rng)
+        return _sample_exponential(scores, epsilon, rng, sensitivity=sensitivity)
     if rule == "argmax":
         return int(np.argmax(scores.astype(np.float64, copy=False)))
     raise ValueError(f"Unknown selection rule {rule!r}")
@@ -7488,9 +7684,101 @@ def _make_initial_synthetic(n_rows: int, cardinalities: np.ndarray, rng: np.rand
     return np.stack(cols, axis=1).astype(np.int32)
 
 
+def _merge_adaptive_measurement_groups(
+    *,
+    num_queries: int,
+    base_groups: list[MeasurementGroup],
+    blocks: list[AdaptiveBlock],
+    block_measurement_counts: dict[int, int],
+    block_measurement_rho: dict[int, float],
+) -> list[MeasurementGroup]:
+    """Keep projection groups aligned when a partial base transcript gains new blocks."""
+    groups = [
+        MeasurementGroup(
+            query_indices=group.query_indices.astype(np.int32, copy=True),
+            sensitivity_l2=float(group.sensitivity_l2),
+            rho=float(group.rho),
+            sigma=float(group.sigma),
+            noise_std=float(group.noise_std),
+            name=str(group.name),
+            family=str(group.family),
+            is_partition=bool(group.is_partition),
+        )
+        for group in base_groups
+    ]
+    for block_id, repeat_count in sorted(block_measurement_counts.items()):
+        block = blocks[int(block_id)]
+        idx = block.query_indices.astype(np.int32, copy=False)
+        idx_set = set(int(value) for value in idx.tolist())
+        exact_pos: int | None = None
+        overlapping: list[int] = []
+        for pos, group in enumerate(groups):
+            group_set = set(int(value) for value in group.query_indices.tolist())
+            if not idx_set.isdisjoint(group_set):
+                overlapping.append(pos)
+            if idx_set == group_set:
+                exact_pos = pos
+
+        base_rho = 0.0
+        if exact_pos is not None and float(groups[exact_pos].rho) > 0.0:
+            base_rho = float(groups[exact_pos].rho)
+            groups.pop(exact_pos)
+        else:
+            for pos in reversed(overlapping):
+                group = groups[pos]
+                if float(group.rho) > 0.0:
+                    raise ValueError(
+                        f"Adaptive block {block.name!r} partially overlaps measured base group "
+                        f"{group.name!r}"
+                    )
+                keep = np.asarray(
+                    [int(qid) for qid in group.query_indices.tolist() if int(qid) not in idx_set],
+                    dtype=np.int32,
+                )
+                if keep.size:
+                    groups[pos] = MeasurementGroup(
+                        query_indices=keep,
+                        sensitivity_l2=float(group.sensitivity_l2),
+                        rho=0.0,
+                        sigma=float(group.sigma),
+                        noise_std=float(group.noise_std),
+                        name=str(group.name),
+                        family=str(group.family),
+                        is_partition=False,
+                    )
+                else:
+                    groups.pop(pos)
+
+        combined_rho = base_rho + float(block_measurement_rho[int(block_id)])
+        effective_sigma = math.sqrt(1.0 / (2.0 * combined_rho))
+        groups.append(
+            MeasurementGroup(
+                query_indices=idx.astype(np.int32, copy=True),
+                sensitivity_l2=float(block.delta_l2),
+                rho=combined_rho,
+                sigma=effective_sigma,
+                noise_std=float(block.delta_l2) * effective_sigma,
+                name=f"adaptive:{block_id}:{block.name}:repeats={repeat_count}",
+                family=block.family,
+                is_partition=bool(block.is_vector),
+            )
+        )
+
+    coverage = np.zeros(int(num_queries), dtype=np.int32)
+    for group in groups:
+        coverage[group.query_indices] += 1
+    if not np.all(coverage == 1):
+        raise ValueError(
+            "Combined base/adaptive measurement groups must cover each query exactly once; "
+            f"missing={int(np.sum(coverage == 0))}, overlapping={int(np.sum(coverage > 1))}"
+        )
+    return groups
+
+
 def _measurement_artifact(
     *,
     qcat: QueryCatalogue,
+    schema: TableSchema,
     blocks: list[AdaptiveBlock],
     measurement_records: list[MeasurementRecord],
     current_syn_answers: np.ndarray,
@@ -7502,40 +7790,129 @@ def _measurement_artifact(
     measurement_sigma: float,
     delta: float,
     selection_rho_per_round: float | None = None,
+    base_measurements: Measurements | None = None,
 ) -> Path:
     artifact_dir = ensure_dir(output_dir)
     qcat.save_json(artifact_dir / "queries.json")
-    target = current_syn_answers.astype(np.float32, copy=True)
-    variances = np.full(qcat.m, 1.0e12, dtype=np.float32)
-    weighted_targets = np.zeros(qcat.m, dtype=np.float64)
-    inv_variances = np.zeros(qcat.m, dtype=np.float64)
-    groups: list[MeasurementGroup] = []
+    schema.save_json(artifact_dir / "schema.json")
+    if base_measurements is None:
+        target = current_syn_answers.astype(np.float32, copy=True)
+        variances = np.full(qcat.m, 1.0e12, dtype=np.float32)
+        weighted_targets = np.zeros(qcat.m, dtype=np.float64)
+        inv_variances = np.zeros(qcat.m, dtype=np.float64)
+        groups: list[MeasurementGroup] = []
+        coverage_rho = 0.0
+    else:
+        if (
+            base_measurements.target_noisy.shape != (qcat.m,)
+            or base_measurements.variances.shape != (qcat.m,)
+        ):
+            raise ValueError("Base coverage measurement shape does not match the query catalogue")
+        target = base_measurements.target_noisy.astype(np.float32, copy=True)
+        variances = np.maximum(
+            base_measurements.variances.astype(np.float64, copy=True),
+            1.0e-12,
+        ).astype(np.float32)
+        inv_variances = 1.0 / variances.astype(np.float64)
+        weighted_targets = target.astype(np.float64) * inv_variances
+        groups = list(base_measurements.groups)
+        coverage_rho = float(base_measurements.rho_spent)
+    block_measurement_counts: dict[int, int] = {}
+    block_measurement_rho: dict[int, float] = {}
+    block_measurement_sigmas: dict[int, list[float]] = {}
     rho_select = float(epsilon) ** 2 / 8.0 if selection_rho_per_round is None else float(selection_rho_per_round)
-    rho_measure = 1.0 / (2.0 * float(measurement_sigma) ** 2)
-    for order, record in enumerate(measurement_records):
+    default_rho_measure = 1.0 / (2.0 * float(measurement_sigma) ** 2)
+    selection_rhos: list[float] = []
+    selection_epsilons: list[float] = []
+    for record in measurement_records:
         block = blocks[int(record.block_id)]
+        block_measurement_counts[int(record.block_id)] = (
+            block_measurement_counts.get(int(record.block_id), 0) + 1
+        )
+        record_sigma = (
+            float(measurement_sigma)
+            if record.measurement_sigma is None
+            else float(record.measurement_sigma)
+        )
+        if not np.isfinite(record_sigma) or record_sigma <= 0.0:
+            raise ValueError("Adaptive measurement sigma must be positive and finite")
+        record_rho = 1.0 / (2.0 * record_sigma * record_sigma)
+        record_selection_rho = (
+            float(rho_select) if record.selection_rho is None else float(record.selection_rho)
+        )
+        if not np.isfinite(record_selection_rho) or record_selection_rho < 0.0:
+            raise ValueError("Adaptive selection rho must be finite and non-negative")
+        record_selection_epsilon = (
+            math.sqrt(8.0 * record_selection_rho)
+            if record.selection_epsilon is None
+            else float(record.selection_epsilon)
+        )
+        if not np.isfinite(record_selection_epsilon) or record_selection_epsilon < 0.0:
+            raise ValueError("Adaptive selection epsilon must be finite and non-negative")
+        if not math.isclose(
+            record_selection_rho,
+            record_selection_epsilon**2 / 8.0,
+            rel_tol=1.0e-10,
+            abs_tol=1.0e-15,
+        ):
+            raise ValueError("Adaptive selection epsilon/rho pair is inconsistent")
+        selection_rhos.append(record_selection_rho)
+        selection_epsilons.append(record_selection_epsilon)
+        block_measurement_rho[int(record.block_id)] = (
+            block_measurement_rho.get(int(record.block_id), 0.0) + record_rho
+        )
+        block_measurement_sigmas.setdefault(int(record.block_id), []).append(record_sigma)
         idx = block.query_indices
         noisy = record.noisy.astype(np.float64, copy=False)
-        noise_std = float(block.delta_l2) * float(measurement_sigma)
+        noise_std = float(block.delta_l2) * record_sigma
         variance = noise_std * noise_std
         inv_var = 1.0 / max(variance, 1.0e-12)
         weighted_targets[idx] += noisy * inv_var
         inv_variances[idx] += inv_var
-        groups.append(
-            MeasurementGroup(
-                query_indices=idx.astype(np.int32, copy=True),
-                sensitivity_l2=float(block.delta_l2),
-                rho=rho_measure,
-                sigma=float(measurement_sigma),
-                noise_std=noise_std,
-                name=f"adaptive:{order}:{block.name}",
-                family=block.family,
-                is_partition=bool(block.is_vector),
+    if base_measurements is None:
+        for block_id, repeat_count in sorted(block_measurement_counts.items()):
+            block = blocks[block_id]
+            block_rho = float(block_measurement_rho[block_id])
+            effective_sigma = math.sqrt(1.0 / (2.0 * block_rho))
+            effective_noise_std = float(block.delta_l2) * effective_sigma
+            groups.append(
+                MeasurementGroup(
+                    query_indices=block.query_indices.astype(np.int32, copy=True),
+                    sensitivity_l2=float(block.delta_l2),
+                    rho=block_rho,
+                    sigma=effective_sigma,
+                    noise_std=effective_noise_std,
+                    name=f"adaptive:{block_id}:{block.name}:repeats={repeat_count}",
+                    family=block.family,
+                    is_partition=bool(block.is_vector),
+                )
             )
+    else:
+        groups = _merge_adaptive_measurement_groups(
+            num_queries=int(qcat.m),
+            base_groups=groups,
+            blocks=blocks,
+            block_measurement_counts=block_measurement_counts,
+            block_measurement_rho=block_measurement_rho,
         )
     measured = inv_variances > 0.0
     target[measured] = (weighted_targets[measured] / inv_variances[measured]).astype(np.float32)
     variances[measured] = (1.0 / inv_variances[measured]).astype(np.float32)
+    unmeasured = np.flatnonzero(~measured).astype(np.int32)
+    if base_measurements is None and unmeasured.size:
+        unmeasured_std = float(np.sqrt(1.0e12))
+        groups.append(
+            MeasurementGroup(
+                query_indices=unmeasured,
+                sensitivity_l2=1.0,
+                rho=0.0,
+                sigma=unmeasured_std,
+                noise_std=unmeasured_std,
+                name="adaptive:unmeasured",
+                family="unmeasured",
+                is_partition=False,
+            )
+        )
     projected, projection_diagnostics = _apply_configured_projection(
         target,
         qcat,
@@ -7545,16 +7922,46 @@ def _measurement_artifact(
         variances,
         np.asarray(cardinalities, dtype=np.int32),
     )
-    spent = len(measurement_records) * (rho_select + rho_measure)
+    adaptive_measurement_rho = float(sum(block_measurement_rho.values()))
+    adaptive_selection_rho = float(sum(selection_rhos))
+    adaptive_rho_spent = adaptive_selection_rho + adaptive_measurement_rho
+    spent = coverage_rho + adaptive_rho_spent
     epsilon_delta = zcdp_epsilon(spent, float(delta)) if spent > 0.0 else 0.0
     projection_diagnostics["adaptive_selection"] = {
         "enabled": True,
         "epsilon": float(epsilon),
         "measurement_sigma": float(measurement_sigma),
         "rho_select_per_round": float(rho_select),
-        "rho_measure_per_round": float(rho_measure),
+        "rho_measure_per_round": float(default_rho_measure),
+        "measurement_sigma_schedule": [
+            float(measurement_sigma) if record.measurement_sigma is None else float(record.measurement_sigma)
+            for record in measurement_records
+        ],
+        "selection_epsilon_schedule": selection_epsilons,
+        "selection_rho_schedule": selection_rhos,
+        "adaptive_selection_rho": adaptive_selection_rho,
+        "adaptive_measurement_rho": adaptive_measurement_rho,
+        "coverage_rho": float(coverage_rho),
+        "adaptive_rho_spent": float(adaptive_rho_spent),
         "selected_blocks": len(measurement_records),
         "unmeasured_variance": 1.0e12,
+        "base_measurements_present": bool(base_measurements is not None),
+        "coverage_complete": bool(
+            base_measurements is not None
+            and np.all(base_measurements.variances.astype(np.float64) < 1.0e11)
+        ),
+        "adaptive_measurement_ledger": [
+            {
+                "block_id": int(block_id),
+                "name": blocks[block_id].name,
+                "family": blocks[block_id].family,
+                "repeat_count": int(repeat_count),
+                "rho": float(block_measurement_rho[block_id]),
+                "measurement_sigmas": [float(value) for value in block_measurement_sigmas[block_id]],
+                "num_queries": int(len(blocks[block_id].query_indices)),
+            }
+            for block_id, repeat_count in sorted(block_measurement_counts.items())
+        ],
     }
     write_json(
         {
@@ -7568,28 +7975,52 @@ def _measurement_artifact(
             "variances": variances.tolist(),
             "groups": [group.to_dict() for group in groups],
             "projection_diagnostics": projection_diagnostics,
+            "num_rows": int(total_rows),
         },
         artifact_dir / "measurements.json",
     )
     return artifact_dir
 
 
-def _configure_a_generator(config: dict[str, Any], *, output_dir: Path, init_path: Path, measurement_dir: Path, inner_iters: int) -> dict[str, Any]:
+def _configure_a_generator(
+    config: dict[str, Any],
+    *,
+    output_dir: Path,
+    init_path: Path,
+    measurement_dir: Path,
+    inner_iters: int,
+    generator_profile: str = "adaptive_legacy",
+    generator_seed: int | None = None,
+    stop_patience: int | None = None,
+) -> dict[str, Any]:
     cfg = copy.deepcopy(config)
     set_nested(cfg, "run.output_dir", str(output_dir))
     set_nested(cfg, "init.encoded_npy", str(init_path))
     set_nested(cfg, "measurement.reuse_from", str(measurement_dir))
     set_nested(cfg, "measurement.artifact_dir", str(measurement_dir))
     set_nested(cfg, "privacy.measurement_mode", "static_all")
-    set_nested(cfg, "qdte.candidate_compiler", "single_query")
-    set_nested(cfg, "qdte.transport_mode", "constructive_pair")
-    set_nested(cfg, "qdte.transport_prefix_strategy", "best_advantage")
-    set_nested(cfg, "qdte.constructive_pair_partner_limit", 16)
-    set_nested(cfg, "qdte.constructive_pair_harm_query_limit", 16)
-    set_nested(cfg, "qdte.constructive_pair_group_augment", False)
-    set_nested(cfg, "qdte.objective_weighting", "variance")
+    if generator_profile == "adaptive_legacy":
+        set_nested(cfg, "qdte.candidate_compiler", "single_query")
+        set_nested(cfg, "qdte.transport_mode", "constructive_pair")
+        set_nested(cfg, "qdte.transport_prefix_strategy", "best_advantage")
+        set_nested(cfg, "qdte.constructive_pair_partner_limit", 16)
+        set_nested(cfg, "qdte.constructive_pair_harm_query_limit", 16)
+        set_nested(cfg, "qdte.constructive_pair_group_augment", False)
+        set_nested(cfg, "qdte.objective_weighting", "variance")
+    elif generator_profile == "qdte_standard":
+        if str(cfg.get("qdte", {}).get("objective_weighting", "variance")) != "variance":
+            raise ValueError("qdte_standard generator profile requires variance objective weighting")
+        if str(cfg.get("qdte", {}).get("transport_mode", "")) != "atom_flow":
+            raise ValueError("qdte_standard generator profile requires qdte.transport_mode='atom_flow'")
+    else:
+        raise ValueError(f"Unsupported adaptive generator profile: {generator_profile!r}")
+    if generator_seed is not None:
+        set_nested(cfg, "run.seed", int(generator_seed))
     set_nested(cfg, "qdte.max_iters", int(inner_iters))
-    set_nested(cfg, "qdte.stop_patience", int(inner_iters))
+    resolved_stop_patience = int(inner_iters) if stop_patience is None else int(stop_patience)
+    if resolved_stop_patience <= 0:
+        raise ValueError("generator stop_patience must be positive")
+    set_nested(cfg, "qdte.stop_patience", resolved_stop_patience)
     set_nested(cfg, "qdte.kappa_noise", 1.0)
     set_nested(cfg, "qdte.allow_below_noise_fallback", False)
     set_nested(cfg, "evaluation.compute_true_query_error", False)
@@ -7600,10 +8031,21 @@ def _configure_a_generator(config: dict[str, Any], *, output_dir: Path, init_pat
     return cfg
 
 
+def _generator_stage_seed(base_seed: int, stage_id: int) -> int:
+    """Derive a reproducible fresh QDTE RNG stream for one adaptive stage."""
+    if int(stage_id) <= 0:
+        raise ValueError("stage_id must be positive")
+    state = np.random.SeedSequence(
+        [int(base_seed) & 0xFFFFFFFF, 0x51445445, int(stage_id) & 0xFFFFFFFF]
+    ).generate_state(1, dtype=np.uint32)
+    return int(state[0])
+
+
 def _run_scheme(
     *,
     base_config: dict[str, Any],
     qcat: QueryCatalogue,
+    schema: TableSchema,
     blocks: list[AdaptiveBlock],
     true_answers: np.ndarray,
     initial_syn: np.ndarray,
@@ -7614,6 +8056,15 @@ def _run_scheme(
     inner_iters: int,
     budget: BudgetConfig,
     rng: np.random.Generator,
+    generator_profile: str = "adaptive_legacy",
+    initial_fit_iters: int = 0,
+    final_refit_iters: int = 0,
+    base_measurements: Measurements | None = None,
+    generator_seed_mode: str = "restart",
+    initial_fit_stop_patience: int | None = None,
+    inner_stop_patience: int | None = None,
+    final_stop_patience: int | None = None,
+    measurement_schedule: str = "fixed",
     selection_input: str = "oracle",
     bootstrap_strategy: str = "coverage",
     transcript_untrusted_variance: float = 1.0e11,
@@ -7622,7 +8073,38 @@ def _run_scheme(
     selection_rule: str = "sample",
     public_bootstrap_rounds: int = 1,
     nonpositive_score_fallback: str = "none",
+    transcript_sage_prior_odds: float = 1.0,
 ) -> dict[str, Any]:
+    if generator_seed_mode not in {"restart", "per_stage"}:
+        raise ValueError("generator_seed_mode must be 'restart' or 'per_stage'")
+    if measurement_schedule not in {"fixed", "aim_released_change"}:
+        raise ValueError("measurement_schedule must be 'fixed' or 'aim_released_change'")
+    if int(initial_fit_iters) < 0:
+        raise ValueError("initial_fit_iters must be non-negative")
+    if selection_input not in {"oracle", "transcript"}:
+        raise ValueError("selection_input must be 'oracle' or 'transcript'")
+    if (
+        not np.isfinite(transcript_sage_prior_odds)
+        or float(transcript_sage_prior_odds) < 1.0
+    ):
+        raise ValueError("transcript_sage_prior_odds must be finite and at least one")
+    if float(transcript_sage_prior_odds) > 1.0:
+        if selection_input != "oracle":
+            raise ValueError("The transcript SAGE prior requires private EM selection")
+        if _scheme_base(scheme) != "aim_l1_floor":
+            raise ValueError("The transcript SAGE prior currently requires aim_l1_floor")
+        if base_measurements is None:
+            raise ValueError("The transcript SAGE prior requires a released base transcript")
+    selection_score_sensitivity = 1.0
+    if (
+        str(base_config.get("privacy", {}).get("mode", "dp")) == "dp"
+        and selection_input == "oracle"
+    ):
+        if selection_rule != "sample":
+            raise ValueError("Private-data selection in DP mode must use the exponential mechanism")
+        if selection_ledger == "measurement_only":
+            raise ValueError("Private-data selection in DP mode must charge selection privacy")
+        selection_score_sensitivity = _certified_private_selection_sensitivity(scheme)
     scheme_dir = ensure_dir(output_dir / scheme)
     current_syn = initial_syn.copy()
     current_syn_path = scheme_dir / "initial_synthetic_encoded.npy"
@@ -7634,8 +8116,16 @@ def _run_scheme(
     n_real = int(initial_syn.shape[0])
     delta = float(base_config.get("privacy", {}).get("delta", 1.0e-9))
     allow_repeat = _scheme_allows_repeat(scheme)
-    epsilon = float(budget.epsilon)
+    selection_epsilon = float(budget.epsilon)
     measurement_sigma = float(budget.measurement_sigma)
+    coverage_rho = 0.0 if base_measurements is None else float(base_measurements.rho_spent)
+    adaptive_rho_limit: float | None = None
+    if measurement_schedule == "aim_released_change":
+        if not allow_repeat:
+            raise ValueError("AIM-style released-change annealing requires a repeat-enabled scheme")
+        adaptive_rho_limit = float(budget.rho_total) - coverage_rho
+        if adaptive_rho_limit <= 0.0:
+            raise ValueError("No adaptive rho remains after coverage")
     family_counts = {
         family: int(sum(1 for block in blocks if block.family == family))
         for family in {block.family for block in blocks}
@@ -7655,9 +8145,76 @@ def _run_scheme(
         else:
             propagation_overlap, max_propagation_mass = _scope_overlap_matrix(blocks)
 
-    previous_projected_answers: np.ndarray | None = None
-    previous_variances: np.ndarray | None = None
+    previous_projected_answers = (
+        None
+        if base_measurements is None
+        else base_measurements.target_projected.astype(np.float64, copy=True)
+    )
+    previous_variances = (
+        None
+        if base_measurements is None
+        else base_measurements.variances.astype(np.float64, copy=True)
+    )
+    latest_measurement_dir: Path | None = None
     selection_rho_per_round = 0.0 if selection_ledger == "measurement_only" else None
+    stage_seed_offset = 0
+    warm_start_metadata: dict[str, Any] = {
+        "enabled": int(initial_fit_iters) > 0,
+        "requested_iters": int(initial_fit_iters),
+    }
+    if int(initial_fit_iters) > 0:
+        if base_measurements is None:
+            raise ValueError("An initial transcript fit requires base coverage measurements")
+        warm_measurement_dir = _measurement_artifact(
+            qcat=qcat,
+            schema=schema,
+            blocks=blocks,
+            measurement_records=[],
+            current_syn_answers=answer_queries(
+                current_syn,
+                qcat,
+                batch_size=int(base_config.get("runtime", {}).get("answer_batch_size", 8192)),
+            ),
+            total_rows=n_real,
+            cardinalities=cardinalities,
+            projection_cfg=dict(base_config.get("projection", {})),
+            output_dir=scheme_dir / "round_000_measurement",
+            epsilon=selection_epsilon,
+            measurement_sigma=measurement_sigma,
+            delta=delta,
+            selection_rho_per_round=selection_rho_per_round,
+            base_measurements=base_measurements,
+        )
+        warm_generate_dir = scheme_dir / "round_000_generate"
+        warm_config = _configure_a_generator(
+            base_config,
+            output_dir=warm_generate_dir,
+            init_path=current_syn_path,
+            measurement_dir=warm_measurement_dir,
+            inner_iters=int(initial_fit_iters),
+            generator_profile=generator_profile,
+            generator_seed=(
+                _generator_stage_seed(
+                    int(base_config.get("run", {}).get("seed", 0)),
+                    1,
+                )
+                if generator_seed_mode == "per_stage"
+                else None
+            ),
+            stop_patience=initial_fit_stop_patience,
+        )
+        run_qdte(warm_config)
+        current_syn_path = warm_generate_dir / "synthetic_encoded.npy"
+        current_syn = np.load(current_syn_path).astype(np.int32)
+        latest_measurement_dir = warm_measurement_dir
+        stage_seed_offset = 1
+        warm_start_metadata.update(
+            {
+                "output_dir": str(warm_generate_dir),
+                "synthetic_encoded": str(current_syn_path),
+                "measurement_dir": str(warm_measurement_dir),
+            }
+        )
     for round_id in range(1, rounds + 1):
         syn_answers = answer_queries(
             current_syn,
@@ -7672,6 +8229,54 @@ def _run_scheme(
             current_syn.shape[0],
             prefix="full_true",
         )
+        round_measurement_sigma = float(measurement_sigma)
+        round_measurement_rho = 1.0 / (2.0 * round_measurement_sigma**2)
+        round_selection_epsilon = (
+            0.0 if selection_ledger == "measurement_only" else float(selection_epsilon)
+        )
+        round_selection_rho = round_selection_epsilon**2 / 8.0
+        round_exhausts_budget = False
+        adaptive_measurement_rho_before = float(
+            sum(
+                1.0
+                / (
+                    2.0
+                    * float(
+                        budget.measurement_sigma
+                        if record.measurement_sigma is None
+                        else record.measurement_sigma
+                    )
+                    ** 2
+                )
+                for record in measurement_records
+            )
+        )
+        adaptive_selection_rho_before = float(
+            sum(
+                0.0 if record.selection_rho is None else float(record.selection_rho)
+                for record in measurement_records
+            )
+        )
+        adaptive_rho_before = adaptive_measurement_rho_before + adaptive_selection_rho_before
+        if measurement_schedule == "aim_released_change":
+            if adaptive_rho_limit is None:
+                raise RuntimeError("Missing adaptive rho limit")
+            remaining_rho = float(adaptive_rho_limit) - adaptive_rho_before
+            tolerance = 1.0e-12 * max(1.0, float(adaptive_rho_limit))
+            if remaining_rho <= tolerance:
+                break
+            round_plan = _plan_annealed_private_round(
+                current_measurement_sigma=measurement_sigma,
+                current_selection_epsilon=selection_epsilon,
+                remaining_rho=remaining_rho,
+                remaining_rounds=int(rounds) - int(round_id) + 1,
+                charge_selection=selection_ledger != "measurement_only",
+            )
+            round_measurement_sigma = float(round_plan.measurement_sigma)
+            round_measurement_rho = float(round_plan.measurement_rho)
+            round_selection_epsilon = float(round_plan.selection_epsilon)
+            round_selection_rho = float(round_plan.selection_rho)
+            round_exhausts_budget = bool(round_plan.exhausts_budget)
         available_ids = [idx for idx in range(len(blocks)) if allow_repeat or idx not in selected_set]
         if not available_ids:
             break
@@ -7705,7 +8310,13 @@ def _run_scheme(
             score_scheme = f"forced:{forced_name}"
         elif score_input_source == "public_bootstrap":
             scores = _public_bootstrap_scores(blocks, available_ids, bootstrap_strategy)
-            chosen_local = _select_from_scores(scores, rule=selection_rule, epsilon=epsilon, rng=rng)
+            chosen_local = _select_from_scores(
+                scores,
+                rule=selection_rule,
+                epsilon=round_selection_epsilon,
+                rng=rng,
+                sensitivity=selection_score_sensitivity,
+            )
             chosen_block_id = int(available_ids[chosen_local])
             score_scheme = f"public_bootstrap:{bootstrap_strategy}"
         elif _is_operator_value_of_information_scheme(score_scheme):
@@ -7734,7 +8345,7 @@ def _run_scheme(
                 blocks,
                 scoring_answers,
                 syn_answers,
-                measurement_sigma,
+                round_measurement_sigma,
                 repair_plans,
                 active_query_budget=int(base_config.get("qdte", {}).get("num_active_targets", 64)),
                 kappa_noise=float(base_config.get("qdte", {}).get("kappa_noise", 1.0)),
@@ -7759,7 +8370,7 @@ def _run_scheme(
                 blocks,
                 scoring_answers,
                 syn_answers,
-                measurement_sigma,
+                round_measurement_sigma,
                 propagation_overlap,
                 max_propagation_mass,
             )
@@ -7773,12 +8384,65 @@ def _run_scheme(
                         scoring_answers,
                         syn_answers,
                         n_real,
-                        measurement_sigma,
+                        round_measurement_sigma,
                     )
                     for block_id in available_ids
                 ],
                 dtype=np.float64,
             )
+        private_scores = scores.astype(np.float64, copy=True)
+        sage_prior_scores = np.full(len(available_ids), np.nan, dtype=np.float64)
+        sage_prior_log_weights = np.zeros(len(available_ids), dtype=np.float64)
+        sage_prior_trusted_queries = 0
+        if (
+            float(transcript_sage_prior_odds) > 1.0
+            and forced_sequence is None
+            and score_input_source != "public_bootstrap"
+        ):
+            prior_answers, prior_trusted_mask = _transcript_selector_answers(
+                previous_projected_answers=previous_projected_answers,
+                previous_variances=previous_variances,
+                syn_answers=syn_answers,
+                untrusted_variance=transcript_untrusted_variance,
+                reliability_mode="hard",
+            )
+            if prior_answers is None:
+                raise RuntimeError("The transcript SAGE prior has no released transcript")
+            if repair_plans is None:
+                repair_plans = _query_repair_plans(qcat, blocks)
+            prior_all_scores = _score_blocks_operator_value_of_information(
+                "voi_sageordergain_harmonic_qproject",
+                blocks,
+                prior_answers,
+                syn_answers,
+                round_measurement_sigma,
+                repair_plans,
+                active_query_budget=int(base_config.get("qdte", {}).get("num_active_targets", 64)),
+                kappa_noise=float(base_config.get("qdte", {}).get("kappa_noise", 1.0)),
+                selected_block_ids=selected_block_ids,
+                conditional_context=None,
+                state_weight_answers=prior_answers,
+                round_id=round_id,
+                rounds=rounds,
+                row_count=n_real,
+            )
+            sage_prior_scores = np.asarray(
+                [prior_all_scores[block_id] for block_id in available_ids],
+                dtype=np.float64,
+            )
+            scores, sage_prior_log_weights = _apply_released_score_base_measure(
+                private_scores,
+                sage_prior_scores,
+                epsilon=round_selection_epsilon,
+                sensitivity=selection_score_sensitivity,
+                max_odds=float(transcript_sage_prior_odds),
+            )
+            sage_prior_trusted_queries = int(np.sum(prior_trusted_mask))
+            score_scheme = (
+                f"{score_scheme}|released_sage_rank_prior_odds="
+                f"{float(transcript_sage_prior_odds):g}"
+            )
+
         amortized_alpha = _scheme_mdl_family_amortized_alpha(scheme, family_counts)
         if forced_sequence is None and amortized_alpha is not None:
             prior = np.asarray(
@@ -7789,13 +8453,13 @@ def _run_scheme(
                 ],
                 dtype=np.float64,
             )
-            scores = scores + (2.0 / max(float(epsilon), 1.0e-12)) * prior
+            scores = scores + (2.0 / max(float(round_selection_epsilon), 1.0e-12)) * prior
         elif forced_sequence is None and _scheme_has_modifier(scheme, "mdl_family"):
             prior = np.asarray(
                 [-math.log(max(1, family_counts[blocks[block_id].family])) for block_id in available_ids],
                 dtype=np.float64,
             )
-            scores = scores + (2.0 / max(float(epsilon), 1.0e-12)) * prior
+            scores = scores + (2.0 / max(float(round_selection_epsilon), 1.0e-12)) * prior
         if (
             selection_input == "transcript"
             and score_input_source == "transcript"
@@ -7808,14 +8472,20 @@ def _run_scheme(
         if (
             forced_sequence is None or round_id > len(forced_sequence)
         ) and score_input_source != "public_bootstrap":
-            chosen_local = _select_from_scores(scores, rule=selection_rule, epsilon=epsilon, rng=rng)
+            chosen_local = _select_from_scores(
+                scores,
+                rule=selection_rule,
+                epsilon=round_selection_epsilon,
+                rng=rng,
+                sensitivity=selection_score_sensitivity,
+            )
             chosen_block_id = int(available_ids[chosen_local])
         chosen = blocks[chosen_block_id]
         selected_diagnostics = _selected_block_diagnostics(
             chosen,
             true_answers,
             syn_answers,
-            measurement_sigma,
+            round_measurement_sigma,
         )
         score_component_diagnostics: dict[str, Any] = {}
         if _is_operator_value_of_information_scheme(score_scheme):
@@ -7826,7 +8496,7 @@ def _run_scheme(
                 blocks=blocks,
                 true_answers=scoring_answers,
                 syn_answers=syn_answers,
-                measurement_sigma=measurement_sigma,
+                measurement_sigma=round_measurement_sigma,
                 repair_plans=repair_plans,
                 active_query_budget=int(base_config.get("qdte", {}).get("num_active_targets", 64)),
                 kappa_noise=float(base_config.get("qdte", {}).get("kappa_noise", 1.0)),
@@ -7840,17 +8510,21 @@ def _run_scheme(
             )
         selected_set.add(chosen_block_id)
         selected_block_ids.append(chosen_block_id)
-        noise_std = float(chosen.delta_l2) * float(measurement_sigma)
+        noise_std = float(chosen.delta_l2) * round_measurement_sigma
         measurement_records.append(
             MeasurementRecord(
                 block_id=chosen_block_id,
                 noisy=true_answers[chosen.query_indices].astype(np.float64)
                 + rng.normal(0.0, noise_std, size=len(chosen.query_indices)),
+                measurement_sigma=round_measurement_sigma,
+                selection_epsilon=round_selection_epsilon,
+                selection_rho=round_selection_rho,
             )
         )
 
         measurement_dir = _measurement_artifact(
             qcat=qcat,
+            schema=schema,
             blocks=blocks,
             measurement_records=measurement_records,
             current_syn_answers=syn_answers,
@@ -7858,11 +8532,13 @@ def _run_scheme(
             cardinalities=cardinalities,
             projection_cfg=dict(base_config.get("projection", {})),
             output_dir=scheme_dir / f"round_{round_id:03d}_measurement",
-            epsilon=epsilon,
-            measurement_sigma=measurement_sigma,
+            epsilon=selection_epsilon,
+            measurement_sigma=float(budget.measurement_sigma),
             delta=delta,
             selection_rho_per_round=selection_rho_per_round,
+            base_measurements=base_measurements,
         )
+        latest_measurement_dir = measurement_dir
         measurement_payload = read_json(measurement_dir / "measurements.json")
         previous_projected_answers = np.asarray(measurement_payload["target_projected"], dtype=np.float64)
         previous_variances = np.asarray(measurement_payload["variances"], dtype=np.float64)
@@ -7873,6 +8549,16 @@ def _run_scheme(
             init_path=current_syn_path,
             measurement_dir=measurement_dir,
             inner_iters=inner_iters,
+            generator_profile=generator_profile,
+            generator_seed=(
+                _generator_stage_seed(
+                    int(base_config.get("run", {}).get("seed", 0)),
+                    round_id + stage_seed_offset,
+                )
+                if generator_seed_mode == "per_stage"
+                else None
+            ),
+            stop_patience=inner_stop_patience,
         )
         run_qdte(generator_config)
         current_syn_path = round_dir / "synthetic_encoded.npy"
@@ -7882,6 +8568,27 @@ def _run_scheme(
             qcat,
             batch_size=int(base_config.get("runtime", {}).get("answer_batch_size", 8192)),
         )
+        model_change_l1, expected_noise_l1, anneal_signal = (
+            _released_model_change_anneal_diagnostic(
+                before_answers=syn_answers,
+                after_answers=final_answers,
+                query_indices=chosen.query_indices,
+                noise_std=noise_std,
+            )
+        )
+        annealed_after_round = bool(
+            measurement_schedule == "aim_released_change"
+            and not round_exhausts_budget
+            and anneal_signal
+        )
+        if annealed_after_round:
+            measurement_sigma = round_measurement_sigma / 2.0
+            if selection_ledger != "measurement_only":
+                selection_epsilon = round_selection_epsilon * 2.0
+        elif measurement_schedule == "aim_released_change":
+            measurement_sigma = round_measurement_sigma
+            if selection_ledger != "measurement_only":
+                selection_epsilon = round_selection_epsilon
         metrics = _query_error_metrics_with_tvd(
             blocks,
             true_answers,
@@ -7911,6 +8618,11 @@ def _run_scheme(
                 "score_input_source": score_input_source,
                 "selection_rule": selection_rule,
                 "selection_ledger": selection_ledger,
+                "selection_epsilon": round_selection_epsilon,
+                "selection_rho": round_selection_rho,
+                "adaptive_selection_rho_before": adaptive_selection_rho_before,
+                "adaptive_selection_rho_after": adaptive_selection_rho_before
+                + round_selection_rho,
                 "selection_trusted_queries": int(np.sum(trusted_mask)),
                 "selection_untrusted_queries": int(int(qcat.m) - int(np.sum(trusted_mask))),
                 "qv_curriculum_alpha": float(qv_curriculum_alpha),
@@ -7919,11 +8631,38 @@ def _run_scheme(
                 "selected_family": chosen.family,
                 "selected_queries": int(len(chosen.query_indices)),
                 "selected_delta_l2": float(chosen.delta_l2),
+                "measurement_sigma": round_measurement_sigma,
+                "measurement_rho": round_measurement_rho,
+                "adaptive_measurement_rho_before": adaptive_measurement_rho_before,
+                "adaptive_measurement_rho_after": adaptive_measurement_rho_before
+                + round_measurement_rho,
+                "adaptive_rho_before": adaptive_rho_before,
+                "adaptive_rho_after": adaptive_rho_before
+                + round_measurement_rho
+                + round_selection_rho,
+                "adaptive_budget_exhausted": int(round_exhausts_budget),
+                "measurement_budget_exhausted": int(round_exhausts_budget),
+                "released_model_change_l1": model_change_l1,
+                "expected_measurement_noise_l1": expected_noise_l1,
+                "anneal_signal": int(anneal_signal),
+                "annealed_after_round": int(annealed_after_round),
                 "selected_scope": "|".join(str(attr) for attr in chosen.scope),
                 "selected_coverage_weight": float(chosen.coverage_weight),
                 "selected_score": float(scores[chosen_local]),
                 "score_max": float(np.max(scores)),
                 "score_mean": float(np.mean(scores)),
+                "private_selected_score": float(private_scores[chosen_local]),
+                "private_score_max": float(np.max(private_scores)),
+                "private_score_mean": float(np.mean(private_scores)),
+                "transcript_sage_prior_odds": float(transcript_sage_prior_odds),
+                "transcript_sage_prior_trusted_queries": sage_prior_trusted_queries,
+                "transcript_sage_prior_selected_score": float(sage_prior_scores[chosen_local]),
+                "transcript_sage_prior_score_max": float(np.nanmax(sage_prior_scores))
+                if np.any(np.isfinite(sage_prior_scores))
+                else np.nan,
+                "transcript_sage_prior_selected_log_weight": float(
+                    sage_prior_log_weights[chosen_local]
+                ),
                 "pre_full_true_mae": float(pre_metrics["full_true_mae"]),
                 "pre_full_true_rmse": float(pre_metrics["full_true_rmse"]),
                 "pre_full_true_max_error": float(pre_metrics["full_true_max_error"]),
@@ -7946,7 +8685,57 @@ def _run_scheme(
             }
         )
         pd.DataFrame(rows).to_csv(scheme_dir / "adaptive_timeseries.csv", index=False)
+        if round_exhausts_budget:
+            break
 
+    pre_refit_answers = answer_queries(
+        current_syn,
+        qcat,
+        batch_size=int(base_config.get("runtime", {}).get("answer_batch_size", 8192)),
+    )
+    pre_refit_metrics = _query_error_metrics_with_tvd(
+        blocks,
+        true_answers,
+        pre_refit_answers,
+        n_real,
+        current_syn.shape[0],
+        prefix="full_true",
+    )
+    final_refit_metadata: dict[str, Any] = {
+        "enabled": int(final_refit_iters) > 0,
+        "requested_iters": int(final_refit_iters),
+    }
+    if int(final_refit_iters) > 0:
+        if latest_measurement_dir is None:
+            raise RuntimeError("A final refit requires at least one completed measurement round")
+        final_refit_dir = scheme_dir / "final_refit"
+        final_refit_config = _configure_a_generator(
+            base_config,
+            output_dir=final_refit_dir,
+            init_path=current_syn_path,
+            measurement_dir=latest_measurement_dir,
+            inner_iters=int(final_refit_iters),
+            generator_profile=generator_profile,
+            generator_seed=(
+                _generator_stage_seed(
+                    int(base_config.get("run", {}).get("seed", 0)),
+                    len(rows) + stage_seed_offset + 1,
+                )
+                if generator_seed_mode == "per_stage"
+                else None
+            ),
+            stop_patience=final_stop_patience,
+        )
+        run_qdte(final_refit_config)
+        current_syn_path = final_refit_dir / "synthetic_encoded.npy"
+        current_syn = np.load(current_syn_path).astype(np.int32)
+        final_refit_metadata.update(
+            {
+                "output_dir": str(final_refit_dir),
+                "synthetic_encoded": str(current_syn_path),
+                "measurement_dir": str(latest_measurement_dir),
+            }
+        )
     final_answers = answer_queries(
         current_syn,
         qcat,
@@ -7963,13 +8752,44 @@ def _run_scheme(
     summary = {
         "scheme": scheme,
         "rounds_completed": len(rows),
+        "rounds_requested": int(rounds),
+        "initial_fit": warm_start_metadata,
         "inner_iters": int(inner_iters),
+        "inner_stop_patience": int(inner_iters if inner_stop_patience is None else inner_stop_patience),
+        "generator_seed_mode": generator_seed_mode,
+        "generator_profile": generator_profile,
+        "coverage_rho": coverage_rho,
+        "measurement_schedule": measurement_schedule,
+        "adaptive_rho_limit": adaptive_rho_limit,
+        "adaptive_measurement_rho_limit": (
+            adaptive_rho_limit if selection_ledger == "measurement_only" else None
+        ),
+        "selection_epsilon_schedule": [float(row["selection_epsilon"]) for row in rows],
+        "selection_rho_schedule": [float(row["selection_rho"]) for row in rows],
+        "measurement_sigma_schedule": [float(row["measurement_sigma"]) for row in rows],
+        "measurement_rho_schedule": [float(row["measurement_rho"]) for row in rows],
+        "final_measurement_dir": None
+        if latest_measurement_dir is None
+        else str(latest_measurement_dir),
+        "final_refit": final_refit_metadata,
         "budget_mode": budget.mode,
         "epsilon": float(budget.epsilon),
         "measurement_sigma": float(budget.measurement_sigma),
         "rho_total": float(budget.rho_total),
         "budget_split_mu": None if budget.budget_split_mu is None else float(budget.budget_split_mu),
         "selection_input": selection_input,
+        "selection_score_sensitivity": selection_score_sensitivity,
+        "transcript_sage_prior": {
+            "enabled": bool(float(transcript_sage_prior_odds) > 1.0),
+            "source": "released_projected_transcript_hard_reliability",
+            "score": "voi_sageordergain_harmonic_qproject",
+            "transform": "midrank_log_base_measure",
+            "max_odds": float(transcript_sage_prior_odds),
+            "adds_current_round_private_sensitivity": False,
+        },
+        "selection_mechanism": "exponential"
+        if selection_input == "oracle"
+        else "postprocessing",
         "bootstrap_strategy": bootstrap_strategy,
         "public_bootstrap_rounds": int(public_bootstrap_rounds),
         "transcript_untrusted_variance": float(transcript_untrusted_variance),
@@ -7991,6 +8811,9 @@ def _run_scheme(
             }
             for block_id in selected_block_ids
         ],
+        "pre_refit_metrics": {
+            key: float(value) for key, value in pre_refit_metrics.items()
+        },
         **{key: float(value) for key, value in final_metrics.items()},
     }
     write_json(summary, scheme_dir / "adaptive_summary.json")
@@ -8011,6 +8834,18 @@ def main() -> None:
     )
     parser.add_argument("--rounds", type=int, default=6)
     parser.add_argument("--inner-iters", type=int, default=30)
+    parser.add_argument(
+        "--generator-profile",
+        choices=["adaptive_legacy", "qdte_standard"],
+        default="adaptive_legacy",
+        help="Preserve the historical adaptive generator or use the base strong QDTE config.",
+    )
+    parser.add_argument(
+        "--final-refit-iters",
+        type=int,
+        default=0,
+        help="Optional full QDTE refit on the final cumulative measurement artifact.",
+    )
     parser.add_argument("--budget-mode", choices=["per_round", "total_zcdp"], default="per_round")
     parser.add_argument("--rho-total", type=float, default=0.0)
     parser.add_argument("--budget-split-mu", type=float, default=0.8)
@@ -8070,7 +8905,18 @@ def main() -> None:
         default=1.0,
         help="Softmax temperature parameter used as epsilon when transcript selection uses measurement-only total budget.",
     )
+    parser.add_argument(
+        "--transcript-sage-prior-odds",
+        type=float,
+        default=1.0,
+        help=(
+            "Maximum conditional base-measure odds from released-transcript SAGE ranks; "
+            "values above one require private aim_l1_floor selection."
+        ),
+    )
     args, overrides = parser.parse_known_args()
+    if int(args.final_refit_iters) < 0:
+        raise ValueError("--final-refit-iters must be non-negative")
 
     config = apply_overrides(load_yaml(args.config), overrides)
     run_cfg = config.get("run", {})
@@ -8116,6 +8962,9 @@ def main() -> None:
             "nonpositive_score_fallback": args.nonpositive_score_fallback,
             "rounds": int(args.rounds),
             "inner_iters": int(args.inner_iters),
+            "generator_profile": args.generator_profile,
+            "final_refit_iters": int(args.final_refit_iters),
+            "transcript_sage_prior_odds": float(args.transcript_sage_prior_odds),
         },
         output_dir / "adaptive_setup.json",
     )
@@ -8127,6 +8976,7 @@ def main() -> None:
             _run_scheme(
                 base_config=config,
                 qcat=qcat,
+                schema=preprocess_result.schema,
                 blocks=blocks,
                 true_answers=true_answers,
                 initial_syn=initial_syn,
@@ -8137,6 +8987,8 @@ def main() -> None:
                 inner_iters=int(args.inner_iters),
                 budget=budget,
                 rng=scheme_rng,
+                generator_profile=args.generator_profile,
+                final_refit_iters=int(args.final_refit_iters),
                 selection_input=args.selection_input,
                 bootstrap_strategy=args.bootstrap_strategy,
                 transcript_untrusted_variance=float(args.transcript_untrusted_variance),
@@ -8145,6 +8997,7 @@ def main() -> None:
                 selection_rule=args.selection_rule,
                 public_bootstrap_rounds=int(args.public_bootstrap_rounds),
                 nonpositive_score_fallback=args.nonpositive_score_fallback,
+                transcript_sage_prior_odds=float(args.transcript_sage_prior_odds),
             )
         )
     write_json({"summaries": summaries}, output_dir / "adaptive_comparison.json")

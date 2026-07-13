@@ -50,6 +50,13 @@ def paper_package_dir() -> Path:
     )
 
 
+def qdte_paper_package_dir() -> Path:
+    return _env_path(
+        "QDTE_PAPER_PACKAGE_DIR",
+        external_results() / "qdte_paper_package_20260711",
+    )
+
+
 def legacy_paper_package_dir() -> Path:
     return _env_path(
         "SAGE_LEGACY_PAPER_PACKAGE_DIR",
