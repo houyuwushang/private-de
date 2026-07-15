@@ -9,14 +9,14 @@
       "sha256": "76a71113ff12dcea4129653281c9e5940ec59f5d84d6a948696a0abbc73064a7"
     },
     {
-      "bytes": 1173,
+      "bytes": 1270,
       "path": "EXPERT_REVIEW_README.md",
-      "sha256": "1e7e492154156323c55d24fc27fbfd891fff0b62e5e4b1a96d31e172c99a0839"
+      "sha256": "b3286a7197d72328d31f7d4f79cefac41a46cbb291e0302c18bffecef0f8980e"
     },
     {
-      "bytes": 14529,
+      "bytes": 14812,
       "path": "EXPERT_REVIEW_SOURCE_HASHES.json",
-      "sha256": "9ae5e11e637c5ddce484cb63c7e68109e7791b92e5870963f10b6d0148fa17cf"
+      "sha256": "4308b4ec461196dd18abe544fab9d1a67616d3958b4e317a5e762d39304b2199"
     },
     {
       "bytes": 22718,
@@ -157,6 +157,11 @@
       "bytes": 15572,
       "path": "docs/REPRODUCIBILITY.md",
       "sha256": "dce66b78c36138c6db4d12f031536ff21e6b0baf1b4c11409b7f6ab530087a09"
+    },
+    {
+      "bytes": 12154,
+      "path": "docs/SAGE_QDTE_ADULT_POST_GCEA_EXPERT_DECISION_20260715.md",
+      "sha256": "73b53c57dc219a2aaf740c97b383c7b852725b23d8b2cc7686b9395a7f8ec6d2"
     },
     {
       "bytes": 8906,
@@ -824,9 +829,9 @@
       "sha256": "d78f94f6cef3edcef9bc1ee6c4b5994d7b92a0ea6381c84b105d572d8e859542"
     },
     {
-      "bytes": 12762,
+      "bytes": 13134,
       "path": "scripts/package_ice_wp10b_expert_review.py",
-      "sha256": "f2075ba78e2e8e28082260cb5e98ac70ab358f76c136e2ce13238c0998214ef9"
+      "sha256": "a513207c0af6a7d0cdd6861cf4d49ba9fe997a4b66f07ab208565e2557f2a3ae"
     },
     {
       "bytes": 52251,
@@ -1229,9 +1234,9 @@
       "sha256": "36b666fb94d826b93307079649178b77a11adbb6a7a2387e917448bfba29e0c9"
     },
     {
-      "bytes": 1148,
+      "bytes": 1223,
       "path": "tests/test_package_ice_wp10b_expert_review.py",
-      "sha256": "63da6988b760365e148949ab26477cced2eb6ea14285d43db84ae48553df61cb"
+      "sha256": "4c0c7d3fbe0a93918624aac6789b14592b29a5fa95e1327cb399fe7a409ea409"
     },
     {
       "bytes": 3278,
@@ -1362,6 +1367,6 @@
   "private_rows_included": false,
   "released_transcript_included": false,
   "synthetic_tables_included": false,
-  "tree_sha256": "4a46e012a35a77bab9454b8aa093faab07a583cfde1a075ad40b23fae6698906",
+  "tree_sha256": "88ad631cb69d2278c8bb7b2db08109719fd3f627ee1fae58e6c5377401f4b5b4",
   "true_answer_caches_included": false
 }

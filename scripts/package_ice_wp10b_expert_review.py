@@ -46,6 +46,7 @@ MANIFEST_ID = "SAGE-QDTE-ICE-WP10B-GCEA-EXPERT-REVIEW-MANIFEST-20260715-v1"
 WP10B_PATHS = (
     "docs/SAGE_QDTE_ICE_WP10B_GCEA_PROTOCOL_20260715.md",
     "docs/SAGE_QDTE_ICE_WP10B_GCEA_PUBLIC_GATE_RESULT_20260715.md",
+    "docs/SAGE_QDTE_ADULT_POST_GCEA_EXPERT_DECISION_20260715.md",
     "qdte/measurement/gcea.py",
     "scripts/run_static_ice_wp10b_gcea_public_gate.py",
     "scripts/package_ice_wp10b_expert_review.py",
@@ -61,6 +62,7 @@ WP10B_PATHS = (
 SANITIZED_PATHS = (
     "docs/SAGE_QDTE_ICE_WP10B_GCEA_PROTOCOL_20260715.md",
     "docs/SAGE_QDTE_ICE_WP10B_GCEA_PUBLIC_GATE_RESULT_20260715.md",
+    "docs/SAGE_QDTE_ADULT_POST_GCEA_EXPERT_DECISION_20260715.md",
     "outputs/static_ice_wp10b_gcea_public_gate_20260715/plan.json",
     "outputs/static_ice_wp10b_gcea_public_gate_20260715/public_gate.json",
     "outputs/static_ice_wp10b_gcea_public_gate_20260715/public_gate.csv",
@@ -115,7 +117,10 @@ def _copy_wp10b_overlay(source_root: Path, output: Path) -> dict[str, dict[str, 
                 write_json(destination, payload)
             else:
                 text = destination.read_text(encoding="utf-8")
-                destination.write_text(sanitize_text(text, source_root), encoding="utf-8")
+                text = sanitize_text(text, source_root)
+                for token in IDENTIFYING_TOKENS:
+                    text = text.replace(token, "anonymous-owner")
+                destination.write_text(text, encoding="utf-8")
         records[relpath] = {
             "source_sha256": source_hash,
             "packaged_sha256": sha256_file(destination),
@@ -156,6 +161,7 @@ def _readme() -> str:
 
 Start with:
 
+- [Adult post-GCEA decision request](docs/SAGE_QDTE_ADULT_POST_GCEA_EXPERT_DECISION_20260715.md)
 - [WP10b public-gate result](docs/SAGE_QDTE_ICE_WP10B_GCEA_PUBLIC_GATE_RESULT_20260715.md)
 - [Frozen WP10b protocol](docs/SAGE_QDTE_ICE_WP10B_GCEA_PROTOCOL_20260715.md)
 - [Machine-readable public gate](outputs/static_ice_wp10b_gcea_public_gate_20260715/public_gate.json)

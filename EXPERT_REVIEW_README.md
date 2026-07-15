@@ -2,6 +2,7 @@
 
 Start with:
 
+- [Adult post-GCEA decision request](docs/SAGE_QDTE_ADULT_POST_GCEA_EXPERT_DECISION_20260715.md)
 - [WP10b public-gate result](docs/SAGE_QDTE_ICE_WP10B_GCEA_PUBLIC_GATE_RESULT_20260715.md)
 - [Frozen WP10b protocol](docs/SAGE_QDTE_ICE_WP10B_GCEA_PROTOCOL_20260715.md)
 - [Machine-readable public gate](outputs/static_ice_wp10b_gcea_public_gate_20260715/public_gate.json)

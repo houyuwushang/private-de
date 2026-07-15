@@ -23,5 +23,6 @@ def test_build_wp10b_review_preserves_failed_public_gate(tmp_path: Path) -> None
 
 def test_wp10b_review_readme_points_to_frozen_result() -> None:
     text = package._readme()
+    assert "SAGE_QDTE_ADULT_POST_GCEA_EXPERT_DECISION_20260715.md" in text
     assert "SAGE_QDTE_ICE_WP10B_GCEA_PUBLIC_GATE_RESULT_20260715.md" in text
     assert "generation_authorized=false" in text
