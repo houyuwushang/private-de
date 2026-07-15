@@ -1,0 +1,11 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "69019e4fcb19437f236fcb52e1cffc2ec1917a3edc68a7ccf34bf667a94e557e"
+  },
+  "completed_cells": 12,
+  "plan_sha256": "265db38fe82608fa9ff50b9f29637c25d348197ccbb40c878f93f00980c8946c",
+  "protocol_id": "SAGE-QDTE-RCE-C1-20260715-v3",
+  "total_cells": 12,
+  "true_utility_evaluated": false
+}

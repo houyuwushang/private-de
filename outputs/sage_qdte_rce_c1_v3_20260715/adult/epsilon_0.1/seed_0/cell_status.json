@@ -1,0 +1,14 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "5123408e02095cdc95b8527d89022a3daba33586717933f43a1a1f7881027094"
+  },
+  "dataset": "adult",
+  "epsilon": 0.1,
+  "formal": true,
+  "iterations": 5000,
+  "protocol_id": "SAGE-QDTE-RCE-C1-20260715-v3",
+  "seed": 0,
+  "status": "completed",
+  "true_utility_evaluated": false
+}

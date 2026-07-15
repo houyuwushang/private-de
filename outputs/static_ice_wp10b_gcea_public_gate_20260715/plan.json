@@ -1,0 +1,114 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "f7668977f30a501460840c79c0c6b6f4eefdab7c070e5f46877b9752f76cd405"
+  },
+  "adjacency": "add_remove",
+  "artifact_role": "pre_generation_public_only_mechanism_gate",
+  "beta_tail": 0.05,
+  "candidate_id": "SAGE-QDTE-Static-ICE-GCEA-v1",
+  "datasets": [
+    "adult",
+    "br2000"
+  ],
+  "delta": 1e-09,
+  "epsilons": [
+    0.1,
+    0.3
+  ],
+  "max_pair_cells": 20000,
+  "private_table_read": false,
+  "protocol_id": "SAGE-QDTE-ICE-WP10B-GCEA-20260715-v1",
+  "public_gate_id": "SAGE-QDTE-ICE-WP10B-GCEA-PUBLIC-GATE-20260715-v1",
+  "public_inputs": {
+    "adult": {
+      "metadata.json": {
+        "bytes": 2957,
+        "path": "external_inputs/adult_sage_strong/metadata.json",
+        "sha256": "6955b6f0fa4f0e619a2e94492cfb1001cf8845e5d88e8d02ca3eb81fbb4876d4"
+      },
+      "queries_full.json": {
+        "bytes": 12437719,
+        "path": "external_inputs/adult_sage_strong/queries_full.json",
+        "sha256": "04a9c35ff742c989622879e9ef0833167e307de58d5e2ee767acf43b808a9af3"
+      },
+      "schema.json": {
+        "bytes": 8668,
+        "path": "external_inputs/adult_sage_strong/schema.json",
+        "sha256": "5422f4b3a59272c0d3bdcf91cdcc491550c2b8713b87d28ca46c2a3055e6edc5"
+      },
+      "workload_groups.json": {
+        "bytes": 392472,
+        "path": "external_inputs/adult_sage_strong/workload_groups.json",
+        "sha256": "19c25ddfd451dbacf3da00220f966da6a102e08120dc3dfdb0346cd66e18d686"
+      }
+    },
+    "br2000": {
+      "metadata.json": {
+        "bytes": 1952,
+        "path": "external_inputs/br2000_sage_strong/metadata.json",
+        "sha256": "f9468cff7602db89c010e3187eef8d01bbd1fc07b7b8375c6a1285a46c35ae56"
+      },
+      "queries_full.json": {
+        "bytes": 3802071,
+        "path": "external_inputs/br2000_sage_strong/queries_full.json",
+        "sha256": "fef85d0b4c675804fc671b41e90b799574cb49b631942ddedc434a8d0c719e7a"
+      },
+      "schema.json": {
+        "bytes": 5784,
+        "path": "external_inputs/br2000_sage_strong/schema.json",
+        "sha256": "16a09b06284c1ef2581a509876641981105a8725af686477f617d188ab808035"
+      },
+      "workload_groups.json": {
+        "bytes": 120804,
+        "path": "external_inputs/br2000_sage_strong/workload_groups.json",
+        "sha256": "ddeb7197c27cdd0582ddcce924efe560e3371fea2eab0f4a8b91c6308407c35a"
+      }
+    }
+  },
+  "released_transcript_read": false,
+  "solver": {
+    "ftol": 1e-13,
+    "max_iterations": 5000,
+    "method": "SLSQP",
+    "optimal_face_tolerance": 1e-10,
+    "share_floor": 1e-14,
+    "share_floor_inactive_factor": 1000000.0
+  },
+  "sources": {
+    "factorization": {
+      "bytes": 23026,
+      "path": "qdte/measurement/factorization.py",
+      "sha256": "5b13933f0061b98271c4e31fc89da98c3171ae3577a3b5f79735c71e5439aff1"
+    },
+    "gcea": {
+      "bytes": 28746,
+      "path": "qdte/measurement/gcea.py",
+      "sha256": "22e2d20b1bfcd56c42ab42d949e1399cd28fa31ffdcac395ee8f315e4114a610"
+    },
+    "protocol": {
+      "bytes": 6489,
+      "path": "docs/SAGE_QDTE_ICE_WP10B_GCEA_PROTOCOL_20260715.md",
+      "sha256": "770e735869688d115554db7766c14826af2a49ff97a3d6f061bb53092b0e74f1"
+    },
+    "runner": {
+      "bytes": 13969,
+      "path": "scripts/run_static_ice_wp10b_gcea_public_gate.py",
+      "sha256": "d6bd6555db7d55f1f81ec86cd47a563f222ecf9f033ba451fc36bed521955497"
+    },
+    "workload_factorization": {
+      "bytes": 8990,
+      "path": "qdte/measurement/workload_factorization.py",
+      "sha256": "403c16cc076e9667e32c34b883adb7532c0003d9c2b81d5a1a2ade48ba8d3d4e"
+    }
+  },
+  "thresholds": {
+    "cross_epsilon_share_max_abs": 1e-10,
+    "kkt_gap_max": 1e-08,
+    "reconstruction_residual_max": 1e-10,
+    "sum_rho_relative_error_max": 1e-12,
+    "t_star_max": 0.97,
+    "tail_ratio_max": 1.0000000001
+  },
+  "true_utility_evaluated": false
+}

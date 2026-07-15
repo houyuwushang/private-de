@@ -1,0 +1,15 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "d519fb1090ce85f73f45408f2fda331dde780de001b1beb0306be38a8beb447e"
+  },
+  "offline_evaluation_authorized": true,
+  "protocol_id": "SAGE-QDTE-ICE-WP10A-WORKLOAD-ALLOCATION-20260715-v1",
+  "seal": {
+    "bytes": 6377,
+    "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/sealed_manifest.json",
+    "sha256": "b52f74f9aa0fb18be5fc62b01685f6fd431ff60f4ed3d4a0d9df3e5dc9ea6edb"
+  },
+  "status": "completed",
+  "true_utility_evaluated": false
+}

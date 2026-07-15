@@ -1,0 +1,103 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "6089646f1dc36549f40158e470fe37b98563ec9ea8adc814a590e4b2633d4a29"
+  },
+  "allowed_use": "offline diagnosis only; not generation, tuning, or promotion",
+  "analyzer_id": "SAGE-QDTE-RCE-C1-POSTSEAL-DIAGNOSTIC-20260715-v1",
+  "artifact_role": "offline_nonreleasable_rce_c1_postseal_diagnostic",
+  "artifacts": {
+    "confidence_and_kl": {
+      "bytes": 6468,
+      "path": "outputs/sage_qdte_rce_c1_v3_postseal_20260715/confidence_and_kl.csv",
+      "sha256": "a1d6a6d8306585108c84c6984dcae14fbb85ad4cb2281503daafcda4a409afd4"
+    },
+    "frozen_evaluation": {
+      "bytes": 13528,
+      "path": "outputs/sage_qdte_rce_c1_v3_eval_20260715/summary.json",
+      "sha256": "44e53fd81f6a8040191aabd67a11e8cecd3b4e28cf512dffd4bf2e3df1406cf3"
+    },
+    "metrics_with_initial": {
+      "bytes": 6128,
+      "path": "outputs/sage_qdte_rce_c1_v3_postseal_20260715/metrics_with_initial.csv",
+      "sha256": "32edcf3db546c5ac972d7ac2df7e9be02b88f798f715e6016ae7e3e5dd1a9e73"
+    },
+    "sealed_panel": {
+      "bytes": 45288,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/sealed_panel_manifest.json",
+      "sha256": "f7adc7863b2813b73f498d64878de0566a68f163d7d2a6c3b7fe579580c8fda3"
+    }
+  },
+  "confidence": {
+    "initial": {
+      "inside": 0,
+      "max_slack": 11.485408902896754,
+      "mean_kl_to_product_prior": 6.828176820490811,
+      "mean_slack": 6.367369098234533,
+      "total": 12
+    },
+    "rce_v1": {
+      "inside": 9,
+      "max_slack": 0.05282143694150676,
+      "mean_kl_to_product_prior": 5.30516843627142,
+      "mean_slack": 0.012335881413202706,
+      "total": 12
+    },
+    "truth": {
+      "inside": 12,
+      "max_slack": 0.0,
+      "mean_kl_to_product_prior": 7.161322054035807,
+      "mean_slack": 0.0,
+      "total": 12
+    },
+    "wp9_control": {
+      "inside": 8,
+      "max_slack": 0.17725108870399997,
+      "mean_kl_to_product_prior": 7.671770338869574,
+      "mean_slack": 0.04429005893436103,
+      "total": 12
+    }
+  },
+  "primary_ratios": {
+    "rce_v1_vs_initial": {
+      "cell": {
+        "adult|0.1": 0.7974886228051095,
+        "adult|0.3": 0.4289527097628995,
+        "br2000|0.1": 0.9822354704947066,
+        "br2000|0.3": 0.5432129092760625
+      },
+      "dataset": {
+        "adult": 0.5848802490744021,
+        "br2000": 0.7304539598917728
+      },
+      "overall": 0.653626876741527
+    },
+    "rce_v1_vs_wp9_control": {
+      "cell": {
+        "adult|0.1": 1.711709631789159,
+        "adult|0.3": 1.0279124123298669,
+        "br2000|0.1": 1.4911699886038168,
+        "br2000|0.3": 1.2691921343525863
+      },
+      "dataset": {
+        "adult": 1.3264567753306786,
+        "br2000": 1.3757111690026362
+      },
+      "overall": 1.350859504545767
+    },
+    "wp9_control_vs_initial": {
+      "cell": {
+        "adult|0.1": 0.46590181418301485,
+        "adult|0.3": 0.4173047281242913,
+        "br2000|0.1": 0.6587012064361448,
+        "br2000|0.3": 0.42799895663799936
+      },
+      "dataset": {
+        "adult": 0.44093426936478536,
+        "br2000": 0.5309646213175238
+      },
+      "overall": 0.4838599976844462
+    }
+  },
+  "private_truth_used": true
+}

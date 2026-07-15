@@ -1,0 +1,599 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "493cdac13729c1e3388b7b08fd0e3f3ebb38ceea3e1fdd7c5bd559f6b8e528cd"
+  },
+  "artifact_role": "blind_static_ice_confirmation_plan",
+  "cell_runner": {
+    "bytes": 16357,
+    "path": "scripts/run_static_ice_wp9_cell.py",
+    "sha256": "6e859b7e15be6ebc182a7980c2eee8cc79d3f503a8c14dcc219bc27797e48c6b"
+  },
+  "cells": [
+    {
+      "config": {
+        "bytes": 2171,
+        "path": "configs/nltcs_sage_strong.yaml",
+        "sha256": "d25ac0a99da9c716dfb34b308744f58280b99b313b87a3db126e45be27a47ade"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/nltcs_sage_strong",
+      "public_metadata": {
+        "bytes": 1950,
+        "path": "external_inputs/nltcs_sage_strong/metadata.json",
+        "sha256": "4daac6c7a6957356c4efb874eda61bdec6affcafba6e83a28c9505cf531a575c"
+      },
+      "public_schema": {
+        "bytes": 4275,
+        "path": "external_inputs/nltcs_sage_strong/schema.json",
+        "sha256": "e84e9b1a1f2bce2906bc1accb96f7142bfd741dff8d9ae2411f6e23e4b3b4c8f"
+      },
+      "relative_path": "nltcs/epsilon_0.1/seed_0",
+      "seed": 0
+    },
+    {
+      "config": {
+        "bytes": 2171,
+        "path": "configs/nltcs_sage_strong.yaml",
+        "sha256": "d25ac0a99da9c716dfb34b308744f58280b99b313b87a3db126e45be27a47ade"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/nltcs_sage_strong",
+      "public_metadata": {
+        "bytes": 1950,
+        "path": "external_inputs/nltcs_sage_strong/metadata.json",
+        "sha256": "4daac6c7a6957356c4efb874eda61bdec6affcafba6e83a28c9505cf531a575c"
+      },
+      "public_schema": {
+        "bytes": 4275,
+        "path": "external_inputs/nltcs_sage_strong/schema.json",
+        "sha256": "e84e9b1a1f2bce2906bc1accb96f7142bfd741dff8d9ae2411f6e23e4b3b4c8f"
+      },
+      "relative_path": "nltcs/epsilon_0.1/seed_1",
+      "seed": 1
+    },
+    {
+      "config": {
+        "bytes": 2171,
+        "path": "configs/nltcs_sage_strong.yaml",
+        "sha256": "d25ac0a99da9c716dfb34b308744f58280b99b313b87a3db126e45be27a47ade"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/nltcs_sage_strong",
+      "public_metadata": {
+        "bytes": 1950,
+        "path": "external_inputs/nltcs_sage_strong/metadata.json",
+        "sha256": "4daac6c7a6957356c4efb874eda61bdec6affcafba6e83a28c9505cf531a575c"
+      },
+      "public_schema": {
+        "bytes": 4275,
+        "path": "external_inputs/nltcs_sage_strong/schema.json",
+        "sha256": "e84e9b1a1f2bce2906bc1accb96f7142bfd741dff8d9ae2411f6e23e4b3b4c8f"
+      },
+      "relative_path": "nltcs/epsilon_0.1/seed_2",
+      "seed": 2
+    },
+    {
+      "config": {
+        "bytes": 2171,
+        "path": "configs/nltcs_sage_strong.yaml",
+        "sha256": "d25ac0a99da9c716dfb34b308744f58280b99b313b87a3db126e45be27a47ade"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/nltcs_sage_strong",
+      "public_metadata": {
+        "bytes": 1950,
+        "path": "external_inputs/nltcs_sage_strong/metadata.json",
+        "sha256": "4daac6c7a6957356c4efb874eda61bdec6affcafba6e83a28c9505cf531a575c"
+      },
+      "public_schema": {
+        "bytes": 4275,
+        "path": "external_inputs/nltcs_sage_strong/schema.json",
+        "sha256": "e84e9b1a1f2bce2906bc1accb96f7142bfd741dff8d9ae2411f6e23e4b3b4c8f"
+      },
+      "relative_path": "nltcs/epsilon_0.3/seed_0",
+      "seed": 0
+    },
+    {
+      "config": {
+        "bytes": 2171,
+        "path": "configs/nltcs_sage_strong.yaml",
+        "sha256": "d25ac0a99da9c716dfb34b308744f58280b99b313b87a3db126e45be27a47ade"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/nltcs_sage_strong",
+      "public_metadata": {
+        "bytes": 1950,
+        "path": "external_inputs/nltcs_sage_strong/metadata.json",
+        "sha256": "4daac6c7a6957356c4efb874eda61bdec6affcafba6e83a28c9505cf531a575c"
+      },
+      "public_schema": {
+        "bytes": 4275,
+        "path": "external_inputs/nltcs_sage_strong/schema.json",
+        "sha256": "e84e9b1a1f2bce2906bc1accb96f7142bfd741dff8d9ae2411f6e23e4b3b4c8f"
+      },
+      "relative_path": "nltcs/epsilon_0.3/seed_1",
+      "seed": 1
+    },
+    {
+      "config": {
+        "bytes": 2171,
+        "path": "configs/nltcs_sage_strong.yaml",
+        "sha256": "d25ac0a99da9c716dfb34b308744f58280b99b313b87a3db126e45be27a47ade"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/nltcs_sage_strong",
+      "public_metadata": {
+        "bytes": 1950,
+        "path": "external_inputs/nltcs_sage_strong/metadata.json",
+        "sha256": "4daac6c7a6957356c4efb874eda61bdec6affcafba6e83a28c9505cf531a575c"
+      },
+      "public_schema": {
+        "bytes": 4275,
+        "path": "external_inputs/nltcs_sage_strong/schema.json",
+        "sha256": "e84e9b1a1f2bce2906bc1accb96f7142bfd741dff8d9ae2411f6e23e4b3b4c8f"
+      },
+      "relative_path": "nltcs/epsilon_0.3/seed_2",
+      "seed": 2
+    },
+    {
+      "config": {
+        "bytes": 2226,
+        "path": "configs/acs_sage_strong.yaml",
+        "sha256": "72aed2f3f2db0887668e4db5eb66a9f41f0dc2ccc6981bfe55264924cf76b779"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/acs_sage_strong",
+      "public_metadata": {
+        "bytes": 2056,
+        "path": "external_inputs/acs_sage_strong/metadata.json",
+        "sha256": "343908ed98f71466fc013c5c5361540072fcb9cb6dc0adf74167a2ed8163b966"
+      },
+      "public_schema": {
+        "bytes": 6130,
+        "path": "external_inputs/acs_sage_strong/schema.json",
+        "sha256": "6b092f1f805c821a53caa61505ca6589c290fedb4f651930345dd607734ccccd"
+      },
+      "relative_path": "acs/epsilon_0.1/seed_0",
+      "seed": 0
+    },
+    {
+      "config": {
+        "bytes": 2226,
+        "path": "configs/acs_sage_strong.yaml",
+        "sha256": "72aed2f3f2db0887668e4db5eb66a9f41f0dc2ccc6981bfe55264924cf76b779"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/acs_sage_strong",
+      "public_metadata": {
+        "bytes": 2056,
+        "path": "external_inputs/acs_sage_strong/metadata.json",
+        "sha256": "343908ed98f71466fc013c5c5361540072fcb9cb6dc0adf74167a2ed8163b966"
+      },
+      "public_schema": {
+        "bytes": 6130,
+        "path": "external_inputs/acs_sage_strong/schema.json",
+        "sha256": "6b092f1f805c821a53caa61505ca6589c290fedb4f651930345dd607734ccccd"
+      },
+      "relative_path": "acs/epsilon_0.1/seed_1",
+      "seed": 1
+    },
+    {
+      "config": {
+        "bytes": 2226,
+        "path": "configs/acs_sage_strong.yaml",
+        "sha256": "72aed2f3f2db0887668e4db5eb66a9f41f0dc2ccc6981bfe55264924cf76b779"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/acs_sage_strong",
+      "public_metadata": {
+        "bytes": 2056,
+        "path": "external_inputs/acs_sage_strong/metadata.json",
+        "sha256": "343908ed98f71466fc013c5c5361540072fcb9cb6dc0adf74167a2ed8163b966"
+      },
+      "public_schema": {
+        "bytes": 6130,
+        "path": "external_inputs/acs_sage_strong/schema.json",
+        "sha256": "6b092f1f805c821a53caa61505ca6589c290fedb4f651930345dd607734ccccd"
+      },
+      "relative_path": "acs/epsilon_0.1/seed_2",
+      "seed": 2
+    },
+    {
+      "config": {
+        "bytes": 2226,
+        "path": "configs/acs_sage_strong.yaml",
+        "sha256": "72aed2f3f2db0887668e4db5eb66a9f41f0dc2ccc6981bfe55264924cf76b779"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/acs_sage_strong",
+      "public_metadata": {
+        "bytes": 2056,
+        "path": "external_inputs/acs_sage_strong/metadata.json",
+        "sha256": "343908ed98f71466fc013c5c5361540072fcb9cb6dc0adf74167a2ed8163b966"
+      },
+      "public_schema": {
+        "bytes": 6130,
+        "path": "external_inputs/acs_sage_strong/schema.json",
+        "sha256": "6b092f1f805c821a53caa61505ca6589c290fedb4f651930345dd607734ccccd"
+      },
+      "relative_path": "acs/epsilon_0.3/seed_0",
+      "seed": 0
+    },
+    {
+      "config": {
+        "bytes": 2226,
+        "path": "configs/acs_sage_strong.yaml",
+        "sha256": "72aed2f3f2db0887668e4db5eb66a9f41f0dc2ccc6981bfe55264924cf76b779"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/acs_sage_strong",
+      "public_metadata": {
+        "bytes": 2056,
+        "path": "external_inputs/acs_sage_strong/metadata.json",
+        "sha256": "343908ed98f71466fc013c5c5361540072fcb9cb6dc0adf74167a2ed8163b966"
+      },
+      "public_schema": {
+        "bytes": 6130,
+        "path": "external_inputs/acs_sage_strong/schema.json",
+        "sha256": "6b092f1f805c821a53caa61505ca6589c290fedb4f651930345dd607734ccccd"
+      },
+      "relative_path": "acs/epsilon_0.3/seed_1",
+      "seed": 1
+    },
+    {
+      "config": {
+        "bytes": 2226,
+        "path": "configs/acs_sage_strong.yaml",
+        "sha256": "72aed2f3f2db0887668e4db5eb66a9f41f0dc2ccc6981bfe55264924cf76b779"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/acs_sage_strong",
+      "public_metadata": {
+        "bytes": 2056,
+        "path": "external_inputs/acs_sage_strong/metadata.json",
+        "sha256": "343908ed98f71466fc013c5c5361540072fcb9cb6dc0adf74167a2ed8163b966"
+      },
+      "public_schema": {
+        "bytes": 6130,
+        "path": "external_inputs/acs_sage_strong/schema.json",
+        "sha256": "6b092f1f805c821a53caa61505ca6589c290fedb4f651930345dd607734ccccd"
+      },
+      "relative_path": "acs/epsilon_0.3/seed_2",
+      "seed": 2
+    },
+    {
+      "config": {
+        "bytes": 2174,
+        "path": "configs/br2000_sage_strong.yaml",
+        "sha256": "f82408b69bd8bb133e46dbdded809ef3945d9be777cec7ab682059d6bac50996"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/br2000_sage_strong",
+      "public_metadata": {
+        "bytes": 1952,
+        "path": "external_inputs/br2000_sage_strong/metadata.json",
+        "sha256": "f9468cff7602db89c010e3187eef8d01bbd1fc07b7b8375c6a1285a46c35ae56"
+      },
+      "public_schema": {
+        "bytes": 5784,
+        "path": "external_inputs/br2000_sage_strong/schema.json",
+        "sha256": "16a09b06284c1ef2581a509876641981105a8725af686477f617d188ab808035"
+      },
+      "relative_path": "br2000/epsilon_0.1/seed_0",
+      "seed": 0
+    },
+    {
+      "config": {
+        "bytes": 2174,
+        "path": "configs/br2000_sage_strong.yaml",
+        "sha256": "f82408b69bd8bb133e46dbdded809ef3945d9be777cec7ab682059d6bac50996"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/br2000_sage_strong",
+      "public_metadata": {
+        "bytes": 1952,
+        "path": "external_inputs/br2000_sage_strong/metadata.json",
+        "sha256": "f9468cff7602db89c010e3187eef8d01bbd1fc07b7b8375c6a1285a46c35ae56"
+      },
+      "public_schema": {
+        "bytes": 5784,
+        "path": "external_inputs/br2000_sage_strong/schema.json",
+        "sha256": "16a09b06284c1ef2581a509876641981105a8725af686477f617d188ab808035"
+      },
+      "relative_path": "br2000/epsilon_0.1/seed_1",
+      "seed": 1
+    },
+    {
+      "config": {
+        "bytes": 2174,
+        "path": "configs/br2000_sage_strong.yaml",
+        "sha256": "f82408b69bd8bb133e46dbdded809ef3945d9be777cec7ab682059d6bac50996"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/br2000_sage_strong",
+      "public_metadata": {
+        "bytes": 1952,
+        "path": "external_inputs/br2000_sage_strong/metadata.json",
+        "sha256": "f9468cff7602db89c010e3187eef8d01bbd1fc07b7b8375c6a1285a46c35ae56"
+      },
+      "public_schema": {
+        "bytes": 5784,
+        "path": "external_inputs/br2000_sage_strong/schema.json",
+        "sha256": "16a09b06284c1ef2581a509876641981105a8725af686477f617d188ab808035"
+      },
+      "relative_path": "br2000/epsilon_0.1/seed_2",
+      "seed": 2
+    },
+    {
+      "config": {
+        "bytes": 2174,
+        "path": "configs/br2000_sage_strong.yaml",
+        "sha256": "f82408b69bd8bb133e46dbdded809ef3945d9be777cec7ab682059d6bac50996"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/br2000_sage_strong",
+      "public_metadata": {
+        "bytes": 1952,
+        "path": "external_inputs/br2000_sage_strong/metadata.json",
+        "sha256": "f9468cff7602db89c010e3187eef8d01bbd1fc07b7b8375c6a1285a46c35ae56"
+      },
+      "public_schema": {
+        "bytes": 5784,
+        "path": "external_inputs/br2000_sage_strong/schema.json",
+        "sha256": "16a09b06284c1ef2581a509876641981105a8725af686477f617d188ab808035"
+      },
+      "relative_path": "br2000/epsilon_0.3/seed_0",
+      "seed": 0
+    },
+    {
+      "config": {
+        "bytes": 2174,
+        "path": "configs/br2000_sage_strong.yaml",
+        "sha256": "f82408b69bd8bb133e46dbdded809ef3945d9be777cec7ab682059d6bac50996"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/br2000_sage_strong",
+      "public_metadata": {
+        "bytes": 1952,
+        "path": "external_inputs/br2000_sage_strong/metadata.json",
+        "sha256": "f9468cff7602db89c010e3187eef8d01bbd1fc07b7b8375c6a1285a46c35ae56"
+      },
+      "public_schema": {
+        "bytes": 5784,
+        "path": "external_inputs/br2000_sage_strong/schema.json",
+        "sha256": "16a09b06284c1ef2581a509876641981105a8725af686477f617d188ab808035"
+      },
+      "relative_path": "br2000/epsilon_0.3/seed_1",
+      "seed": 1
+    },
+    {
+      "config": {
+        "bytes": 2174,
+        "path": "configs/br2000_sage_strong.yaml",
+        "sha256": "f82408b69bd8bb133e46dbdded809ef3945d9be777cec7ab682059d6bac50996"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/br2000_sage_strong",
+      "public_metadata": {
+        "bytes": 1952,
+        "path": "external_inputs/br2000_sage_strong/metadata.json",
+        "sha256": "f9468cff7602db89c010e3187eef8d01bbd1fc07b7b8375c6a1285a46c35ae56"
+      },
+      "public_schema": {
+        "bytes": 5784,
+        "path": "external_inputs/br2000_sage_strong/schema.json",
+        "sha256": "16a09b06284c1ef2581a509876641981105a8725af686477f617d188ab808035"
+      },
+      "relative_path": "br2000/epsilon_0.3/seed_2",
+      "seed": 2
+    },
+    {
+      "config": {
+        "bytes": 2809,
+        "path": "configs/adult_sage_strong.yaml",
+        "sha256": "b02f11f7055fb3a9c250857dda5e2127aa2a2e14ea7a32141ee0192f75fc366a"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/adult_sage_strong",
+      "public_metadata": {
+        "bytes": 2957,
+        "path": "external_inputs/adult_sage_strong/metadata.json",
+        "sha256": "6955b6f0fa4f0e619a2e94492cfb1001cf8845e5d88e8d02ca3eb81fbb4876d4"
+      },
+      "public_schema": {
+        "bytes": 8668,
+        "path": "external_inputs/adult_sage_strong/schema.json",
+        "sha256": "5422f4b3a59272c0d3bdcf91cdcc491550c2b8713b87d28ca46c2a3055e6edc5"
+      },
+      "relative_path": "adult/epsilon_0.1/seed_0",
+      "seed": 0
+    },
+    {
+      "config": {
+        "bytes": 2809,
+        "path": "configs/adult_sage_strong.yaml",
+        "sha256": "b02f11f7055fb3a9c250857dda5e2127aa2a2e14ea7a32141ee0192f75fc366a"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/adult_sage_strong",
+      "public_metadata": {
+        "bytes": 2957,
+        "path": "external_inputs/adult_sage_strong/metadata.json",
+        "sha256": "6955b6f0fa4f0e619a2e94492cfb1001cf8845e5d88e8d02ca3eb81fbb4876d4"
+      },
+      "public_schema": {
+        "bytes": 8668,
+        "path": "external_inputs/adult_sage_strong/schema.json",
+        "sha256": "5422f4b3a59272c0d3bdcf91cdcc491550c2b8713b87d28ca46c2a3055e6edc5"
+      },
+      "relative_path": "adult/epsilon_0.1/seed_1",
+      "seed": 1
+    },
+    {
+      "config": {
+        "bytes": 2809,
+        "path": "configs/adult_sage_strong.yaml",
+        "sha256": "b02f11f7055fb3a9c250857dda5e2127aa2a2e14ea7a32141ee0192f75fc366a"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.1,
+      "input_dir": "external_inputs/adult_sage_strong",
+      "public_metadata": {
+        "bytes": 2957,
+        "path": "external_inputs/adult_sage_strong/metadata.json",
+        "sha256": "6955b6f0fa4f0e619a2e94492cfb1001cf8845e5d88e8d02ca3eb81fbb4876d4"
+      },
+      "public_schema": {
+        "bytes": 8668,
+        "path": "external_inputs/adult_sage_strong/schema.json",
+        "sha256": "5422f4b3a59272c0d3bdcf91cdcc491550c2b8713b87d28ca46c2a3055e6edc5"
+      },
+      "relative_path": "adult/epsilon_0.1/seed_2",
+      "seed": 2
+    },
+    {
+      "config": {
+        "bytes": 2809,
+        "path": "configs/adult_sage_strong.yaml",
+        "sha256": "b02f11f7055fb3a9c250857dda5e2127aa2a2e14ea7a32141ee0192f75fc366a"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/adult_sage_strong",
+      "public_metadata": {
+        "bytes": 2957,
+        "path": "external_inputs/adult_sage_strong/metadata.json",
+        "sha256": "6955b6f0fa4f0e619a2e94492cfb1001cf8845e5d88e8d02ca3eb81fbb4876d4"
+      },
+      "public_schema": {
+        "bytes": 8668,
+        "path": "external_inputs/adult_sage_strong/schema.json",
+        "sha256": "5422f4b3a59272c0d3bdcf91cdcc491550c2b8713b87d28ca46c2a3055e6edc5"
+      },
+      "relative_path": "adult/epsilon_0.3/seed_0",
+      "seed": 0
+    },
+    {
+      "config": {
+        "bytes": 2809,
+        "path": "configs/adult_sage_strong.yaml",
+        "sha256": "b02f11f7055fb3a9c250857dda5e2127aa2a2e14ea7a32141ee0192f75fc366a"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/adult_sage_strong",
+      "public_metadata": {
+        "bytes": 2957,
+        "path": "external_inputs/adult_sage_strong/metadata.json",
+        "sha256": "6955b6f0fa4f0e619a2e94492cfb1001cf8845e5d88e8d02ca3eb81fbb4876d4"
+      },
+      "public_schema": {
+        "bytes": 8668,
+        "path": "external_inputs/adult_sage_strong/schema.json",
+        "sha256": "5422f4b3a59272c0d3bdcf91cdcc491550c2b8713b87d28ca46c2a3055e6edc5"
+      },
+      "relative_path": "adult/epsilon_0.3/seed_1",
+      "seed": 1
+    },
+    {
+      "config": {
+        "bytes": 2809,
+        "path": "configs/adult_sage_strong.yaml",
+        "sha256": "b02f11f7055fb3a9c250857dda5e2127aa2a2e14ea7a32141ee0192f75fc366a"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.3,
+      "input_dir": "external_inputs/adult_sage_strong",
+      "public_metadata": {
+        "bytes": 2957,
+        "path": "external_inputs/adult_sage_strong/metadata.json",
+        "sha256": "6955b6f0fa4f0e619a2e94492cfb1001cf8845e5d88e8d02ca3eb81fbb4876d4"
+      },
+      "public_schema": {
+        "bytes": 8668,
+        "path": "external_inputs/adult_sage_strong/schema.json",
+        "sha256": "5422f4b3a59272c0d3bdcf91cdcc491550c2b8713b87d28ca46c2a3055e6edc5"
+      },
+      "relative_path": "adult/epsilon_0.3/seed_2",
+      "seed": 2
+    }
+  ],
+  "evaluator": {
+    "bytes": 15045,
+    "path": "scripts/evaluate_static_ice_wp9_panel.py",
+    "sha256": "86ebb41a7c0a01fda59ffc268a9a505d40c8bb85223edd898a1e0daf5cd44800"
+  },
+  "matrix": {
+    "datasets": [
+      "nltcs",
+      "acs",
+      "br2000",
+      "adult"
+    ],
+    "delta": 1e-09,
+    "epsilons": [
+      0.1,
+      0.3
+    ],
+    "num_cells": 24,
+    "seeds": [
+      0,
+      1,
+      2
+    ]
+  },
+  "method_id": "SAGE-QDTE-Static-ICE-Exact-v1",
+  "offline_evaluator_batch_size": 8192,
+  "protocol": {
+    "bytes": 7535,
+    "path": "docs/SAGE_QDTE_ICE_WP9_STATIC_CONFIRMATION_PROTOCOL_20260715.md",
+    "sha256": "32221f3b66d36b9cbf3ee575fe45b676864036f902ae0f0ee57e71b9ab929919"
+  },
+  "protocol_id": "SAGE-QDTE-ICE-WP9-STATIC-CONFIRMATION-20260715-v1",
+  "true_utility_evaluated": false
+}

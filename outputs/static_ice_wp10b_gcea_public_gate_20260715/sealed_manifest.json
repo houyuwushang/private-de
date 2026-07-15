@@ -1,0 +1,32 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "9b6afad388eb0d5d23c4d42be74118bd18787a1ec582d6272ee8bce523a94cfd"
+  },
+  "artifact_role": "sealed_pre_generation_public_only_mechanism_gate",
+  "artifacts": [
+    {
+      "bytes": 4215,
+      "path": "outputs/static_ice_wp10b_gcea_public_gate_20260715/plan.json",
+      "sha256": "f7668977f30a501460840c79c0c6b6f4eefdab7c070e5f46877b9752f76cd405"
+    },
+    {
+      "bytes": 70064,
+      "path": "outputs/static_ice_wp10b_gcea_public_gate_20260715/public_gate.json",
+      "sha256": "5b87ca7454a54b6671532a30b79b26d417cc8c66175cbafab1607fea356160a9"
+    },
+    {
+      "bytes": 801,
+      "path": "outputs/static_ice_wp10b_gcea_public_gate_20260715/public_gate.csv",
+      "sha256": "d4dbf74e1e9286620ea01e3bb698d5135020e7f195e7d5385144395311bbf551"
+    }
+  ],
+  "candidate_id": "SAGE-QDTE-Static-ICE-GCEA-v1",
+  "decision": "q1_a_freeze_ice_binary_profile",
+  "generation_authorized": false,
+  "private_table_read": false,
+  "protocol_id": "SAGE-QDTE-ICE-WP10B-GCEA-20260715-v1",
+  "public_gate_id": "SAGE-QDTE-ICE-WP10B-GCEA-PUBLIC-GATE-20260715-v1",
+  "released_transcript_read": false,
+  "true_utility_evaluated": false
+}

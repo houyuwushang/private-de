@@ -1,0 +1,153 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "b52f74f9aa0fb18be5fc62b01685f6fd431ff60f4ed3d4a0d9df3e5dc9ea6edb"
+  },
+  "artifact_role": "sealed_blind_workload_allocation_candidate",
+  "candidate": {
+    "initial": {
+      "bytes": 2713448,
+      "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/generate/synthetic_initial_encoded.npy",
+      "sha256": "904bf6058e9f7eb5aa4aa630e79f0210e8ffeb6934ff4b24c457dcbc66dfd2c8"
+    },
+    "measurement": {
+      "bytes": 1787416,
+      "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/measurement/measurements.json",
+      "sha256": "d61ab16bf8707618cdb0806f401f2928d08252216e072aa2a61f20727ec45c61"
+    },
+    "metrics": {
+      "bytes": 9263,
+      "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/generate/metrics_final.json",
+      "sha256": "973920d902771d26c2eaba096961f26e5c960c9d991fb63d2e61c9b8797470a7"
+    },
+    "queries": {
+      "bytes": 4621425,
+      "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/measurement/queries.json",
+      "sha256": "63c19c734fd8e9b2eedac39d26c781c6a4889d7ef49b9fac6842176ca60b7232"
+    },
+    "resolved_config": {
+      "bytes": 4039,
+      "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/generate/config_resolved.yaml",
+      "sha256": "164ad7e545bd11bbb873bc793c946bbe5e4dbbebd694e8b9c4f8038752d0cf36"
+    },
+    "run_status": {
+      "bytes": 245,
+      "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/generate/run_status.json",
+      "sha256": "475d4466bdb74f9aa2e785d6ab1c7ca1405851711d6d562d0ecd2b073ed32c1e"
+    },
+    "runtime": {
+      "bytes": 9784,
+      "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/generate/runtime.json",
+      "sha256": "4110bd5646b26b50e8d44af2d5fd550396b7421139958499b4db85e6f2fa25e7"
+    },
+    "synthetic": {
+      "bytes": 2713448,
+      "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/generate/synthetic_encoded.npy",
+      "sha256": "7fc8e2b1642912b336c2874989041b2d48e480355b5f987e2700cb19e0ca5345"
+    }
+  },
+  "candidate_method_id": "SAGE-QDTE-Static-ICE-WorkloadL2-v1",
+  "control": {
+    "initial": {
+      "bytes": 2713448,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/synthetic_initial_encoded.npy",
+      "sha256": "904bf6058e9f7eb5aa4aa630e79f0210e8ffeb6934ff4b24c457dcbc66dfd2c8"
+    },
+    "manifest": {
+      "bytes": 4924,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/mechanism_manifest.json",
+      "sha256": "e2f409f9505c8c5b0a2091f791977084978a5f9c28b38a6a964e7befe1caf18f"
+    },
+    "measurement": {
+      "bytes": 1783099,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/measurement/measurements.json",
+      "sha256": "1bf3ccf080f62437f300d1c895dadfcc13c79f96d64d7188672c184b49132c7a"
+    },
+    "metrics": {
+      "bytes": 9272,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/metrics_final.json",
+      "sha256": "c691edfc23cb24b30bcb1c1898aaf806cc6d414387b4a37e4d9b4c734805ba81"
+    },
+    "runtime": {
+      "bytes": 9794,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/runtime.json",
+      "sha256": "786e31dc7f1c81b3d1fee2f5df2cfde7356cb345500424d0b82397c3d179f908"
+    },
+    "synthetic": {
+      "bytes": 2713448,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/synthetic_encoded.npy",
+      "sha256": "14b67e931feaf93a3c6f5cf33ccad43bd76ecb74d1c49f38e22df57e8db93b06"
+    }
+  },
+  "dataset": "adult",
+  "delta": 1e-09,
+  "epsilon": 0.1,
+  "generation_seed": 956218968,
+  "measurement_seed": 2411089818,
+  "mechanism_gate": {
+    "allocation_certificate": {
+      "cell_reference_max_relative_error": 6.911773999044219e-14,
+      "current_pair_rho_share": 0.9197821438450282,
+      "current_risk": 10921798643.788935,
+      "full_queries": 28654,
+      "optimal_over_current": 0.8455718531684706,
+      "optimal_risk": 9235165519.161499,
+      "profile": "full_reconstructable_query_l2",
+      "supported_queries": 22534,
+      "unsupported_queries": 6120,
+      "workload_pair_rho_share": 0.8465777443293414
+    },
+    "base_gate": {
+      "checks": {
+        "all_component_variances_positive": true,
+        "all_pairs_within_public_cap": true,
+        "exact_precision_operator_active": true,
+        "full_candidate_count": true,
+        "full_iteration_count": true,
+        "generation_reused_transcript_bytewise": true,
+        "incremental_answer_drift_zero": true,
+        "no_true_utility_emitted": true,
+        "rho_spent_matches_declared": true
+      },
+      "effective_rank": 13337,
+      "num_candidates_scored": 20480000,
+      "num_iterations": 5000,
+      "num_pair_scopes": 105,
+      "num_strategy_blocks": 120,
+      "passed": true,
+      "rho_declared": 0.00012034716353620051,
+      "rho_spent": 0.00012034716353620051
+    },
+    "control_reproduction": {
+      "coefficient_max_abs": 0.0,
+      "passed": true,
+      "rho_max_abs": 0.0,
+      "structure_equal": true,
+      "variance_max_abs": 0.0
+    },
+    "extra_checks": {
+      "allocation_mode_is_workload_optimal": true,
+      "cell_reference_identity": true,
+      "closed_form_risk_certificate": true,
+      "control_transcript_reproduced": true,
+      "initial_table_hash_matches_control": true,
+      "standard_normal_noise_coupled": true,
+      "workload_factorization_frozen": true
+    },
+    "noise_coupling": {
+      "passed": true,
+      "standard_normal_max_abs": 4.884981308350689e-15
+    },
+    "passed": true
+  },
+  "offline_evaluation_authorized": true,
+  "plan": {
+    "bytes": 4532,
+    "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/plan.json",
+    "sha256": "f32af3bb7bbcab8929157daca5be6f0ffe38bb7f7f7c11daede95c18d87ecfa4"
+  },
+  "private_input_hashes_excluded": true,
+  "protocol_id": "SAGE-QDTE-ICE-WP10A-WORKLOAD-ALLOCATION-20260715-v1",
+  "seed": 0,
+  "true_utility_evaluated": false
+}

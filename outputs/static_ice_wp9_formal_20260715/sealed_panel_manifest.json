@@ -1,0 +1,1915 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "a61e918a398bc68912f927109e13a139d5d937568f3357431652df1463651ea0"
+  },
+  "artifact_role": "sealed_blind_static_ice_confirmation_panel",
+  "cells": [
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_0/cell_status.json",
+        "sha256": "4cbbcc22e73205077939b54f3941455cdbf2e8433ac2d04cf865eb8d9751114c"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 141326,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_0/measurement/measurements.json",
+        "sha256": "3e5f08462a6e1c099bcfa4fd32a4e64c3e9cead437b5ebee7a208ff3ee51ec4b"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 136,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 120,
+        "num_strategy_blocks": 136,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4920,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_0/mechanism_manifest.json",
+        "sha256": "f91e0b1d4568b03a1d90c43bb28d3de5c37b1791ac7cea7c0bcf14c0960598fe"
+      },
+      "metrics": {
+        "bytes": 9292,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_0/generate/metrics_final.json",
+        "sha256": "29f465e10d32c83941f59d0af1e43644aa216dbf61518345f01d1ba13f030a50"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 136,
+              "num_pairs": 120
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "nltcs/epsilon_0.1/seed_0",
+      "runtime": {
+        "bytes": 9380,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_0/generate/runtime.json",
+        "sha256": "c7781da1adb35e263bfdd94f3cb2ea28b7d0ea374ee6ee56471228a241034aae"
+      },
+      "seed": 0,
+      "synthetic": {
+        "bytes": 1380864,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_0/generate/synthetic_encoded.npy",
+        "sha256": "c906954224a2d9b8b88fa788555ce5c4bbbc92d12d69f75593c6765c2b265e23"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_1/cell_status.json",
+        "sha256": "9508fa48e3ed1b1f898769f53f40b6e38c9bba0b186bc87883c2ebf12d9db310"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 141393,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_1/measurement/measurements.json",
+        "sha256": "977b913f0b0910a456f22536ef739a475f09e63440675f96485f2d035f48b315"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 136,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 120,
+        "num_strategy_blocks": 136,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4921,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_1/mechanism_manifest.json",
+        "sha256": "8c85d25bbedcfd4854f197b32e27e778d327303a30e459833e920383a3fe8b78"
+      },
+      "metrics": {
+        "bytes": 9290,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_1/generate/metrics_final.json",
+        "sha256": "098278688ae9733b5e84d3f41841c0fce9cb0fbd4e9ee03f41d9bbc21ed9517e"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 136,
+              "num_pairs": 120
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "nltcs/epsilon_0.1/seed_1",
+      "runtime": {
+        "bytes": 9384,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_1/generate/runtime.json",
+        "sha256": "4e2a6001757d45f4d8896013309d2a3f198df6a01baa64ea54c465face5fae16"
+      },
+      "seed": 1,
+      "synthetic": {
+        "bytes": 1380864,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_1/generate/synthetic_encoded.npy",
+        "sha256": "39560dda0beda334d27cec97bd087fc164acbe05d115e72b2ee5411edd2c519c"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_2/cell_status.json",
+        "sha256": "35fa9123af54d6c1697c219d4597ea2824133dc46497c68b57a235b9186aa0d9"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 141303,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_2/measurement/measurements.json",
+        "sha256": "7d73e62c209787a7d64fcb0406c2de78af4031f4814a8abbdf4f4890ad503d70"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 136,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 120,
+        "num_strategy_blocks": 136,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4920,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_2/mechanism_manifest.json",
+        "sha256": "debcec8044181e7eaec13faef3fab3bb3aa602d9cef880863566889106a7ca8f"
+      },
+      "metrics": {
+        "bytes": 9287,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_2/generate/metrics_final.json",
+        "sha256": "c3bf9bed00d1301f01c021cd65fe56f9145fcff904e45ab02531cb087dbfffb5"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 136,
+              "num_pairs": 120
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "nltcs/epsilon_0.1/seed_2",
+      "runtime": {
+        "bytes": 9384,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_2/generate/runtime.json",
+        "sha256": "899b5bfb6ec0eea9164f900ec1e813acf714977a0a59db14acf6a2663130de38"
+      },
+      "seed": 2,
+      "synthetic": {
+        "bytes": 1380864,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.1/seed_2/generate/synthetic_encoded.npy",
+        "sha256": "ec764b9ba0b97726ee2209339b82ff1f290580662f2fbcd8b0329dbe20eb1e1f"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_0/cell_status.json",
+        "sha256": "3d1bb1490db1959760e7cee46a307245ad007717c6952df5f8fc1777780416e2"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 142085,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_0/measurement/measurements.json",
+        "sha256": "d3bb902bd2887a2ae80bc2565f4772850ca92fd0605bf0b80f0c6d217d9f770a"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 136,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 120,
+        "num_strategy_blocks": 136,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4914,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_0/mechanism_manifest.json",
+        "sha256": "af9923f26c5f9d888189b2c2166d611f34fb047e3abcc762d99a0a267ebe7fd4"
+      },
+      "metrics": {
+        "bytes": 9283,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_0/generate/metrics_final.json",
+        "sha256": "04c85aba748354a5d0055432a6bf1f84172fae54c02943ba899ec12ca90fe06c"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 136,
+              "num_pairs": 120
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "nltcs/epsilon_0.3/seed_0",
+      "runtime": {
+        "bytes": 9389,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_0/generate/runtime.json",
+        "sha256": "c26eaef1635b7ab9f79450f9ba862a82868869a760fd13c32b7ce1f07d561fc2"
+      },
+      "seed": 0,
+      "synthetic": {
+        "bytes": 1380864,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_0/generate/synthetic_encoded.npy",
+        "sha256": "9e7c00e80ae69efcc25a0421afd011f7ba7bf79db3ddbcacdbe5242cdcdf59c0"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_1/cell_status.json",
+        "sha256": "7a2171fabb0419b04e802235d000d9d69925e5b19338eabd7a9cc1548dd707bc"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 142096,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_1/measurement/measurements.json",
+        "sha256": "6bc709cc9eb5221e4d0b3f7d4e8de0ea668da07f9e6c8306fcb66e4626eb4aa6"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 136,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 120,
+        "num_strategy_blocks": 136,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4915,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_1/mechanism_manifest.json",
+        "sha256": "007f5ee26da2019e26ab3342d5a5ab8b2c77723a05e985155fd43851f9acbee4"
+      },
+      "metrics": {
+        "bytes": 9291,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_1/generate/metrics_final.json",
+        "sha256": "9c0d644925c10b9862ba791383d98782d6cd1c3bbf1349f31192bd5aae55e23b"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 136,
+              "num_pairs": 120
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "nltcs/epsilon_0.3/seed_1",
+      "runtime": {
+        "bytes": 9393,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_1/generate/runtime.json",
+        "sha256": "edcb872a13b250439128d107d3fc22a7cdcf4ed934306bcf2c7bfb01590b9e65"
+      },
+      "seed": 1,
+      "synthetic": {
+        "bytes": 1380864,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_1/generate/synthetic_encoded.npy",
+        "sha256": "da1cc70c1576d3553b8ed1a27192f2e7bd4a5539ce2da93b9856ad46c587c9e8"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_2/cell_status.json",
+        "sha256": "821818bea1b9fc432fda21ab96d39efbc1a2da4195d973e557d0e768263cbda5"
+      },
+      "dataset": "nltcs",
+      "declared_dataset": "nltcs_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 141988,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_2/measurement/measurements.json",
+        "sha256": "d3ed5de5d49351c4a4231c7fe5fae6df378e90242e5bcb8c113012cd65d578d1"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 136,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 120,
+        "num_strategy_blocks": 136,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4914,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_2/mechanism_manifest.json",
+        "sha256": "aaa5f5ed209064393c2eda946c1a167064b0e9c5b45b255feb50312eea210df8"
+      },
+      "metrics": {
+        "bytes": 9296,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_2/generate/metrics_final.json",
+        "sha256": "90bf92f6a5d63d910d5bf9b1f86b64dff582f9fbd90cfa2e9e582925d549cf0e"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 136,
+              "num_pairs": 120
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "nltcs/epsilon_0.3/seed_2",
+      "runtime": {
+        "bytes": 9396,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_2/generate/runtime.json",
+        "sha256": "385f5429f0f7654691917034f52bffcbd957557a9be0f6f9a0214091c39ad631"
+      },
+      "seed": 2,
+      "synthetic": {
+        "bytes": 1380864,
+        "path": "outputs/static_ice_wp9_formal_20260715/nltcs/epsilon_0.3/seed_2/generate/synthetic_encoded.npy",
+        "sha256": "5d92787e01b8a5833bef3f0a61b12869d93a83479c3f56cc4d484041725bfd85"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 183,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_0/cell_status.json",
+        "sha256": "5a85f531637adf45fa74a356bb8d549679323c65589721d823d99b91ffac8a76"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 284657,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_0/measurement/measurements.json",
+        "sha256": "01db1b5ad57746d1ed43b5ed226566bc932f48ed8b21a574484e8433c0200236"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 276,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 253,
+        "num_strategy_blocks": 276,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4896,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_0/mechanism_manifest.json",
+        "sha256": "b569c2c9cadc5ee9d18f1cb49995117653d5654fcc3b132804dca7265ec292de"
+      },
+      "metrics": {
+        "bytes": 9273,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_0/generate/metrics_final.json",
+        "sha256": "c8214b3504aa85e19247eed2e064661ff89bced906f2a711c9ac98562507180d"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 276,
+              "num_pairs": 253
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "acs/epsilon_0.1/seed_0",
+      "runtime": {
+        "bytes": 9381,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_0/generate/runtime.json",
+        "sha256": "a45f3b21ae48f9b9b30a8f417df8822b3fa8438fc36328c95ac0f0185adb330b"
+      },
+      "seed": 0,
+      "synthetic": {
+        "bytes": 4366540,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_0/generate/synthetic_encoded.npy",
+        "sha256": "690a6d9a2b9e5e008cc0724c1cff10a256a114c4bd946c2be2154f690e4fe292"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 183,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_1/cell_status.json",
+        "sha256": "2393a3a8dd7a43328d5f336042e62fbe83f2ff8af589abdd402f00a7711953a0"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 284467,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_1/measurement/measurements.json",
+        "sha256": "74461f20d1299fb3a9da4516062a7c4a404f476db45a970b3dbfe5355dfd6b71"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 276,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 253,
+        "num_strategy_blocks": 276,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4897,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_1/mechanism_manifest.json",
+        "sha256": "1dae9ce23cbc11afe5378291ab5b7d42722f2083bcca9cd6999dae8e29ddd660"
+      },
+      "metrics": {
+        "bytes": 9274,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_1/generate/metrics_final.json",
+        "sha256": "6059be5fb0256c55a4bc1582f3cef2da99fb51c75a347a90435f9f90f15ada01"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 276,
+              "num_pairs": 253
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "acs/epsilon_0.1/seed_1",
+      "runtime": {
+        "bytes": 9383,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_1/generate/runtime.json",
+        "sha256": "1ce7aadf040027c776eeb77b712b31bf29e277c011baa1e7313ec9aa16295eee"
+      },
+      "seed": 1,
+      "synthetic": {
+        "bytes": 4366540,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_1/generate/synthetic_encoded.npy",
+        "sha256": "25a5c78440fac2c715b2a6b6a6375b14d45d2d38c4e6f8f21f03382e323aa292"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 183,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_2/cell_status.json",
+        "sha256": "396d205737a69e1414bfb1732f16c0e70a416d532b31309f88665ddf313c9859"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 284529,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_2/measurement/measurements.json",
+        "sha256": "345f97eeb78ee6a7836286ab750c932eecf4fe8dbd42bbebc140b992077c7482"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 276,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 253,
+        "num_strategy_blocks": 276,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4896,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_2/mechanism_manifest.json",
+        "sha256": "17797e0bd51ffa1fa6fdbafd9353e149cde5d604beb0da39d6716e63c7be89da"
+      },
+      "metrics": {
+        "bytes": 9273,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_2/generate/metrics_final.json",
+        "sha256": "aa9ad7cd216315aebc5f0f9ef34c3f108a83eb8dff90560e08f01ece018d2dfd"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 276,
+              "num_pairs": 253
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "acs/epsilon_0.1/seed_2",
+      "runtime": {
+        "bytes": 9375,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_2/generate/runtime.json",
+        "sha256": "05a92b368e62e1bb7ab00d0d798edcff07ab9b2e8df204039d5e7a472e54c43f"
+      },
+      "seed": 2,
+      "synthetic": {
+        "bytes": 4366540,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.1/seed_2/generate/synthetic_encoded.npy",
+        "sha256": "8477ab6b97c0df18506375513a066862ea317c3916ce9288f24ecf7ccd7741cb"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 183,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_0/cell_status.json",
+        "sha256": "fb63036582124d761d44105e85eee44b348260cbb28a8769b60f1c008a964568"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 288834,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_0/measurement/measurements.json",
+        "sha256": "edbcbd7bc0588f0805688a7df731b96f356b9bea2d72dacaf1c37cbe7bce3e87"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 276,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 253,
+        "num_strategy_blocks": 276,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4890,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_0/mechanism_manifest.json",
+        "sha256": "939509e41d8c685bda6e81f03c24c4d332ddbaa166361f53a27242ca0ae16c7d"
+      },
+      "metrics": {
+        "bytes": 9280,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_0/generate/metrics_final.json",
+        "sha256": "f48e698f8abc9a2db796881f3793e1cd9ac338adc68e675610d83c14efedcdc7"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 276,
+              "num_pairs": 253
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "acs/epsilon_0.3/seed_0",
+      "runtime": {
+        "bytes": 9382,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_0/generate/runtime.json",
+        "sha256": "3eb09c08e9c5dc444710e36d98593cf6f40c974c40b12fc361db3c40abc3c9f8"
+      },
+      "seed": 0,
+      "synthetic": {
+        "bytes": 4366540,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_0/generate/synthetic_encoded.npy",
+        "sha256": "9407149c7bd3f26f2ede64dfe254bdb9c960a2b4099237671612e3ca41157406"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 183,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_1/cell_status.json",
+        "sha256": "e4cacbde1756cf3e09c0e04b7c118750dddf619f2634da85b84476703b9f57ef"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 288628,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_1/measurement/measurements.json",
+        "sha256": "d1e60c4a9692c8e209a56e30ecf06ed4497fa215ffd27365db6adba2f407b597"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 276,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 253,
+        "num_strategy_blocks": 276,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4891,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_1/mechanism_manifest.json",
+        "sha256": "d722b1a63095fa4ca3aadd6c74f24fc1de1f21bb1e0b27e1e99944205cb84bf8"
+      },
+      "metrics": {
+        "bytes": 9294,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_1/generate/metrics_final.json",
+        "sha256": "bfa4557f2235c56a30140766921dfa2d7a3bc1e476abd566c0fda9e437433ee9"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 276,
+              "num_pairs": 253
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "acs/epsilon_0.3/seed_1",
+      "runtime": {
+        "bytes": 9402,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_1/generate/runtime.json",
+        "sha256": "513dd5db0a1a144de94d9d853186f56652a494693c94d633f48371f03d47dd9f"
+      },
+      "seed": 1,
+      "synthetic": {
+        "bytes": 4366540,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_1/generate/synthetic_encoded.npy",
+        "sha256": "c632cac36346ab791ba4f7927de8c3f536b28da44eb18ab26dd01ae5a64f7e8e"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 183,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_2/cell_status.json",
+        "sha256": "9a542382062500c47965ba0562a1aa1f187c1f216e3f60e8a4064a9be42bab38"
+      },
+      "dataset": "acs",
+      "declared_dataset": "acs_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 288832,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_2/measurement/measurements.json",
+        "sha256": "1523f90351f2ad6134b0f0ea26f3dea8cc910690ca16f7bf8ced21711aea8792"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 276,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 253,
+        "num_strategy_blocks": 276,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4890,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_2/mechanism_manifest.json",
+        "sha256": "e855a1306025edc819aad91bfc48df1e2470b9b667faf4278c5a1fbbb7dfd806"
+      },
+      "metrics": {
+        "bytes": 9292,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_2/generate/metrics_final.json",
+        "sha256": "0c0fa0ef3a12365945d1d3eca6d11fefeb3404d2e700196e99e99438644790e8"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 276,
+              "num_pairs": 253
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "acs/epsilon_0.3/seed_2",
+      "runtime": {
+        "bytes": 9411,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_2/generate/runtime.json",
+        "sha256": "10da0f003f2c48a6a57d21c9c2a9ae4e38f166ef31e54c5041d2b0de6ca200e9"
+      },
+      "seed": 2,
+      "synthetic": {
+        "bytes": 4366540,
+        "path": "outputs/static_ice_wp9_formal_20260715/acs/epsilon_0.3/seed_2/generate/synthetic_encoded.npy",
+        "sha256": "fc323fa1c56585170b1ffa7710d64154a5b0082d44fcc855655308c72da519ab"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 186,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_0/cell_status.json",
+        "sha256": "15cb6a0dffafe288f621dc6478cbb83a6fe0b728a59902c37fc494dec383014e"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 583019,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_0/measurement/measurements.json",
+        "sha256": "c9e93f78ca431679c9f219ea1597888ff76274bd4809e0d4723cc11c1941f295"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 3536,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 91,
+        "num_strategy_blocks": 105,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4931,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_0/mechanism_manifest.json",
+        "sha256": "168fc2e9d488d278d317767f1dab6f53f121f0b2895c0d4c09e61d6bb385703e"
+      },
+      "metrics": {
+        "bytes": 9273,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_0/generate/metrics_final.json",
+        "sha256": "2fe8e94da363f1c25989aa3f5a024cf46694c4a4c3a1ed31b1ee0d83ae26fb98"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 105,
+              "num_pairs": 91
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "br2000/epsilon_0.1/seed_0",
+      "runtime": {
+        "bytes": 9791,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_0/generate/runtime.json",
+        "sha256": "eda0d43713c0dd6d19103ed2ebd04c34d3ffa9c4f5d0aea96c3920b0e3640bec"
+      },
+      "seed": 0,
+      "synthetic": {
+        "bytes": 2128128,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_0/generate/synthetic_encoded.npy",
+        "sha256": "0c9da082e7c8dc33b6a2ac27c160f59c56f95a01c1b5affa6c137679edc83472"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 186,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_1/cell_status.json",
+        "sha256": "049b2b568408a192c8cda4c2322482727129e405430560013907abc36851f777"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 583034,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_1/measurement/measurements.json",
+        "sha256": "4dace5e519dced3311b16a508ae63a8eab54a1e51da97d381db54df816fe2bfc"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 3536,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 91,
+        "num_strategy_blocks": 105,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4932,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_1/mechanism_manifest.json",
+        "sha256": "9cbf15a6311235e0aeda0eb1b19d6cbc4f65444c7fe1f13e64b77318e61a531a"
+      },
+      "metrics": {
+        "bytes": 9281,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_1/generate/metrics_final.json",
+        "sha256": "7b6d3a2a2147535c98b4340457c03acda2168acd17d3f14e549d2b3ae754c6ce"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 105,
+              "num_pairs": 91
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "br2000/epsilon_0.1/seed_1",
+      "runtime": {
+        "bytes": 9392,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_1/generate/runtime.json",
+        "sha256": "a17f436246b3dbbe90f21c95dd841e9d8648228d6e29b3cd025567dc22a6f47d"
+      },
+      "seed": 1,
+      "synthetic": {
+        "bytes": 2128128,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_1/generate/synthetic_encoded.npy",
+        "sha256": "a665f35d673da479a5acab6d2d15cd52c59be619ea489735cb764ac83482a900"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 186,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_2/cell_status.json",
+        "sha256": "f4e30a0265c9e5b7f4cd089259e45646d9a7c0c2ea67c369d9e9a161d648c62a"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 582892,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_2/measurement/measurements.json",
+        "sha256": "19516ff39466eb355942937867104a1287fe679fc31bb430f115c1cbd87ee6da"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 3536,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 91,
+        "num_strategy_blocks": 105,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4931,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_2/mechanism_manifest.json",
+        "sha256": "d5950b0ee5b03b28ca7a97920b9148ced63f6f0cfd2af9c32a11d1d36bc76477"
+      },
+      "metrics": {
+        "bytes": 9273,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_2/generate/metrics_final.json",
+        "sha256": "f8aa142d6961ab3045b8c530cb55d3618386960135222f638390f1b29eed7bf7"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 105,
+              "num_pairs": 91
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "br2000/epsilon_0.1/seed_2",
+      "runtime": {
+        "bytes": 9387,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_2/generate/runtime.json",
+        "sha256": "711227145c83f8f25f108e9ebcbf54ccdc0ec1f00f381ac374e4bb8add719f5f"
+      },
+      "seed": 2,
+      "synthetic": {
+        "bytes": 2128128,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.1/seed_2/generate/synthetic_encoded.npy",
+        "sha256": "291424c0a5e71dd5ff5f7af1298a04918ff549dc3026830b764de67903f2cc41"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 186,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_0/cell_status.json",
+        "sha256": "87671a023c2298ab1f802e8801ab0f33b4870928ac40c7cbee07d6b0e0b1272b"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 591589,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_0/measurement/measurements.json",
+        "sha256": "ec065ee74bad9584678bfb46b3647a4cede1acf849ec2899973dbb032cd1bd08"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 3536,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 91,
+        "num_strategy_blocks": 105,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4925,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_0/mechanism_manifest.json",
+        "sha256": "6183ef11cf118cf6de4210faa96606c59bceba1e04ae975a237e7d235cad6afa"
+      },
+      "metrics": {
+        "bytes": 9299,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_0/generate/metrics_final.json",
+        "sha256": "cb0f73d658355884539d74b7897bda766440a8a45d315be99d4b8d970812eb95"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 105,
+              "num_pairs": 91
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "br2000/epsilon_0.3/seed_0",
+      "runtime": {
+        "bytes": 9414,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_0/generate/runtime.json",
+        "sha256": "8affecf76ed2b182353a2437bcb205fd9997537cc67f78fe50b4037e7c7fb079"
+      },
+      "seed": 0,
+      "synthetic": {
+        "bytes": 2128128,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_0/generate/synthetic_encoded.npy",
+        "sha256": "3e9648293fdcd082fe22859f0a41b1faa85f177b5a9fa2bc945cd068f20ee0e3"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 186,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_1/cell_status.json",
+        "sha256": "0b78e41fa6d668aa3ab71dd0cc3a5b1b78e07458f7133e449a9107febef1b8bb"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 591587,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_1/measurement/measurements.json",
+        "sha256": "732e334621159208c168caac39802b96827a92e4bf041dd7a8a4335918180a36"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 3536,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 91,
+        "num_strategy_blocks": 105,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4926,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_1/mechanism_manifest.json",
+        "sha256": "a5e7c1807ce636f0af21000cfff0bdad3dbc985f16d5c7f96f701451e2811ef0"
+      },
+      "metrics": {
+        "bytes": 9294,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_1/generate/metrics_final.json",
+        "sha256": "9521bd99c449b1df71fd697af7cb493256280391652fa11b399d3b2ae14b6eb5"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 105,
+              "num_pairs": 91
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "br2000/epsilon_0.3/seed_1",
+      "runtime": {
+        "bytes": 9401,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_1/generate/runtime.json",
+        "sha256": "5a2b749d969f1e05abd127108cce9cd00aaf5d29d227a8d7138887776a28b31b"
+      },
+      "seed": 1,
+      "synthetic": {
+        "bytes": 2128128,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_1/generate/synthetic_encoded.npy",
+        "sha256": "73f300efe42aaf2e952e5e3a8adce54769a4f9bbe21f101c7591e0b09758cc41"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 186,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_2/cell_status.json",
+        "sha256": "1066ef876a2202fae15c11cad6e69a49f794df660856cac0c83c0daa979faff9"
+      },
+      "dataset": "br2000",
+      "declared_dataset": "br2000_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 591919,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_2/measurement/measurements.json",
+        "sha256": "5941c3dde3b75d85771fab15b65431d24f9444f46c21b5cf9c6493b263f3bd19"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 3536,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 91,
+        "num_strategy_blocks": 105,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4925,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_2/mechanism_manifest.json",
+        "sha256": "8491026538a2db7f250d88cf6bb36f166c83de2675a64b4f233a0e00cda921bd"
+      },
+      "metrics": {
+        "bytes": 9294,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_2/generate/metrics_final.json",
+        "sha256": "aadf1c5bf625bc885efff30f14c1a57cf6c7680cbe1bd34eccc6cbd0e9a66615"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 105,
+              "num_pairs": 91
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "br2000/epsilon_0.3/seed_2",
+      "runtime": {
+        "bytes": 9402,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_2/generate/runtime.json",
+        "sha256": "23e8605a11565521d6842b5808812060acb739f5b3f9ab527a140ee8a7e469a1"
+      },
+      "seed": 2,
+      "synthetic": {
+        "bytes": 2128128,
+        "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_2/generate/synthetic_encoded.npy",
+        "sha256": "b7eb1c2d30d75be239e79545f7090ff8e56c3dda1cb4e8a8fd053fec6cfd14cb"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/cell_status.json",
+        "sha256": "8061a5f1064a74499476cc5405ccec431aadc361396c7dabf644b8fac3090722"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 1783099,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/measurement/measurements.json",
+        "sha256": "1bf3ccf080f62437f300d1c895dadfcc13c79f96d64d7188672c184b49132c7a"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 13337,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 105,
+        "num_strategy_blocks": 120,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4924,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/mechanism_manifest.json",
+        "sha256": "e2f409f9505c8c5b0a2091f791977084978a5f9c28b38a6a964e7befe1caf18f"
+      },
+      "metrics": {
+        "bytes": 9272,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/metrics_final.json",
+        "sha256": "c691edfc23cb24b30bcb1c1898aaf806cc6d414387b4a37e4d9b4c734805ba81"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 120,
+              "num_pairs": 105
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "adult/epsilon_0.1/seed_0",
+      "runtime": {
+        "bytes": 9794,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/runtime.json",
+        "sha256": "786e31dc7f1c81b3d1fee2f5df2cfde7356cb345500424d0b82397c3d179f908"
+      },
+      "seed": 0,
+      "synthetic": {
+        "bytes": 2713448,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/synthetic_encoded.npy",
+        "sha256": "14b67e931feaf93a3c6f5cf33ccad43bd76ecb74d1c49f38e22df57e8db93b06"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_1/cell_status.json",
+        "sha256": "bc617061fb8fcfdedb91793f13ba4c71af2d2cb8626d1182c55f4d08ded68765"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 1783168,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_1/measurement/measurements.json",
+        "sha256": "adcf7ce74782715534679c6859a2695e219149877e2988d06d15e04dc31aaaeb"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 13337,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 105,
+        "num_strategy_blocks": 120,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4925,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_1/mechanism_manifest.json",
+        "sha256": "6d0dc498ac7b0f641f377f7f706fa89a18b567a50f2292a67fa24645a9d4c718"
+      },
+      "metrics": {
+        "bytes": 9272,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_1/generate/metrics_final.json",
+        "sha256": "1280b3f1e38de57dd669f968f3e99848a45fb95fba9b1ab91ed549ab00081738"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 120,
+              "num_pairs": 105
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "adult/epsilon_0.1/seed_1",
+      "runtime": {
+        "bytes": 9789,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_1/generate/runtime.json",
+        "sha256": "8e0f10efb00a7aa3495649f3f6f1c54d8d0d77d1cb2a9c09e600545a77e29eb4"
+      },
+      "seed": 1,
+      "synthetic": {
+        "bytes": 2713448,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_1/generate/synthetic_encoded.npy",
+        "sha256": "532b042ac0a687051192645114521cb51953330293fd25699e525f06dc4c6406"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_2/cell_status.json",
+        "sha256": "5b4d42ffbf99bc20dd2fa5479be1462a3a330f292f2c80039f1fd2253b8d45e4"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.1,
+      "measurement": {
+        "bytes": 1783182,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_2/measurement/measurements.json",
+        "sha256": "587fa6ba3db6e3967d51355ada2a5df14443c00e7801bd0641dc702f4b39e6bf"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 13337,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 105,
+        "num_strategy_blocks": 120,
+        "passed": true,
+        "rho_declared": 0.00012034716353620051,
+        "rho_spent": 0.00012034716353620051
+      },
+      "mechanism_manifest": {
+        "bytes": 4924,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_2/mechanism_manifest.json",
+        "sha256": "abd8332c4d3554379d7f93fb261a9f85ac178115644e14b767644507431cdf5c"
+      },
+      "metrics": {
+        "bytes": 9272,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_2/generate/metrics_final.json",
+        "sha256": "f14077d564cc2f41a9cea880921b139bfd3039be962e86d42c2206295808145c"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 120,
+              "num_pairs": 105
+            },
+            "rho": 0.00012034716353620051
+          }
+        ],
+        "epsilon_from_actual_spend": 0.10000000000000028,
+        "rho_limit": 0.00012034716353620051,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.00012034716353620051
+      },
+      "relative_path": "adult/epsilon_0.1/seed_2",
+      "runtime": {
+        "bytes": 9799,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_2/generate/runtime.json",
+        "sha256": "36b4cb5380de7636a235826a07ab8900998865e049a4eac7711dbf5e000b920b"
+      },
+      "seed": 2,
+      "synthetic": {
+        "bytes": 2713448,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_2/generate/synthetic_encoded.npy",
+        "sha256": "a94694aca0709e7f62ab732f88c3e263cbf20268e1bb8624be70b5749394d145"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_0/cell_status.json",
+        "sha256": "a34bf066b318b5cc6591f2c232bb34eeb04a7fc08996e5d6e32a5580c88af5ee"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 1804616,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_0/measurement/measurements.json",
+        "sha256": "47e5cc331fb472ff58f4fb7b3dbdb597a317600f44b641b2f46270e3efff7d04"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 13337,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 105,
+        "num_strategy_blocks": 120,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4918,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_0/mechanism_manifest.json",
+        "sha256": "710a7a5b7309454b2eb006e357f016e69864460011cc76fa2295953bb8b957d3"
+      },
+      "metrics": {
+        "bytes": 9289,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_0/generate/metrics_final.json",
+        "sha256": "6c1bedbaf1efa9a78a47c7a8cfcba49a70a27aff8ee17935cbebc6ea6f7f6d9b"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 120,
+              "num_pairs": 105
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "adult/epsilon_0.3/seed_0",
+      "runtime": {
+        "bytes": 9416,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_0/generate/runtime.json",
+        "sha256": "11e85828039e6687d56538b20baf4cf69da2a38f79c1044c78ff3596feb0f952"
+      },
+      "seed": 0,
+      "synthetic": {
+        "bytes": 2713448,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_0/generate/synthetic_encoded.npy",
+        "sha256": "dca9913af66f24b66b478382abe04534dc0e2d34af2e7882983be5f2afa38639"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_1/cell_status.json",
+        "sha256": "ec1eccb3cd7ae90372db3f7bde4450955f637ec872f72f85d5134064ed3c6f88"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 1804543,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_1/measurement/measurements.json",
+        "sha256": "89016b96e806bf39a7d62cefe92c1a2175002d6be14af3eecc84a677f6f5e079"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 13337,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 105,
+        "num_strategy_blocks": 120,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4919,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_1/mechanism_manifest.json",
+        "sha256": "3fb23427b986e813e96a5dd0bd1244f6ee23e4bb2682448279882c3490f97f33"
+      },
+      "metrics": {
+        "bytes": 9283,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_1/generate/metrics_final.json",
+        "sha256": "e289182a76e9b85258606e909a70db7b07808dce83733cff3d26f35a422b527a"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 120,
+              "num_pairs": 105
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "adult/epsilon_0.3/seed_1",
+      "runtime": {
+        "bytes": 9400,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_1/generate/runtime.json",
+        "sha256": "7b84c4926a622fe3908a76ec1097428011701940aa65261dca23b1b72505d0a7"
+      },
+      "seed": 1,
+      "synthetic": {
+        "bytes": 2713448,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_1/generate/synthetic_encoded.npy",
+        "sha256": "1f112e2c1f96abb4937d0dcbe82b1413ceaf60bad862df83b07af5e96cad6185"
+      }
+    },
+    {
+      "cell_status": {
+        "bytes": 185,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_2/cell_status.json",
+        "sha256": "731b3ada5a7d7900365091cc73c22c6e9f222d56f3b16b305992f98f07f4c6d4"
+      },
+      "dataset": "adult",
+      "declared_dataset": "adult_sage_strong",
+      "epsilon": 0.3,
+      "measurement": {
+        "bytes": 1804465,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_2/measurement/measurements.json",
+        "sha256": "1700c0144ef2f37d41f462e4b21e65092d2d2c38d980be13c61667de5ea4f90d"
+      },
+      "mechanism_gate": {
+        "checks": {
+          "all_component_variances_positive": true,
+          "all_pairs_within_public_cap": true,
+          "exact_precision_operator_active": true,
+          "full_candidate_count": true,
+          "full_iteration_count": true,
+          "generation_reused_transcript_bytewise": true,
+          "incremental_answer_drift_zero": true,
+          "no_true_utility_emitted": true,
+          "rho_spent_matches_declared": true
+        },
+        "effective_rank": 13337,
+        "num_candidates_scored": 20480000,
+        "num_iterations": 5000,
+        "num_pair_scopes": 105,
+        "num_strategy_blocks": 120,
+        "passed": true,
+        "rho_declared": 0.0010779477762902546,
+        "rho_spent": 0.0010779477762902546
+      },
+      "mechanism_manifest": {
+        "bytes": 4918,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_2/mechanism_manifest.json",
+        "sha256": "17b74337fdc3c753ff7e61524a3810fe512c7e96c83a6201c22340a1b07d3853"
+      },
+      "metrics": {
+        "bytes": 9287,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_2/generate/metrics_final.json",
+        "sha256": "b6cb3ad04aea484efa588803ccc89388e34252ede2e2e9288c4ea2151b62c3d9"
+      },
+      "privacy": {
+        "accounting": "zcdp_actual_spend_v1",
+        "delta": 1e-09,
+        "entries": [
+          {
+            "label": "full_static_ice_exact",
+            "mechanism": "gaussian_hierarchical_orthogonal_vectors",
+            "public_metadata": {
+              "adjacency": "add_remove",
+              "allocation": "public_optimal",
+              "num_blocks": 120,
+              "num_pairs": 105
+            },
+            "rho": 0.0010779477762902546
+          }
+        ],
+        "epsilon_from_actual_spend": 0.2999999999999975,
+        "rho_limit": 0.0010779477762902546,
+        "rho_remaining": 0.0,
+        "rho_spent": 0.0010779477762902546
+      },
+      "relative_path": "adult/epsilon_0.3/seed_2",
+      "runtime": {
+        "bytes": 9408,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_2/generate/runtime.json",
+        "sha256": "dc349d3f067e29105eab9a8b9fa50b07be7d7c1be1fd503e022eacd3226ec9c2"
+      },
+      "seed": 2,
+      "synthetic": {
+        "bytes": 2713448,
+        "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.3/seed_2/generate/synthetic_encoded.npy",
+        "sha256": "6b25a0c92712fc8aebe97911896cab537947ea8b763dc9b08fc31f529a77b50a"
+      }
+    }
+  ],
+  "method_id": "SAGE-QDTE-Static-ICE-Exact-v1",
+  "num_cells": 24,
+  "offline_evaluation_authorized": true,
+  "panel_plan": {
+    "bytes": 24947,
+    "path": "outputs/static_ice_wp9_formal_20260715/panel_plan.json",
+    "sha256": "493cdac13729c1e3388b7b08fd0e3f3ebb38ceea3e1fdd7c5bd559f6b8e528cd"
+  },
+  "protocol_id": "SAGE-QDTE-ICE-WP9-STATIC-CONFIRMATION-20260715-v1",
+  "true_utility_evaluated": false
+}

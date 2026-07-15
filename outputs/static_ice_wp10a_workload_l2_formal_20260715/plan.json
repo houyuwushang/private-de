@@ -1,0 +1,101 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "f32af3bb7bbcab8929157daca5be6f0ffe38bb7f7f7c11daede95c18d87ecfa4"
+  },
+  "artifact_role": "frozen_pre_generation_workload_allocation_plan",
+  "candidate_method_id": "SAGE-QDTE-Static-ICE-WorkloadL2-v1",
+  "control": {
+    "initial": {
+      "bytes": 2713448,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/synthetic_initial_encoded.npy",
+      "sha256": "904bf6058e9f7eb5aa4aa630e79f0210e8ffeb6934ff4b24c457dcbc66dfd2c8"
+    },
+    "manifest": {
+      "bytes": 4924,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/mechanism_manifest.json",
+      "sha256": "e2f409f9505c8c5b0a2091f791977084978a5f9c28b38a6a964e7befe1caf18f"
+    },
+    "measurement": {
+      "bytes": 1783099,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/measurement/measurements.json",
+      "sha256": "1bf3ccf080f62437f300d1c895dadfcc13c79f96d64d7188672c184b49132c7a"
+    },
+    "metrics": {
+      "bytes": 9272,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/metrics_final.json",
+      "sha256": "c691edfc23cb24b30bcb1c1898aaf806cc6d414387b4a37e4d9b4c734805ba81"
+    },
+    "runtime": {
+      "bytes": 9794,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/runtime.json",
+      "sha256": "786e31dc7f1c81b3d1fee2f5df2cfde7356cb345500424d0b82397c3d179f908"
+    },
+    "synthetic": {
+      "bytes": 2713448,
+      "path": "outputs/static_ice_wp9_formal_20260715/adult/epsilon_0.1/seed_0/generate/synthetic_encoded.npy",
+      "sha256": "14b67e931feaf93a3c6f5cf33ccad43bd76ecb74d1c49f38e22df57e8db93b06"
+    }
+  },
+  "dataset": "adult",
+  "declared_dataset": "adult_sage_strong",
+  "delta": 1e-09,
+  "epsilon": 0.1,
+  "offline_evaluator_batch_size": 8192,
+  "protocol_id": "SAGE-QDTE-ICE-WP10A-WORKLOAD-ALLOCATION-20260715-v1",
+  "public_input_dir": "external_inputs/adult_sage_strong",
+  "seed": 0,
+  "sources": {
+    "config": {
+      "bytes": 2809,
+      "path": "configs/adult_sage_strong.yaml",
+      "sha256": "b02f11f7055fb3a9c250857dda5e2127aa2a2e14ea7a32141ee0192f75fc366a"
+    },
+    "evaluator": {
+      "bytes": 7136,
+      "path": "scripts/evaluate_static_ice_wp10a_workload_allocation.py",
+      "sha256": "1d7495fb0a88012c2195aaffd7c1f7d5ee6b8653b33b3d86ed4e870e1f71a058"
+    },
+    "factorization": {
+      "bytes": 22773,
+      "path": "qdte/measurement/factorization.py",
+      "sha256": "bc8f5059f4dfd4b3c598012c717d183fe0290757441ff374cc42a83476f53419"
+    },
+    "protocol": {
+      "bytes": 4569,
+      "path": "docs/SAGE_QDTE_ICE_WP10A_WORKLOAD_ALLOCATION_PROTOCOL_20260715.md",
+      "sha256": "9de5118328703f44b52cafb816867d54618e1d38f1e28080b1e95455fb3e6d10"
+    },
+    "public_groups": {
+      "bytes": 392472,
+      "path": "external_inputs/adult_sage_strong/workload_groups.json",
+      "sha256": "19c25ddfd451dbacf3da00220f966da6a102e08120dc3dfdb0346cd66e18d686"
+    },
+    "public_metadata": {
+      "bytes": 2957,
+      "path": "external_inputs/adult_sage_strong/metadata.json",
+      "sha256": "6955b6f0fa4f0e619a2e94492cfb1001cf8845e5d88e8d02ca3eb81fbb4876d4"
+    },
+    "public_queries": {
+      "bytes": 12437719,
+      "path": "external_inputs/adult_sage_strong/queries_full.json",
+      "sha256": "04a9c35ff742c989622879e9ef0833167e307de58d5e2ee767acf43b808a9af3"
+    },
+    "public_schema": {
+      "bytes": 8668,
+      "path": "external_inputs/adult_sage_strong/schema.json",
+      "sha256": "5422f4b3a59272c0d3bdcf91cdcc491550c2b8713b87d28ca46c2a3055e6edc5"
+    },
+    "runner": {
+      "bytes": 22886,
+      "path": "scripts/run_static_ice_wp10a_workload_allocation.py",
+      "sha256": "db516564e7cfe864ef6855876092fac0723dffb0c62e649eb805d4c5bbacd422"
+    },
+    "workload_factorization": {
+      "bytes": 8990,
+      "path": "qdte/measurement/workload_factorization.py",
+      "sha256": "403c16cc076e9667e32c34b883adb7532c0003d9c2b81d5a1a2ade48ba8d3d4e"
+    }
+  },
+  "true_utility_evaluated": false
+}

@@ -1,0 +1,13 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "6e0162664cd92361c47fbd68c0d6b0cbc25db506ada96e250f6ce26168bcf7d5"
+  },
+  "confidence_stop_iteration": null,
+  "confidence_stop_triggered": false,
+  "final_measured_loss": 2828.679698646266,
+  "final_optimization_objective": 1851.3377276206083,
+  "num_iterations": 5000,
+  "seed": 3266491600,
+  "status": "completed"
+}

@@ -1,0 +1,126 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "2dd621a16555ce28005066865723bdd5bbc7815367b4afc3ae2c2a48d3f8c9c2"
+  },
+  "artifact_role": "sealed_same_transcript_rce_c1_cell",
+  "artifacts": {
+    "initial_table": {
+      "bytes": 2128128,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/generate_rce/synthetic_initial_encoded.npy",
+      "sha256": "b78ef272ec8207c5aea9aeb8aeb1ddf85ff8e0fb30986beaccf1c91de1d591dd"
+    },
+    "measurement": {
+      "bytes": 591919,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/generate_rce/measurements.json",
+      "sha256": "5941c3dde3b75d85771fab15b65431d24f9444f46c21b5cf9c6493b263f3bd19"
+    },
+    "metrics": {
+      "bytes": 13894,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/generate_rce/metrics_final.json",
+      "sha256": "f30932c038a0bab6cf0b35ca4d85266f0e7fa46f09fdef9b02324b77bfc73958"
+    },
+    "protocol": {
+      "bytes": 8527,
+      "path": "docs/SAGE_QDTE_RCE_C0_C1_PROTOCOL_20260715.md",
+      "sha256": "79967f63032e8240e9eb8ab7724292b7d37ee0ff05c6a94f05308277a777a4a8"
+    },
+    "public_transcript_manifest": {
+      "bytes": 1708,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/public_transcript/transcript_manifest.json",
+      "sha256": "bad09e2082606789bd805c0537c09f07451de6ce0cbbd67dd5de990d10b5e457"
+    },
+    "public_transcript_measurements": {
+      "bytes": 591919,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/public_transcript/measurements.json",
+      "sha256": "5941c3dde3b75d85771fab15b65431d24f9444f46c21b5cf9c6493b263f3bd19"
+    },
+    "public_transcript_queries": {
+      "bytes": 1395609,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/public_transcript/queries.json",
+      "sha256": "c9fc830239d3c363870b787e14e532c1228a9ab1b289708c61d7ab820085c945"
+    },
+    "public_transcript_schema": {
+      "bytes": 5784,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/public_transcript/schema.json",
+      "sha256": "16a09b06284c1ef2581a509876641981105a8725af686477f617d188ab808035"
+    },
+    "resolved_config": {
+      "bytes": 3404,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/generate_rce/config_resolved.yaml",
+      "sha256": "3dd5fdfc61d2bc2a6cef4c7d70050d9b5e015c32c94851e54c912f723020c53e"
+    },
+    "run_status": {
+      "bytes": 249,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/generate_rce/run_status.json",
+      "sha256": "7eb45717d18f548f593acf9cde19e173cbd0e93d574117b8a498ecb4bf17de3c"
+    },
+    "runtime": {
+      "bytes": 14472,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/generate_rce/runtime.json",
+      "sha256": "44e59d9bf82cf3b3878a841e06ec24948fcb2705d172f2899f21fbbff1b1f2b9"
+    },
+    "synthetic": {
+      "bytes": 2128128,
+      "path": "outputs/sage_qdte_rce_c1_v3_20260715/br2000/epsilon_0.3/seed_2/generate_rce/synthetic_encoded.npy",
+      "sha256": "74e4740535353cd5a89b1158c25e14c77c89b7e0b20d55ee75431f05d027fc4c"
+    }
+  },
+  "dataset": "br2000",
+  "declared_dataset": "br2000_sage_strong",
+  "epsilon": 0.3,
+  "generation_seed": 3521631631,
+  "iterations": 5000,
+  "measurement_seed": 315569013,
+  "mechanism_gate": {
+    "candidates_per_iteration": 4096,
+    "checks": {
+      "candidate_count": true,
+      "exact_raw_orthogonal_precision": true,
+      "finite_rce_certificate": true,
+      "initial_table_matches_control_bytewise": true,
+      "integer_certificate_kl_scaling": true,
+      "iteration_count": true,
+      "legacy_extensions_disabled": true,
+      "measurement_reused_bytewise": true,
+      "no_true_utility_emitted": true,
+      "public_transcript_matches_source_bytewise": true,
+      "public_transcript_sealed": true,
+      "rate_space_kl_scaling": true,
+      "rce_v1_active": true,
+      "source_wp9_gate_passed": true,
+      "transcript_only_process_isolation": true
+    },
+    "expected_candidates": 20480000,
+    "iterations": 5000,
+    "observed_candidates": 20480000,
+    "passed": true
+  },
+  "method_id": "SAGE-QDTE-RCE-v1",
+  "private_input_hashes_excluded": true,
+  "protocol_id": "SAGE-QDTE-RCE-C1-20260715-v3",
+  "seed": 2,
+  "source_control": {
+    "initial_table": {
+      "bytes": 2128128,
+      "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_2/generate/synthetic_initial_encoded.npy",
+      "sha256": "b78ef272ec8207c5aea9aeb8aeb1ddf85ff8e0fb30986beaccf1c91de1d591dd"
+    },
+    "manifest": {
+      "bytes": 4925,
+      "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_2/mechanism_manifest.json",
+      "sha256": "8491026538a2db7f250d88cf6bb36f166c83de2675a64b4f233a0e00cda921bd"
+    },
+    "measurement": {
+      "bytes": 591919,
+      "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_2/measurement/measurements.json",
+      "sha256": "5941c3dde3b75d85771fab15b65431d24f9444f46c21b5cf9c6493b263f3bd19"
+    },
+    "synthetic": {
+      "bytes": 2128128,
+      "path": "outputs/static_ice_wp9_formal_20260715/br2000/epsilon_0.3/seed_2/generate/synthetic_encoded.npy",
+      "sha256": "b7eb1c2d30d75be239e79545f7090ff8e56c3dda1cb4e8a8fd053fec6cfd14cb"
+    }
+  },
+  "true_utility_evaluated": false
+}

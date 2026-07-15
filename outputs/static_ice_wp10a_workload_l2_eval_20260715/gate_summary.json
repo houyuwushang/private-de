@@ -1,0 +1,56 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "8cd0a99d765a0d3c0f1efe609701e6a6a855ba57540fdc7a1581d8476c6f34c2"
+  },
+  "artifact_role": "offline_true_utility_development_gate",
+  "candidate_method_id": "SAGE-QDTE-Static-ICE-WorkloadL2-v1",
+  "candidate_metrics": {
+    "full_true_avg_tvd": 0.08152675283935713,
+    "full_true_mae": 0.0020627181483811726,
+    "full_true_max_error": 0.09269824421741629,
+    "full_true_max_tvd": 0.34752996329220287,
+    "full_true_rmse": 0.005053089981930876
+  },
+  "control_metrics": {
+    "full_true_avg_tvd": 0.08028343427510355,
+    "full_true_mae": 0.002116272301737555,
+    "full_true_max_error": 0.06819689531643891,
+    "full_true_max_tvd": 0.3464243067533501,
+    "full_true_rmse": 0.005202350224913436
+  },
+  "dataset": "adult",
+  "decision": "freeze_workload_l2_allocation",
+  "epsilon": 0.1,
+  "evaluator_id": "SAGE-QDTE-ICE-WP10A-EVALUATOR-20260715-v1",
+  "gate": {
+    "checks": {
+      "each_primary_at_most_1p05": true,
+      "each_tail_at_most_1p15": false,
+      "primary_composite_at_most_0p97": false
+    },
+    "metric_ratios": {
+      "full_true_avg_tvd": 1.015486614087698,
+      "full_true_mae": 0.974694110340899,
+      "full_true_max_error": 1.3592736705577169,
+      "full_true_max_tvd": 1.0031916251755393,
+      "full_true_rmse": 0.9713090744510491
+    },
+    "passed": false,
+    "primary_composite_ratio": 0.9869610118924077,
+    "thresholds": {
+      "primary_composite_max": 0.97,
+      "primary_metric_max": 1.05,
+      "tail_metric_max": 1.15
+    }
+  },
+  "protocol_id": "SAGE-QDTE-ICE-WP10A-WORKLOAD-ALLOCATION-20260715-v1",
+  "seed": 0,
+  "source_seal": {
+    "bytes": 6377,
+    "path": "outputs/static_ice_wp10a_workload_l2_formal_20260715/sealed_manifest.json",
+    "sha256": "b52f74f9aa0fb18be5fc62b01685f6fd431ff60f4ed3d4a0d9df3e5dc9ea6edb"
+  },
+  "true_utility_evaluated": true,
+  "utility_used_during_generation": false
+}
