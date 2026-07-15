@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from qdte.measurement.measure import _allocate_group_budgets, measure_real_dataset
+from qdte.privacy.accountant import zcdp_epsilon
 from qdte.queries.types import OP_EQ, QueryBuilder
 from qdte.queries.workload import WorkloadGroup
 
@@ -52,7 +53,16 @@ def test_measurement_noise_parameters() -> None:
     assert math.isclose(m.groups[0].noise_std, expected_sigma)
     assert np.allclose(m.variances, expected_sigma**2)
     assert math.isclose(m.rho_spent, 2.0)
+    assert math.isclose(m.epsilon_delta, zcdp_epsilon(m.rho_spent, m.delta))
     assert math.isclose(m.to_public_dict()["rho_spent"], 2.0)
+    ledger = m.to_public_dict()["privacy_ledger"]
+    assert ledger["accounting"] == "zcdp_actual_spend_v1"
+    assert ledger["accounting_version"] == "static_gaussian_vector_v1"
+    assert ledger["adjacency"] == "add_remove"
+    assert math.isclose(ledger["rho_spent"], 2.0)
+    assert math.isclose(ledger["epsilon_from_actual_spend"], m.epsilon_delta)
+    assert ledger["entries"][0]["mechanism"] == "gaussian_vector"
+    assert ledger["entries"][0]["public_metadata"]["sensitivity_l2"] == 1.0
     assert not hasattr(m, "true_answers_debug")
     assert "true_answers_debug" not in m.to_public_dict()
 
@@ -105,6 +115,8 @@ def test_oracle_measurement_is_exact() -> None:
     cfg = {"privacy": {"mode": "oracle"}, "projection": {"project_partitions": False}}
     m = measure_real_dataset(X, qcat, [group], cfg, np.random.default_rng(0), batch_size=4)
     assert m.target_noisy.tolist() == [2.0, 2.0]
+    assert m.rho_spent == 0.0
+    assert m.epsilon_delta == 0.0
 
 
 def test_dp_measurement_requires_public_cardinalities() -> None:
@@ -118,6 +130,42 @@ def test_dp_measurement_requires_public_cardinalities() -> None:
 
     with pytest.raises(ValueError, match="public schema cardinalities"):
         measure_real_dataset(X, qcat, [group], cfg, np.random.default_rng(0), batch_size=2)
+
+
+def test_dp_release_measurement_requires_matching_numeric_public_row_count() -> None:
+    builder = QueryBuilder(max_terms=1)
+    builder.add([(0, OP_EQ, 0, 0, 0)], "a=0", "oneway:0", "oneway")
+    builder.add([(0, OP_EQ, 1, 1, 1)], "a=1", "oneway:0", "oneway")
+    qcat = builder.build()
+    group = WorkloadGroup(
+        "oneway:0",
+        "oneway",
+        np.asarray([0, 1], dtype=np.int32),
+        1.0,
+        True,
+    )
+    X = np.asarray([[0], [1]], dtype=np.int32)
+    cfg = {
+        "privacy": {
+            "mode": "dp",
+            "rho_total": 1.0,
+            "dp_release_mode": True,
+            "public_n_rows": 3,
+            "adjacency": "add_remove",
+        },
+        "projection": {},
+    }
+
+    with pytest.raises(ValueError, match="does not match declared"):
+        measure_real_dataset(
+            X,
+            qcat,
+            [group],
+            cfg,
+            np.random.default_rng(0),
+            batch_size=2,
+            cardinalities=np.asarray([2], dtype=np.int32),
+        )
 
 
 def test_static_measurement_rejects_overlapping_or_missing_query_groups() -> None:

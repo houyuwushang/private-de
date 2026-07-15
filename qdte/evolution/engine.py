@@ -22,6 +22,12 @@ from qdte.eval.metrics import (
 )
 from qdte.eval.runtime import RuntimeStats
 from qdte.evolution.candidates import generate_candidates
+from qdte.evolution.confidence import ChiSquareDiscrepancyStop
+from qdte.evolution.entropy import (
+    AtomEntropyState,
+    EntropyDiscrepancyController,
+    ReleasedProductPrior,
+)
 from qdte.evolution.initialization import initialize_independent_oneway, split_run_rng_streams
 from qdte.evolution.gpu_candidates import (
     apply_edits_to_replicated_table,
@@ -32,22 +38,45 @@ from qdte.evolution.gpu_candidates import (
 from qdte.evolution.hybrid_candidates import (
     AdaptiveSwapAttributePolicy,
     candidate_unit_deltas,
+    candidate_unit_feature_deltas,
     generate_global_directed_swap_units,
     prepare_hybrid_score_context,
     score_candidate_units as score_hybrid_candidate_units,
     score_candidate_units_l1 as score_hybrid_candidate_units_l1,
+    score_candidate_units_precision,
 )
 from qdte.evolution.hybrid_transport import (
     apply_candidate_units as apply_hybrid_candidate_units,
     select_nonconflicting_candidate_units,
 )
+from qdte.evolution.interaction_cycles import (
+    INTERACTION_CYCLE_METHOD,
+    compile_interaction_cycle_candidates,
+)
+from qdte.evolution.precision import (
+    ActiveSetOrthogonalInteractionPrecision,
+    BootstrapDiagonalOrthogonalInteractionPrecision,
+    DiagonalPrecision,
+    OrthogonalInteractionPrecision,
+    PrecisionOperator,
+    ShrinkageAnalyticOrthogonalInteractionPrecision,
+)
+from qdte.measurement.covariance import (
+    ActiveSetCoefficientCovariance,
+    CoefficientBootstrapDiagonal,
+)
 from qdte.evolution.scheduler import debt_diagnostics, select_active_queries, update_query_debt_from_loss_vectors
 from qdte.evolution.scoring import (
     compute_deltas,
     compute_deltas_sparse,
+    prepare_orthogonal_precision_score_context,
     prepare_score_context,
     score_candidates,
+    score_candidates_active_set_orthogonal_precision_with_quadratic,
+    score_candidates_bootstrap_orthogonal_precision_with_quadratic,
     score_candidates_l1,
+    score_candidates_orthogonal_precision_with_quadratic,
+    score_candidates_precision,
     score_candidates_sparse,
     score_candidates_target_only,
 )
@@ -56,6 +85,7 @@ from qdte.evolution.transport import (
     apply_edits,
     batch_advantage,
     batch_advantage_l1,
+    batch_advantage_precision,
     choose_atom_flow_batch_transport,
     choose_atom_flow_transport,
     choose_blind_transport,
@@ -69,6 +99,17 @@ from qdte.evolution.transport import (
     select_top_nonconflicting,
 )
 from qdte.measurement.measure import _apply_configured_projection, measure_real_dataset, measurements_from_public_dict
+from qdte.measurement.factorization import HierarchicalInteractionTranscript
+from qdte.measurement.interaction_adapter import (
+    interaction_transcript_to_shrunk_measurements,
+    local_polytope_projection_to_query_target,
+)
+from qdte.measurement.local_polytope import project_hierarchical_local_polytope
+from qdte.measurement.public_artifact import verify_public_transcript
+from qdte.measurement.shrinkage import (
+    positive_part_block_james_stein,
+    validate_frozen_shrinkage_artifact,
+)
 from qdte.measurement.fission import (
     FissionCheckpointSelection,
     GaussianFissionSplit,
@@ -529,12 +570,15 @@ def _optimization_objective_value(
     objective_loss: str,
     inv_variance: np.ndarray,
     objective_loss_weights: np.ndarray,
+    precision_operator: PrecisionOperator | None = None,
 ) -> float:
     if str(objective_loss).lower() == "tvd_l1":
         return float(
             np.abs(residual.astype(np.float64))
             @ objective_loss_weights.astype(np.float64)
         )
+    if precision_operator is not None:
+        return precision_operator.loss(residual)
     return measured_loss(residual, inv_variance)
 
 
@@ -1106,6 +1150,7 @@ def _write_timeseries(rows: list[dict[str, Any]], path: Path) -> None:
 def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     validate_config(config)
     run_cfg = config.get("run", {})
+    privacy_cfg = config.get("privacy", {})
     qdte_cfg = config.get("qdte", {})
     measurement_cfg = config.get("measurement", {})
     runtime_cfg = config.get("runtime", {})
@@ -1126,32 +1171,103 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     log(f"Output dir: {output_dir}")
     log(f"JAX devices: {jax.devices()}")
 
-    preprocess_result = load_and_preprocess_csv(config)
-    X_real = preprocess_result.X
-    schema = preprocess_result.schema
-    n_real = int(X_real.shape[0])
-    if n_real <= 0 or schema.d <= 0:
-        raise ValueError("Input data must contain at least one row and one column")
-    schema.save_json(output_dir / "schema.json")
-    log(f"Loaded real data: rows={X_real.shape[0]}, cols={X_real.shape[1]}")
-
+    dp_release_mode = bool(privacy_cfg.get("dp_release_mode", False))
     reuse_path = _measurement_reuse_path(config)
-    if _reuse_workload_from_measurement(config):
-        if reuse_path is None:
-            raise ValueError("workload.reuse_from_measurement requires measurement.reuse_from")
-        query_path = reuse_path / "queries.json" if reuse_path.is_dir() else reuse_path.parent / "queries.json"
-        if not query_path.exists():
-            raise FileNotFoundError(f"workload.reuse_from_measurement could not find queries.json near {reuse_path}")
-        qcat = QueryCatalogue.from_dict(read_json(query_path))
+    transcript_only_generation = bool(run_cfg.get("transcript_only_generation", False))
+    preprocess_result = None
+    X_real: np.ndarray | None = None
+    preloaded_measurements = None
+    transcript_verify_seconds = 0.0
+    if transcript_only_generation:
+        if reuse_path is None or not reuse_path.is_dir():
+            raise ValueError(
+                "Transcript-only generation requires measurement.reuse_from to be a "
+                "public transcript directory"
+            )
+        t0 = time.perf_counter()
+        verified_transcript = verify_public_transcript(reuse_path)
+        transcript_verify_seconds = time.perf_counter() - t0
+        schema = verified_transcript.schema
+        qcat = verified_transcript.queries
+        preloaded_measurements = verified_transcript.measurements
         workload_groups = _load_reused_workload_groups(reuse_path, qcat)
-        log(f"Reused workload from measurement artifact: queries={qcat.m}, groups={len(workload_groups)}")
+        public_schema_path = verified_transcript.root / "schema.json"
+        public_n_rows = int(privacy_cfg["public_n_rows"])
+        if public_n_rows != int(preloaded_measurements.num_rows):
+            raise ValueError(
+                "Configured public row count does not match the sealed transcript: "
+                f"config={public_n_rows}, transcript={preloaded_measurements.num_rows}"
+            )
+        configured_schema = TableSchema.load_json(
+            Path(str(config.get("preprocess", {})["public_schema_json"]))
+        )
+        if configured_schema.to_dict() != schema.to_dict():
+            raise ValueError(
+                "Configured public schema does not match the sealed transcript schema"
+            )
+        if not np.isclose(
+            float(privacy_cfg.get("rho_total", float("nan"))),
+            float(preloaded_measurements.rho_total),
+            rtol=1.0e-10,
+            atol=1.0e-12,
+        ):
+            raise ValueError(
+                "Configured privacy.rho_total does not match the sealed transcript"
+            )
+        if not np.isclose(
+            float(privacy_cfg.get("delta", float("nan"))),
+            float(preloaded_measurements.delta),
+            rtol=0.0,
+            atol=0.0,
+        ):
+            raise ValueError("Configured privacy.delta does not match the sealed transcript")
+        n_real = public_n_rows
+        mechanism_num_rows = public_n_rows
+        log(
+            "Loaded sealed public transcript without private rows: "
+            f"rows={public_n_rows}, cols={schema.d}, queries={qcat.m}, "
+            f"groups={len(workload_groups)}"
+        )
     else:
-        qcat, workload_groups = build_workload(schema, config)
-        log(f"Constructed workload: queries={qcat.m}, groups={len(workload_groups)}")
+        preprocess_result = load_and_preprocess_csv(config)
+        X_real = preprocess_result.X
+        schema = preprocess_result.schema
+        public_schema_path = preprocess_result.public_schema_path
+        n_real = int(X_real.shape[0])
+        if n_real <= 0 or schema.d <= 0:
+            raise ValueError("Input data must contain at least one row and one column")
+        if dp_release_mode:
+            public_n_rows = int(privacy_cfg["public_n_rows"])
+            if n_real != public_n_rows:
+                raise ValueError(
+                    "Private input row count does not match declared privacy.public_n_rows: "
+                    f"input={n_real}, public={public_n_rows}"
+                )
+            mechanism_num_rows = public_n_rows
+        else:
+            public_n_rows = None
+            mechanism_num_rows = n_real
+        log(f"Loaded real data: rows={X_real.shape[0]}, cols={X_real.shape[1]}")
+        if public_schema_path is not None:
+            log(f"Encoded input using public schema: {public_schema_path}")
+
+        if _reuse_workload_from_measurement(config):
+            if reuse_path is None:
+                raise ValueError("workload.reuse_from_measurement requires measurement.reuse_from")
+            query_path = reuse_path / "queries.json" if reuse_path.is_dir() else reuse_path.parent / "queries.json"
+            if not query_path.exists():
+                raise FileNotFoundError(f"workload.reuse_from_measurement could not find queries.json near {reuse_path}")
+            qcat = QueryCatalogue.from_dict(read_json(query_path))
+            workload_groups = _load_reused_workload_groups(reuse_path, qcat)
+            log(f"Reused workload from measurement artifact: queries={qcat.m}, groups={len(workload_groups)}")
+        else:
+            qcat, workload_groups = build_workload(schema, config)
+            log(f"Constructed workload: queries={qcat.m}, groups={len(workload_groups)}")
     if qcat.m <= 0:
         raise ValueError("Configured workload produced no queries")
     schema.validate()
     qcat.validate(schema.cardinalities)
+    schema.save_json(output_dir / "schema.json")
     qcat.save_json(output_dir / "queries.json")
     workload_summary = _workload_summary(qcat, workload_groups, schema, config)
     compute_heldout_eval = bool(evaluation_cfg.get("compute_heldout_query_error", False))
@@ -1187,7 +1303,14 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             f"removed_measured_duplicates={num_removed_as_measured_duplicates}"
         )
 
-    if reuse_path is not None:
+    if transcript_only_generation:
+        if preloaded_measurements is None:
+            raise RuntimeError("Internal error: verified public transcript was not retained")
+        measurements = preloaded_measurements
+        stats.time_measurement_seconds = transcript_verify_seconds
+        measurement_json_path = _measurement_json_path(reuse_path)
+        log(f"Verified and reused sealed public measurement artifact from {measurement_json_path}")
+    elif reuse_path is not None:
         t0 = time.perf_counter()
         _validate_reused_queries(reuse_path, qcat)
         _validate_reused_schema(reuse_path, schema)
@@ -1200,14 +1323,16 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 "measurement.reuse_from target length mismatch: "
                 f"artifact has {measurements.target_projected.shape[0]}, current workload has {qcat.m}"
             )
-        if measurements.num_rows is not None and int(measurements.num_rows) != n_real:
+        if measurements.num_rows is not None and int(measurements.num_rows) != mechanism_num_rows:
             raise ValueError(
                 "measurement.reuse_from row-count mismatch: "
-                f"artifact has {measurements.num_rows}, current data has {n_real}"
+                f"artifact has {measurements.num_rows}, expected public total is {mechanism_num_rows}"
             )
         stats.time_measurement_seconds = time.perf_counter() - t0
         log(f"Reused measurement artifact from {measurement_json_path}")
     else:
+        if X_real is None:
+            raise RuntimeError("Internal error: private measurement requires an encoded input table")
         t0 = time.perf_counter()
         measurements = measure_real_dataset(
             X_real,
@@ -1253,6 +1378,256 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 f"Measurement group {group.name}: family={group.family}, queries={len(group.query_indices)}, "
                 f"sensitivity_l2={group.sensitivity_l2:.6g}, rho={group.rho:.6g}, noise_std={group.noise_std:.6g}"
             )
+
+    precision_operator_name = str(qdte_cfg.get("precision_operator", "diagonal")).lower()
+    optimization_precision: PrecisionOperator | None = None
+    precision_extra_diagnostics: dict[str, Any] = {}
+    if precision_operator_name in {
+        "orthogonal_interaction",
+        "orthogonal_interaction_shrink_raw",
+        "orthogonal_interaction_shrink_analytic",
+        "orthogonal_interaction_p3_raw",
+        "orthogonal_interaction_p3_bootdiag",
+        "orthogonal_interaction_p3_active_set",
+    }:
+        if measurements.strategy_transcript is None:
+            raise ValueError(
+                "orthogonal interaction precision requires a released strategy_transcript "
+                "in the measurement artifact"
+            )
+        interaction_transcript = HierarchicalInteractionTranscript.from_public_dict(
+            measurements.strategy_transcript
+        )
+        if interaction_transcript.strategy.cardinalities != tuple(
+            int(value) for value in schema.cardinalities.tolist()
+        ):
+            raise ValueError("Interaction transcript cardinalities do not match the public schema")
+        if interaction_transcript.public_total != mechanism_num_rows:
+            raise ValueError("Interaction transcript public_total does not match the declared row count")
+        if not np.isclose(
+            interaction_transcript.rho_spent,
+            measurements.rho_spent,
+            rtol=1.0e-10,
+            atol=1.0e-12,
+        ):
+            raise ValueError("Interaction transcript rho ledger does not match the measurement artifact")
+        if precision_operator_name == "orthogonal_interaction":
+            target_difference = float(
+                np.max(
+                    np.abs(
+                        measurements.target_projected.astype(np.float64)
+                        - measurements.target_noisy.astype(np.float64)
+                    )
+                )
+            )
+            if target_difference > 1.0e-7:
+                raise ValueError(
+                    "orthogonal_interaction precision requires target_projected to be the raw "
+                    "hierarchical reconstruction"
+                )
+            optimization_precision = OrthogonalInteractionPrecision(
+                qcat,
+                workload_groups,
+                interaction_transcript,
+            )
+            log(
+                "Loaded exact orthogonal interaction precision: "
+                f"rank={optimization_precision.diagnostics()['effective_rank']}, "
+                f"dimension={optimization_precision.dimension}"
+            )
+        elif precision_operator_name in {
+            "orthogonal_interaction_shrink_raw",
+            "orthogonal_interaction_shrink_analytic",
+        }:
+            shrinkage_payload = (measurements.projection_diagnostics or {}).get(
+                "interaction_shrinkage"
+            )
+            shrinkage = positive_part_block_james_stein(interaction_transcript)
+            validate_frozen_shrinkage_artifact(shrinkage, shrinkage_payload)
+            expected_measurements, _ = interaction_transcript_to_shrunk_measurements(
+                interaction_transcript,
+                qcat,
+                workload_groups,
+                delta=float(measurements.delta),
+            )
+            if not np.array_equal(
+                measurements.target_projected,
+                expected_measurements.target_projected,
+            ):
+                target_difference = float(
+                    np.max(
+                        np.abs(
+                            measurements.target_projected.astype(np.float64)
+                            - expected_measurements.target_projected.astype(np.float64)
+                        )
+                    )
+                )
+                raise ValueError(
+                    "Interaction shrinkage target does not match the deterministic released "
+                    f"post-processing result; max_abs_difference={target_difference:.6g}"
+                )
+            if not np.array_equal(measurements.target_noisy, expected_measurements.target_noisy):
+                raise ValueError("Interaction shrinkage artifact changed the raw released target")
+            if precision_operator_name == "orthogonal_interaction_shrink_raw":
+                optimization_precision = OrthogonalInteractionPrecision(
+                    qcat,
+                    workload_groups,
+                    interaction_transcript,
+                )
+                uncertainty_status = "raw_covariance_control_not_propagated"
+            else:
+                if not shrinkage.analytic_stable:
+                    raise ValueError(
+                        "Interaction shrinkage is too close to a positive-part kink for the "
+                        "frozen analytic covariance profile"
+                    )
+                optimization_precision = ShrinkageAnalyticOrthogonalInteractionPrecision(
+                    qcat,
+                    workload_groups,
+                    interaction_transcript,
+                    shrinkage,
+                )
+                uncertainty_status = "local_shrinkage_jacobian_covariance"
+            precision_extra_diagnostics = {
+                "interaction_shrinkage": shrinkage.diagnostics(),
+                "uncertainty_status": uncertainty_status,
+            }
+            log(
+                "Loaded deterministic interaction shrinkage target: "
+                f"precision={precision_operator_name}, "
+                f"affected_blocks={shrinkage.diagnostics()['num_affected_pair_blocks']}, "
+                f"factor_min={shrinkage.diagnostics()['factor_min']:.6g}, "
+                f"rank={optimization_precision.diagnostics()['effective_rank']}"
+            )
+        else:
+            p3_projection = project_hierarchical_local_polytope(interaction_transcript)
+            expected_target = local_polytope_projection_to_query_target(
+                p3_projection,
+                qcat,
+                workload_groups,
+            ).astype(np.float32)
+            if not np.array_equal(measurements.target_projected, expected_target):
+                target_difference = float(
+                    np.max(
+                        np.abs(
+                            measurements.target_projected.astype(np.float64)
+                            - expected_target.astype(np.float64)
+                        )
+                    )
+                )
+                raise ValueError(
+                    "P3 active-set precision target does not match the certified released "
+                    f"local-polytope projection; max_abs_difference={target_difference:.6g}"
+                )
+            if precision_operator_name == "orthogonal_interaction_p3_raw":
+                optimization_precision = OrthogonalInteractionPrecision(
+                    qcat,
+                    workload_groups,
+                    interaction_transcript,
+                )
+                precision_extra_diagnostics = {
+                    "local_polytope_p3": dict(p3_projection.diagnostics),
+                    "uncertainty_status": "raw_covariance_control_not_propagated",
+                }
+                log(
+                    "Loaded certified P3 target with raw orthogonal covariance control: "
+                    f"rank={optimization_precision.diagnostics()['effective_rank']}, "
+                    f"dimension={optimization_precision.dimension}"
+                )
+                active_covariance = None
+            elif precision_operator_name == "orthogonal_interaction_p3_bootdiag":
+                uncertainty = measurements.projection_diagnostics or {}
+                bootstrap_payload = uncertainty.get("coefficient_bootstrap_diagonal")
+                if not isinstance(bootstrap_payload, dict):
+                    raise ValueError(
+                        "P3 coefficient BootDiag precision requires its released bootstrap artifact"
+                    )
+                coefficient_bootstrap = CoefficientBootstrapDiagonal.from_public_dict(
+                    interaction_transcript,
+                    bootstrap_payload,
+                )
+                bootstrap_diagnostics = coefficient_bootstrap.diagnostics
+                frozen_bootstrap = bool(
+                    bootstrap_diagnostics.get("method")
+                    == "coefficient_space_local_polytope_bootstrap_diagonal"
+                    and int(bootstrap_diagnostics.get("num_samples", 0)) == 16
+                    and bootstrap_diagnostics.get("center") == "projected"
+                    and bootstrap_diagnostics.get("debias_target") is False
+                    and np.isclose(
+                        float(bootstrap_diagnostics.get("min_variance", float("nan"))),
+                        1.0e-6,
+                    )
+                    and np.isclose(
+                        float(
+                            bootstrap_diagnostics.get(
+                                "min_raw_variance_fraction",
+                                float("nan"),
+                            )
+                        ),
+                        0.02,
+                    )
+                )
+                if not frozen_bootstrap:
+                    raise ValueError("P3 coefficient BootDiag artifact violates the frozen B=16 profile")
+                optimization_precision = BootstrapDiagonalOrthogonalInteractionPrecision(
+                    qcat,
+                    workload_groups,
+                    interaction_transcript,
+                    coefficient_bootstrap,
+                )
+                precision_extra_diagnostics = {
+                    "local_polytope_p3": dict(p3_projection.diagnostics),
+                    "coefficient_bootstrap_diagonal": dict(bootstrap_diagnostics),
+                }
+                log(
+                    "Loaded certified P3 coefficient BootDiag16 precision: "
+                    f"rank={optimization_precision.diagnostics()['effective_rank']}, "
+                    f"dimension={optimization_precision.dimension}"
+                )
+                active_covariance = None
+            else:
+                active_covariance = ActiveSetCoefficientCovariance(
+                    interaction_transcript,
+                    p3_projection,
+                )
+            if active_covariance is None:
+                covariance_diagnostics = None
+            else:
+                covariance_diagnostics = active_covariance.diagnostics()
+            if active_covariance is None:
+                pass
+            elif bool(covariance_diagnostics["bootdiag_fallback_recommended"]):
+                raise ValueError(
+                    "P3 active set is numerically unstable; use coefficient-space BootDiag "
+                    "instead of analytic active-set precision"
+                )
+            else:
+                covariance_certificate = active_covariance.certificate(
+                    num_probes=(
+                        3
+                        if covariance_diagnostics["application_mode"] == "dense_svd_reference"
+                        else 1
+                    ),
+                    tolerance=2.0e-7,
+                )
+                if not covariance_certificate.passed:
+                    raise RuntimeError("P3 active-set covariance failed its operator certificate")
+                optimization_precision = ActiveSetOrthogonalInteractionPrecision(
+                    qcat,
+                    workload_groups,
+                    interaction_transcript,
+                    active_covariance,
+                )
+                precision_extra_diagnostics = {
+                    "local_polytope_p3": dict(p3_projection.diagnostics),
+                    "active_set_covariance_certificate": covariance_certificate.to_dict(),
+                }
+                log(
+                    "Loaded certified P3 active-set orthogonal precision: "
+                    f"active={covariance_diagnostics['active_constraint_count']}, "
+                    f"rank={covariance_diagnostics['effective_rank']}, "
+                    f"dimension={optimization_precision.dimension}"
+                )
 
     fission_cfg = measurement_cfg.get("fission", {}) or {}
     fission_enabled = bool(fission_cfg.get("enabled", False))
@@ -1303,7 +1678,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             optimization_noisy,
             qcat,
             measurements.groups,
-            n_real,
+            mechanism_num_rows,
             config.get("projection", {}),
             optimization_variance,
             schema.cardinalities,
@@ -1371,7 +1746,10 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         n_syn = int(X_syn.shape[0])
         log(f"Initialized synthetic table from {init_encoded_npy}: rows={n_syn}, cols={schema.d}")
     else:
-        n_syn = _resolve_n_syn(init_cfg.get("N_syn", "same_as_real"), n_real)
+        n_syn = _resolve_n_syn(
+            init_cfg.get("N_syn", "same_as_real"),
+            mechanism_num_rows,
+        )
         X_syn = initialize_independent_oneway(qcat, generation_target_projected, schema, n_syn, generation_rng)
     save_npy(X_syn, output_dir / "synthetic_initial_encoded.npy")
     answer_syn = answer_queries(X_syn, qcat, batch_size=int(runtime_cfg.get("answer_batch_size", 8192)))
@@ -1398,6 +1776,17 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     inv_variance = (
         inv_variance * objective_query_weight_multipliers
     ).astype(np.float32)
+    if (
+        optimization_precision is None
+        and str(qdte_cfg.get("score_backend", "dense_gpu")) == "precision_operator"
+    ):
+        optimization_precision = DiagonalPrecision(inv_variance)
+    precision_diagnostics = (
+        optimization_precision.diagnostics()
+        if optimization_precision is not None
+        else DiagonalPrecision(inv_variance).diagnostics()
+    )
+    precision_diagnostics.update(precision_extra_diagnostics)
     state = QDTEState(
         X_syn=X_syn,
         answer_syn=answer_syn.astype(np.float32),
@@ -1415,6 +1804,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         f"{objective_weighting}; "
         f"weight_profile={objective_weight_profile}; "
         f"objective_loss={objective_loss}; "
+        f"precision_operator={precision_operator_name}; "
         f"objective_variance_mean={float(np.mean(state.variance)):.6g}; "
         f"objective_loss_weight_mean={float(np.mean(objective_loss_weights)):.6g}; "
         f"measurement_variance_mean={float(np.mean(measurement_variance)):.6g}"
@@ -1427,7 +1817,108 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         objective_loss,
         state.inv_variance,
         objective_loss_weights,
+        optimization_precision,
     )
+    confidence_stop_cfg = qdte_cfg.get("confidence_stop", {}) or {}
+    confidence_stop: ChiSquareDiscrepancyStop | None = None
+    if bool(confidence_stop_cfg.get("enabled", False)):
+        if not isinstance(optimization_precision, OrthogonalInteractionPrecision):
+            raise ValueError(
+                "chi-square confidence stopping requires exact orthogonal interaction precision"
+            )
+        confidence_stop = ChiSquareDiscrepancyStop.create(
+            alpha=float(confidence_stop_cfg.get("alpha", 0.05)),
+            effective_rank=int(precision_diagnostics["effective_rank"]),
+        )
+        log(
+            "Enabled released-only chi-square confidence stop: "
+            f"alpha={confidence_stop.alpha:.6g}, "
+            f"rank={confidence_stop.effective_rank}, "
+            f"objective_threshold={confidence_stop.objective_threshold:.6g}"
+        )
+    confidence_stop_initial_reached = bool(
+        confidence_stop is not None
+        and confidence_stop.reached(initial_optimization_objective)
+    )
+    confidence_stop_triggered = confidence_stop_initial_reached
+    confidence_stop_iteration: int | None = 0 if confidence_stop_initial_reached else None
+    confidence_stop_objective_at_trigger: float | None = (
+        float(initial_optimization_objective) if confidence_stop_initial_reached else None
+    )
+    if confidence_stop_initial_reached:
+        log(
+            "Initial synthetic table already satisfies the released confidence set: "
+            f"objective={initial_optimization_objective:.6g}, "
+            f"threshold={confidence_stop.objective_threshold:.6g}"
+        )
+    entropy_cfg = qdte_cfg.get("entropy", {}) or {}
+    entropy_enabled = bool(entropy_cfg.get("enabled", False))
+    entropy_prior: ReleasedProductPrior | None = None
+    entropy_state: AtomEntropyState | None = None
+    entropy_controller: EntropyDiscrepancyController | None = None
+    initial_entropy_regularizer = 0.0
+    initial_regularized_objective = initial_optimization_objective
+    if entropy_enabled:
+        if precision_operator_name != "orthogonal_interaction" or not isinstance(
+            optimization_precision,
+            OrthogonalInteractionPrecision,
+        ):
+            raise ValueError(
+                "The first entropy profile requires unshrunk exact orthogonal interaction precision"
+            )
+        if objective_loss != "quadratic" or str(qdte_cfg.get("score_backend")) != "precision_operator":
+            raise ValueError("Entropy requires quadratic precision-operator scoring")
+        if str(qdte_cfg.get("transport_mode")) != "atom_flow" or str(
+            qdte_cfg.get("atom_flow_update_mode", "batch")
+        ) != "batch":
+            raise ValueError("Entropy requires atom_flow transport with batch updates")
+        if bool(qdte_cfg.get("structured_swap_enabled", False)):
+            raise ValueError("The first entropy profile does not support structured swaps")
+        if str(qdte_cfg.get("candidate_backend", "cpu_repair")) != "cpu_repair":
+            raise ValueError("The first entropy profile requires the cpu_repair candidate backend")
+        if fission_enabled:
+            raise ValueError("The first entropy profile does not compose Gaussian fission")
+        if confidence_stop is not None:
+            raise ValueError("Entropy uses its own confidence controller; disable confidence_stop")
+        if not bool(qdte_cfg.get("allow_below_noise_fallback", False)):
+            raise ValueError(
+                "Entropy requires allow_below_noise_fallback=true to search within the confidence set"
+            )
+        smoothing = float(entropy_cfg.get("product_prior_smoothing", 1.0))
+        if not np.isclose(smoothing, 1.0, rtol=0.0, atol=0.0):
+            raise ValueError("The frozen first entropy profile requires product_prior_smoothing=1.0")
+        alpha = float(entropy_cfg.get("alpha", 0.05))
+        if not np.isclose(alpha, 0.05, rtol=0.0, atol=0.0):
+            raise ValueError("The frozen first entropy profile requires alpha=0.05")
+        dual_initial = float(entropy_cfg.get("dual_initial", 1.0))
+        if not np.isclose(dual_initial, 1.0, rtol=0.0, atol=0.0):
+            raise ValueError("The frozen first entropy profile requires dual_initial=1.0")
+        entropy_prior = ReleasedProductPrior.from_released_oneway(
+            qcat,
+            state.target,
+            schema.cardinalities,
+            public_total=mechanism_num_rows,
+            smoothing=smoothing,
+        )
+        entropy_state = AtomEntropyState.from_rows(state.X_syn, entropy_prior)
+        entropy_controller = EntropyDiscrepancyController.create(
+            alpha=alpha,
+            effective_rank=int(precision_diagnostics["effective_rank"]),
+            max_iterations=int(qdte_cfg.get("max_iters", 5000)),
+            dual_initial=dual_initial,
+        )
+        initial_entropy_regularizer = float(entropy_state.regularizer)
+        initial_regularized_objective = entropy_controller.regularized_objective(
+            initial_optimization_objective,
+            initial_entropy_regularizer,
+        )
+        log(
+            "Enabled confidence-constrained product entropy: "
+            f"regularizer={initial_entropy_regularizer:.6g}, "
+            f"kl_per_row={initial_entropy_regularizer / n_syn:.6g}, "
+            f"data_threshold={entropy_controller.objective_threshold:.6g}, "
+            f"dual={entropy_controller.dual_weight:.6g}"
+        )
     initial_unweighted_loss = unweighted_measured_loss(state.residual)
     initial_rms = rms_standardized_residual(initial_loss, qcat.m)
     initial_unweighted_rms = rms_unweighted_residual(state.residual)
@@ -1544,6 +2035,9 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     debt_cap = float(qdte_cfg.get("debt_cap", 1.0e6))
     min_advantage = float(qdte_cfg.get("min_advantage", 1.0e-6))
     structured_swap_enabled = bool(qdte_cfg.get("structured_swap_enabled", False))
+    structured_swap_compiler = str(
+        qdte_cfg.get("structured_swap_compiler", "global_random_v1")
+    )
     structured_swap_start_iter = max(1, int(qdte_cfg.get("structured_swap_start_iter", 1)))
     structured_swap_interval = max(1, int(qdte_cfg.get("structured_swap_interval", 10)))
     structured_swap_candidate_units = max(1, int(qdte_cfg.get("structured_swap_candidate_units", 2048)))
@@ -1577,6 +2071,25 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "qdte.structured_swap_delta_backend must be one of {'sparse_cpu', 'dense_gpu'}"
         )
+    if structured_swap_compiler not in {"global_random_v1", INTERACTION_CYCLE_METHOD}:
+        raise ValueError(
+            "qdte.structured_swap_compiler must be one of "
+            "{'global_random_v1', 'interaction_rectangle_v1'}"
+        )
+    if structured_swap_enabled and structured_swap_compiler == INTERACTION_CYCLE_METHOD:
+        if not isinstance(optimization_precision, OrthogonalInteractionPrecision):
+            raise ValueError(
+                "interaction_rectangle_v1 requires unshrunk exact orthogonal interaction precision"
+            )
+        if (
+            str(qdte_cfg.get("score_backend", "dense_gpu")) != "precision_operator"
+            or objective_loss != "quadratic"
+        ):
+            raise ValueError(
+                "interaction_rectangle_v1 requires quadratic precision-operator scoring"
+            )
+        if structured_swap_delta_backend != "sparse_cpu":
+            raise ValueError("interaction_rectangle_v1 requires sparse_cpu query deltas")
     transport_prefix_strategy = str(qdte_cfg.get("transport_prefix_strategy", "largest_positive"))
     stop_patience = int(qdte_cfg.get("stop_patience", 50))
     full_recompute_every = int(qdte_cfg.get("full_recompute_every", 50))
@@ -1604,7 +2117,21 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     gpu_candidate_context = prepare_gpu_candidate_context(qcat, schema, config) if use_gpu_candidate_backend else None
     dense_score_context = (
         prepare_score_context(qcat)
-        if (not use_gpu_candidate_backend and score_backend not in {"target_only", "sparse_delta"})
+        if (
+            not use_gpu_candidate_backend
+            and score_backend not in {"target_only", "sparse_delta", "precision_operator"}
+        )
+        else None
+    )
+    orthogonal_precision_score_context = (
+        prepare_orthogonal_precision_score_context(optimization_precision)
+        if isinstance(
+            optimization_precision,
+            (
+                OrthogonalInteractionPrecision,
+                ShrinkageAnalyticOrthogonalInteractionPrecision,
+            ),
+        )
         else None
     )
     structured_swap_score_context = prepare_hybrid_score_context(qcat) if structured_swap_enabled else None
@@ -1618,7 +2145,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             decay=structured_swap_policy_decay,
             prior_strength=structured_swap_policy_prior_strength,
         )
-        if structured_swap_enabled
+        if structured_swap_enabled and structured_swap_compiler == "global_random_v1"
         else None
     )
     structured_swap_rng = (
@@ -1637,6 +2164,12 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     structured_swap_total_accepted = 0
     structured_swap_total_noise_guard_rejections = 0
     structured_swap_total_objective_advantage = 0.0
+    structured_swap_compiler_calls = 0
+    structured_swap_total_positive_rectangles = 0
+    structured_swap_max_selected_scopes = 0
+    structured_swap_target_linear_gain_sum = 0.0
+    structured_swap_target_linear_gain_count = 0
+    structured_swap_last_compiler_diagnostics: dict[str, Any] = {}
     structured_swap_max_effective_noise_guard_kappa = structured_swap_noise_guard_kappa
     structured_swap_time_seconds = 0.0
     structured_swap_generation_time_seconds = 0.0
@@ -1655,21 +2188,35 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     )
     last_debt_diagnostics = debt_diagnostics(state.debt)
     last_transport_diagnostics: dict[str, float | int] = {}
-    objective_noise_floor_loss = float(
-        0.5
-        * np.sum(
-            measurement_variance.astype(np.float64, copy=False)
-            * state.inv_variance.astype(np.float64, copy=False)
+    if optimization_precision is not None:
+        objective_noise_floor_loss = 0.5 * float(precision_diagnostics["effective_rank"])
+    else:
+        objective_noise_floor_loss = float(
+            0.5
+            * np.sum(
+                measurement_variance.astype(np.float64, copy=False)
+                * state.inv_variance.astype(np.float64, copy=False)
+            )
         )
-    )
     objective_advantage_noise_variance = (
         measurement_variance.astype(np.float64)
         * state.inv_variance.astype(np.float64) ** 2
     ).astype(np.float32)
 
-    for iteration in range(1, max_iters + 1):
+    effective_max_iters = 0 if confidence_stop_initial_reached else max_iters
+    for iteration in range(1, effective_max_iters + 1):
         iter_start = time.perf_counter()
         state.iteration = iteration
+        entropy_iteration_data_objective: float | None = None
+        if entropy_controller is not None:
+            entropy_iteration_data_objective = _optimization_objective_value(
+                state.residual,
+                objective_loss,
+                state.inv_variance,
+                objective_loss_weights,
+                optimization_precision,
+            )
+            entropy_controller.update_dual(entropy_iteration_data_objective)
         accept_limit = _scheduled_accept_limit(
             iteration=iteration,
             max_iters=max_iters,
@@ -1694,6 +2241,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 objective_loss,
                 state.inv_variance,
                 objective_loss_weights,
+                optimization_precision,
             )
             cur_unweighted_loss = unweighted_measured_loss(state.residual)
             if iteration == 1 or iteration % log_every == 0:
@@ -1811,6 +2359,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 break
             continue
 
+        precision_candidate_quadratic: np.ndarray | None = None
+        scoring_lambda_cost = 0.0 if entropy_state is not None else lambda_cost
         if fused_advantages is None:
             t_score = time.perf_counter()
             if objective_loss == "tvd_l1":
@@ -1819,7 +2369,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     state.residual,
                     objective_loss_weights,
                     qcat,
-                    lambda_cost=lambda_cost,
+                    lambda_cost=scoring_lambda_cost,
                     chunk_size=chunk_size,
                     use_pmap=use_pmap,
                     context=dense_score_context,
@@ -1830,7 +2380,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     state.residual,
                     state.inv_variance,
                     qcat,
-                    lambda_cost=lambda_cost,
+                    lambda_cost=scoring_lambda_cost,
                 )
             elif score_backend == "sparse_delta":
                 if query_delta_index is None:
@@ -1840,15 +2390,75 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     state.residual,
                     state.inv_variance,
                     query_delta_index,
-                    lambda_cost=lambda_cost,
+                    lambda_cost=scoring_lambda_cost,
                 )
+            elif score_backend == "precision_operator":
+                if optimization_precision is None:
+                    raise RuntimeError("Precision-operator scoring was not initialized")
+                if isinstance(
+                    optimization_precision,
+                    (
+                        OrthogonalInteractionPrecision,
+                        ShrinkageAnalyticOrthogonalInteractionPrecision,
+                    ),
+                ):
+                    advantages, precision_candidate_quadratic = (
+                        score_candidates_orthogonal_precision_with_quadratic(
+                            candidates,
+                            state.residual,
+                            optimization_precision,
+                            lambda_cost=scoring_lambda_cost,
+                            chunk_size=chunk_size,
+                            context=orthogonal_precision_score_context,
+                        )
+                    )
+                elif isinstance(
+                    optimization_precision,
+                    ActiveSetOrthogonalInteractionPrecision,
+                ):
+                    advantages, precision_candidate_quadratic = (
+                        score_candidates_active_set_orthogonal_precision_with_quadratic(
+                            candidates,
+                            state.residual,
+                            optimization_precision,
+                            lambda_cost=scoring_lambda_cost,
+                            chunk_size=chunk_size,
+                        )
+                    )
+                elif isinstance(
+                    optimization_precision,
+                    BootstrapDiagonalOrthogonalInteractionPrecision,
+                ):
+                    advantages, precision_candidate_quadratic = (
+                        score_candidates_bootstrap_orthogonal_precision_with_quadratic(
+                            candidates,
+                            state.residual,
+                            optimization_precision,
+                            lambda_cost=scoring_lambda_cost,
+                            chunk_size=chunk_size,
+                        )
+                    )
+                else:
+                    advantages = score_candidates_precision(
+                        candidates,
+                        state.residual,
+                        optimization_precision,
+                        qcat,
+                        lambda_cost=scoring_lambda_cost,
+                        chunk_size=chunk_size,
+                        delta_index=(
+                            query_delta_index
+                            if transport_delta_backend == "sparse_cpu"
+                            else None
+                        ),
+                    )
             else:
                 advantages = score_candidates(
                     candidates,
                     state.residual,
                     state.inv_variance,
                     qcat,
-                    lambda_cost=lambda_cost,
+                    lambda_cost=scoring_lambda_cost,
                     chunk_size=chunk_size,
                     use_pmap=use_pmap,
                     context=dense_score_context,
@@ -1856,6 +2466,42 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             stats.time_scoring_seconds += time.perf_counter() - t_score
         else:
             advantages = fused_advantages
+        entropy_data_candidate_gains: np.ndarray | None = None
+        entropy_candidate_gains: np.ndarray | None = None
+        if entropy_state is not None:
+            if entropy_controller is None or optimization_precision is None:
+                raise RuntimeError("Entropy state was initialized without its controller or precision")
+            if fused_advantages is not None:
+                raise RuntimeError("Entropy does not support fused GPU candidate scoring")
+            if entropy_iteration_data_objective is None:
+                raise RuntimeError("Entropy iteration data objective was not initialized")
+            t_entropy_score = time.perf_counter()
+            entropy_data_candidate_gains = np.asarray(advantages, dtype=np.float64)
+            entropy_candidate_gains = entropy_state.candidate_gains(
+                candidates.old_rows,
+                candidates.new_rows,
+            )
+            entropy_controller.calibrate_feasibility_floor(
+                data_objective=entropy_iteration_data_objective,
+                data_gains=entropy_data_candidate_gains,
+                entropy_gains=entropy_candidate_gains,
+                edit_costs=candidates.edit_cost,
+                lambda_cost=lambda_cost,
+                min_advantage=min_advantage,
+            )
+            advantages = entropy_controller.candidate_advantages(
+                data_objective=entropy_iteration_data_objective,
+                data_gains=entropy_data_candidate_gains,
+                entropy_gains=entropy_candidate_gains,
+                edit_costs=candidates.edit_cost,
+                lambda_cost=lambda_cost,
+            ).astype(np.float32)
+            if precision_candidate_quadratic is not None:
+                precision_candidate_quadratic = (
+                    np.asarray(precision_candidate_quadratic, dtype=np.float64)
+                    * entropy_controller.dual_weight
+                ).astype(np.float32)
+            stats.time_scoring_seconds += time.perf_counter() - t_entropy_score
         positive_returned_count = int(np.sum(advantages > min_advantage)) if len(advantages) else 0
         stats.num_positive_returned_candidates += positive_returned_count
         positive_rate = float(positive_returned_count / max(1, len(advantages)))
@@ -1867,6 +2513,18 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             objective_loss,
             state.inv_variance,
             objective_loss_weights,
+            optimization_precision,
+        )
+        before_entropy_regularizer = (
+            float(entropy_state.regularizer) if entropy_state is not None else 0.0
+        )
+        before_regularized_objective = (
+            entropy_controller.regularized_objective(
+                before_optimization_objective,
+                before_entropy_regularizer,
+            )
+            if entropy_controller is not None
+            else before_optimization_objective
         )
         pre_transport_loss_history.append(float(before_loss))
         residual_before_debt = state.residual.copy()
@@ -1876,6 +2534,35 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             state.inv_variance,
             objective_loss_weights,
         )
+        entropy_prefix_evaluator = None
+        if entropy_state is not None:
+            if entropy_controller is None or optimization_precision is None:
+                raise RuntimeError("Entropy prefix evaluation is missing its controller or precision")
+
+            def entropy_prefix_evaluator(
+                selected_indices: np.ndarray,
+                delta_prefix: np.ndarray,
+                cost_prefix: np.ndarray,
+            ) -> np.ndarray:
+                prefix_indices = np.asarray(selected_indices, dtype=np.int32)
+                data_gains = optimization_precision.advantages(
+                    state.residual,
+                    np.asarray(delta_prefix, dtype=np.float64),
+                    np.zeros(len(prefix_indices), dtype=np.float64),
+                    0.0,
+                )
+                regularizer_gains = entropy_state.prefix_gains(
+                    candidates.old_rows[prefix_indices],
+                    candidates.new_rows[prefix_indices],
+                )
+                return entropy_controller.prefix_advantages(
+                    data_objective=before_optimization_objective,
+                    data_gains=data_gains,
+                    entropy_gains=regularizer_gains,
+                    edit_costs=np.asarray(cost_prefix, dtype=np.float64),
+                    lambda_cost=lambda_cost,
+                )
+
         if transport_mode == "blind_accept":
             selected = select_nonconflicting_in_order(
                 candidates,
@@ -1937,6 +2624,9 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     delta_index=query_delta_index if transport_delta_backend == "sparse_cpu" else None,
                     objective="l1" if objective_loss == "tvd_l1" else "quadratic",
                     objective_weights=objective_loss_weights if objective_loss == "tvd_l1" else None,
+                    precision_operator=optimization_precision,
+                    candidate_quadratic=precision_candidate_quadratic,
+                    prefix_advantage_evaluator=entropy_prefix_evaluator,
                 )
             else:
                 raise ValueError(f"Unknown qdte.atom_flow_update_mode={atom_flow_update_mode!r}")
@@ -2545,6 +3235,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     lambda_cost,
                     prefix_strategy=transport_prefix_strategy,
                 )
+        accepted_entropy_gain: float | None = None
         if len(transport.accepted_indices) > 0:
             accepted_row_ids = candidates.row_ids[transport.accepted_indices]
             if len(np.unique(accepted_row_ids)) != len(accepted_row_ids):
@@ -2552,10 +3243,47 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             accepted_cost = float(
                 candidates.edit_cost[transport.accepted_indices].astype(np.float64, copy=False).sum()
             )
-            if objective_loss == "tvd_l1":
+            if entropy_state is not None:
+                if entropy_controller is None or optimization_precision is None:
+                    raise RuntimeError("Entropy batch verification is missing its controller or precision")
+                data_batch_advantage = optimization_precision.advantage(
+                    state.residual,
+                    transport.delta_sum,
+                    edit_cost=0.0,
+                    lambda_cost=0.0,
+                )
+                accepted_entropy_gain = entropy_state.batch_gain(
+                    candidates.old_rows[transport.accepted_indices],
+                    candidates.new_rows[transport.accepted_indices],
+                )
+                exact_batch_advantage = float(
+                    entropy_controller.prefix_advantages(
+                        data_objective=before_optimization_objective,
+                        data_gains=np.asarray([data_batch_advantage], dtype=np.float64),
+                        entropy_gains=np.asarray([accepted_entropy_gain], dtype=np.float64),
+                        edit_costs=np.asarray([accepted_cost], dtype=np.float64),
+                        lambda_cost=lambda_cost,
+                    )[0]
+                )
+                transport.diagnostics.update(
+                    {
+                        "entropy_data_batch_advantage": float(data_batch_advantage),
+                        "entropy_regularizer_batch_gain": float(accepted_entropy_gain),
+                        "entropy_dual_weight": float(entropy_controller.dual_weight),
+                    }
+                )
+            elif objective_loss == "tvd_l1":
                 exact_batch_advantage = batch_advantage_l1(
                     state.residual,
                     objective_loss_weights,
+                    transport.delta_sum,
+                    accepted_cost,
+                    lambda_cost,
+                )
+            elif optimization_precision is not None:
+                exact_batch_advantage = batch_advantage_precision(
+                    state.residual,
+                    optimization_precision,
                     transport.delta_sum,
                     accepted_cost,
                     lambda_cost,
@@ -2598,6 +3326,18 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 )
             )
         if len(transport.accepted_indices) > 0:
+            if entropy_state is not None:
+                applied_entropy_gain = entropy_state.apply_batch(
+                    candidates.old_rows[transport.accepted_indices],
+                    candidates.new_rows[transport.accepted_indices],
+                )
+                if accepted_entropy_gain is None or not np.isclose(
+                    applied_entropy_gain,
+                    accepted_entropy_gain,
+                    rtol=1.0e-10,
+                    atol=1.0e-10,
+                ):
+                    raise AssertionError("Applied entropy batch gain differs from its exact certificate")
             apply_edits(state.X_syn, candidates, transport.accepted_indices)
             if use_gpu_candidate_backend:
                 if X_syn_gpu is None:
@@ -2636,11 +3376,31 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         structured_swap_accepted_this_iter = 0
         structured_swap_noise_rejections_this_iter = 0
         structured_swap_advantage_this_iter = 0.0
+        structured_swap_compiler_diagnostics_this_iter: dict[str, Any] = {}
         structured_swap_effective_noise_guard_kappa = structured_swap_noise_guard_kappa
-        structured_swap_current_rms = rms_standardized_residual(
-            measured_loss(state.residual, state.inv_variance),
-            qcat.m,
-        )
+        if structured_swap_compiler == INTERACTION_CYCLE_METHOD:
+            effective_rank = max(1, int(precision_diagnostics["effective_rank"]))
+            structured_swap_current_rms = float(
+                np.sqrt(
+                    max(
+                        0.0,
+                        2.0
+                        * _optimization_objective_value(
+                            state.residual,
+                            objective_loss,
+                            state.inv_variance,
+                            objective_loss_weights,
+                            optimization_precision,
+                        )
+                        / effective_rank,
+                    )
+                )
+            )
+        else:
+            structured_swap_current_rms = rms_standardized_residual(
+                measured_loss(state.residual, state.inv_variance),
+                qcat.m,
+            )
         structured_swap_due = bool(
             structured_swap_enabled
             and iteration >= structured_swap_start_iter
@@ -2651,27 +3411,79 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             if (
                 structured_swap_score_context is None
                 or structured_swap_delta_index is None
-                or structured_swap_policy is None
                 or structured_swap_rng is None
             ):
                 raise RuntimeError("Structured swap contexts were not initialized")
+            if (
+                structured_swap_compiler == "global_random_v1"
+                and structured_swap_policy is None
+            ):
+                raise RuntimeError("Global random structured-swap policy was not initialized")
             structured_start = time.perf_counter()
             structured_stage_start = structured_start
-            structured_candidates = generate_global_directed_swap_units(
-                state.X_syn,
-                qcat,
-                schema,
-                state.residual,
-                objective_loss_weights if objective_loss == "tvd_l1" else state.inv_variance,
-                structured_swap_candidate_units,
-                structured_swap_rng,
-                exploration_floor=structured_swap_exploration_floor,
-                attr_probabilities=structured_swap_policy.probabilities(),
-                numerical_gamma=float(qdte_cfg.get("numerical_distance_gamma", 0.1)),
-            )
+            if structured_swap_compiler == INTERACTION_CYCLE_METHOD:
+                if not isinstance(optimization_precision, OrthogonalInteractionPrecision):
+                    raise RuntimeError(
+                        "Interaction-cycle compiler lost its exact orthogonal precision"
+                    )
+                compilation = compile_interaction_cycle_candidates(
+                    state.X_syn,
+                    schema,
+                    state.residual,
+                    optimization_precision,
+                    structured_swap_candidate_units,
+                    structured_swap_rng,
+                    numerical_gamma=float(qdte_cfg.get("numerical_distance_gamma", 0.1)),
+                )
+                structured_candidates = compilation.candidates
+                structured_swap_compiler_diagnostics_this_iter = dict(
+                    compilation.diagnostics
+                )
+                structured_swap_last_compiler_diagnostics = dict(compilation.diagnostics)
+                structured_swap_compiler_calls += 1
+                structured_swap_total_positive_rectangles += int(
+                    compilation.diagnostics.get("positive_rectangles", 0)
+                )
+                structured_swap_max_selected_scopes = max(
+                    structured_swap_max_selected_scopes,
+                    int(compilation.diagnostics.get("selected_scopes", 0)),
+                )
+                structured_swap_target_linear_gain_sum += float(
+                    np.sum(compilation.target_linear_gains, dtype=np.float64)
+                )
+                structured_swap_target_linear_gain_count += int(
+                    len(compilation.target_linear_gains)
+                )
+            else:
+                if structured_swap_policy is None:
+                    raise RuntimeError("Global random structured-swap policy is missing")
+                structured_candidates = generate_global_directed_swap_units(
+                    state.X_syn,
+                    qcat,
+                    schema,
+                    state.residual,
+                    objective_loss_weights if objective_loss == "tvd_l1" else state.inv_variance,
+                    structured_swap_candidate_units,
+                    structured_swap_rng,
+                    exploration_floor=structured_swap_exploration_floor,
+                    attr_probabilities=structured_swap_policy.probabilities(),
+                    numerical_gamma=float(qdte_cfg.get("numerical_distance_gamma", 0.1)),
+                )
             structured_swap_generation_time_seconds += time.perf_counter() - structured_stage_start
             structured_stage_start = time.perf_counter()
-            if objective_loss == "tvd_l1":
+            if structured_swap_compiler == INTERACTION_CYCLE_METHOD:
+                if not isinstance(optimization_precision, OrthogonalInteractionPrecision):
+                    raise RuntimeError(
+                        "Interaction-cycle scoring lost its exact orthogonal precision"
+                    )
+                structured_scores = score_candidate_units_precision(
+                    structured_candidates,
+                    state.residual,
+                    optimization_precision,
+                    lambda_cost=lambda_cost,
+                    chunk_size=min(chunk_size, 256),
+                )
+            elif objective_loss == "tvd_l1":
                 structured_scores = score_hybrid_candidate_units_l1(
                     structured_candidates,
                     state.residual,
@@ -2692,7 +3504,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 )
             structured_swap_scoring_time_seconds += time.perf_counter() - structured_stage_start
             structured_stage_start = time.perf_counter()
-            structured_swap_policy.update(structured_candidates, structured_scores)
+            if structured_swap_policy is not None:
+                structured_swap_policy.update(structured_candidates, structured_scores)
             structured_swap_effective_noise_guard_kappa = _search_adjusted_noise_guard_kappa(
                 mode=structured_swap_noise_guard_mode,
                 fixed_kappa=structured_swap_noise_guard_kappa,
@@ -2715,11 +3528,23 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             )
             structured_swap_policy_pool_time_seconds += time.perf_counter() - structured_stage_start
             structured_precomputed_deltas = None
+            structured_precomputed_feature_deltas = None
             if structured_swap_delta_backend == "dense_gpu":
                 structured_stage_start = time.perf_counter()
                 structured_precomputed_deltas = candidate_unit_deltas(
                     structured_transport_candidates,
                     structured_swap_score_context,
+                )
+                structured_swap_delta_time_seconds += time.perf_counter() - structured_stage_start
+            if structured_swap_compiler == INTERACTION_CYCLE_METHOD:
+                if not isinstance(optimization_precision, OrthogonalInteractionPrecision):
+                    raise RuntimeError(
+                        "Interaction-cycle transport lost its exact orthogonal precision"
+                    )
+                structured_stage_start = time.perf_counter()
+                structured_precomputed_feature_deltas = candidate_unit_feature_deltas(
+                    structured_transport_candidates,
+                    optimization_precision,
                 )
                 structured_swap_delta_time_seconds += time.perf_counter() - structured_stage_start
             structured_stage_start = time.perf_counter()
@@ -2740,6 +3565,12 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 objective_weights=(
                     objective_loss_weights if objective_loss == "tvd_l1" else None
                 ),
+                precision_operator=(
+                    optimization_precision
+                    if structured_swap_compiler == INTERACTION_CYCLE_METHOD
+                    else None
+                ),
+                precomputed_feature_deltas=structured_precomputed_feature_deltas,
             )
             structured_swap_transport_time_seconds += time.perf_counter() - structured_stage_start
             structured_swap_candidates_this_iter = structured_candidates.count
@@ -2763,6 +3594,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     objective_loss,
                     state.inv_variance,
                     objective_loss_weights,
+                    optimization_precision,
                 )
                 loss_vec_before_structured = _optimization_loss_vector(
                     state.residual,
@@ -2792,6 +3624,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     objective_loss,
                     state.inv_variance,
                     objective_loss_weights,
+                    optimization_precision,
                 )
                 accepted_cost = float(
                     np.sum(
@@ -2842,7 +3675,18 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 objective_loss,
                 state.inv_variance,
                 objective_loss_weights,
+                optimization_precision,
             )
+            if entropy_state is not None:
+                if entropy_controller is None:
+                    raise RuntimeError("Entropy recomputation is missing its controller")
+                entropy_state.assert_matches(state.X_syn)
+                recomputed_regularized_objective = entropy_controller.regularized_objective(
+                    recomputed_optimization_objective,
+                    entropy_state.regularizer,
+                )
+            else:
+                recomputed_regularized_objective = recomputed_optimization_objective
             state.answer_syn = recomputed.astype(np.float32)
             state.residual = recomputed_residual
             stats.time_full_recompute_seconds += time.perf_counter() - t_recompute
@@ -2852,11 +3696,11 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 )
             if (
                 debug_assert_loss_decrease
-                and recomputed_optimization_objective > before_optimization_objective + loss_tolerance
+                and recomputed_regularized_objective > before_regularized_objective + loss_tolerance
             ):
                 raise AssertionError(
                     "Accepted batch increased recomputed optimization objective: "
-                    f"before={before_optimization_objective}, after={recomputed_optimization_objective}; "
+                    f"before={before_regularized_objective}, after={recomputed_regularized_objective}; "
                     f"measured_loss_before={before_loss}, measured_loss_after={recomputed_loss}"
                 )
 
@@ -2866,6 +3710,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             drift = float(np.max(np.abs(recomputed - state.answer_syn)))
             state.answer_syn = recomputed.astype(np.float32)
             state.residual = (state.target - state.answer_syn).astype(np.float32)
+            if entropy_state is not None:
+                entropy_state.assert_matches(state.X_syn)
             stats.time_full_recompute_seconds += time.perf_counter() - t_recompute
             log(f"Full recompute iter={iteration}: max_incremental_drift={drift:.6g}")
             if drift > residual_drift_tolerance:
@@ -2884,14 +3730,60 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             objective_loss,
             state.inv_variance,
             objective_loss_weights,
+            optimization_precision,
+        )
+        confidence_stop_reached_this_iter = bool(
+            confidence_stop is not None
+            and confidence_stop.reached(cur_optimization_objective)
+        )
+        if confidence_stop_reached_this_iter:
+            confidence_stop_triggered = True
+            confidence_stop_iteration = int(iteration)
+            confidence_stop_objective_at_trigger = float(cur_optimization_objective)
+        cur_entropy_regularizer = (
+            float(entropy_state.regularizer) if entropy_state is not None else 0.0
+        )
+        cur_regularized_objective = (
+            entropy_controller.regularized_objective(
+                cur_optimization_objective,
+                cur_entropy_regularizer,
+            )
+            if entropy_controller is not None
+            else cur_optimization_objective
         )
         cur_unweighted_loss = unweighted_measured_loss(state.residual)
-        if iteration == 1 or iteration % log_every == 0 or len(transport.accepted_indices) == 0:
+        if (
+            iteration == 1
+            or iteration % log_every == 0
+            or len(transport.accepted_indices) == 0
+            or confidence_stop_reached_this_iter
+        ):
             row = {
                 "iteration": iteration,
                 "wall_time": time.perf_counter() - stats.start_time,
                 "measured_loss": cur_loss,
                 "optimization_objective": cur_optimization_objective,
+                "entropy_regularizer": cur_entropy_regularizer,
+                "entropy_kl_per_row": (
+                    cur_entropy_regularizer / n_syn if entropy_state is not None else 0.0
+                ),
+                "entropy_regularized_objective": cur_regularized_objective,
+                "entropy_dual_weight": (
+                    float(entropy_controller.dual_weight)
+                    if entropy_controller is not None
+                    else 0.0
+                ),
+                "entropy_inside_confidence_set": int(
+                    entropy_controller.inside(cur_optimization_objective)
+                    if entropy_controller is not None
+                    else False
+                ),
+                "confidence_stop_reached": int(confidence_stop_reached_this_iter),
+                "confidence_stop_objective_threshold": (
+                    float(confidence_stop.objective_threshold)
+                    if confidence_stop is not None
+                    else 0.0
+                ),
                 "unweighted_measured_loss": cur_unweighted_loss,
                 "rms_standardized_residual": rms_standardized_residual(cur_loss, qcat.m),
                 "rms_unweighted_residual": rms_unweighted_residual(state.residual),
@@ -2989,10 +3881,25 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 "atom_flow_augments": int(transport.diagnostics.get("atom_flow_augments", 0)),
                 "atom_flow_batch_mode": int(transport.diagnostics.get("atom_flow_batch_mode", 0)),
                 "atom_flow_exact_mode": int(transport.diagnostics.get("atom_flow_exact_mode", 0)),
+                "atom_flow_custom_prefix": int(
+                    transport.diagnostics.get("atom_flow_custom_prefix", 0)
+                ),
                 "atom_flow_selected_candidates": int(
                     transport.diagnostics.get("atom_flow_selected_candidates", 0)
                 ),
                 "atom_flow_prefix_candidates": int(transport.diagnostics.get("atom_flow_prefix_candidates", 0)),
+                "exact_batch_advantage": float(
+                    transport.diagnostics.get("exact_batch_advantage", 0.0)
+                ),
+                "rejected_by_exact_batch_check": int(
+                    transport.diagnostics.get("rejected_by_exact_batch_check", 0)
+                ),
+                "entropy_data_batch_advantage": float(
+                    transport.diagnostics.get("entropy_data_batch_advantage", 0.0)
+                ),
+                "entropy_regularizer_batch_gain": float(
+                    transport.diagnostics.get("entropy_regularizer_batch_gain", 0.0)
+                ),
                 "constructive_pair_pool_candidates": int(
                     transport.diagnostics.get("constructive_pair_pool_candidates", 0)
                 ),
@@ -3118,6 +4025,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     transport.diagnostics.get("directed_group_positive_fill_total_accepted", 0)
                 ),
                 "structured_swap_due": int(structured_swap_due),
+                "structured_swap_compiler": structured_swap_compiler,
                 "structured_swap_trigger_rms": float(structured_swap_trigger_rms),
                 "structured_swap_current_rms": float(structured_swap_current_rms),
                 "structured_swap_candidates": int(structured_swap_candidates_this_iter),
@@ -3129,6 +4037,21 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                     structured_swap_effective_noise_guard_kappa
                 ),
                 "structured_swap_objective_advantage": float(structured_swap_advantage_this_iter),
+                "structured_swap_positive_rectangles": int(
+                    structured_swap_compiler_diagnostics_this_iter.get(
+                        "positive_rectangles", 0
+                    )
+                ),
+                "structured_swap_selected_scopes": int(
+                    structured_swap_compiler_diagnostics_this_iter.get(
+                        "selected_scopes", 0
+                    )
+                ),
+                "structured_swap_target_linear_gain_mean": float(
+                    structured_swap_compiler_diagnostics_this_iter.get(
+                        "target_linear_gain_mean", 0.0
+                    )
+                ),
                 "incremental_answer_drift": debug_drift,
                 **debt_info,
             }
@@ -3138,10 +4061,20 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
                 f"candidates={candidates.size} "
                 f"positive={positive_rate:.3f} accept_limit={accept_limit} accepted={len(transport.accepted_indices)} "
                 f"batch_adv={transport.batch_advantage:.6g} "
+                f"entropy_kl={cur_entropy_regularizer / n_syn:.6g} "
+                f"entropy_dual={entropy_controller.dual_weight if entropy_controller is not None else 0.0:.6g} "
                 f"structured_accepted={structured_swap_accepted_this_iter}"
             )
 
         stats.num_iterations = iteration
+        if confidence_stop_reached_this_iter:
+            log(
+                "Stopping at released chi-square confidence boundary: "
+                f"iter={iteration}, objective={cur_optimization_objective:.6g}, "
+                f"threshold={confidence_stop.objective_threshold:.6g}"
+            )
+            stats.time_generation_seconds += time.perf_counter() - iter_start
+            break
         if patience >= stop_patience:
             log(f"Stopping at iter={iteration}: patience={patience}")
             break
@@ -3318,6 +4251,47 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         objective_loss,
         state.inv_variance,
         objective_loss_weights,
+        optimization_precision,
+    )
+    if entropy_state is not None:
+        if entropy_controller is None or entropy_prior is None:
+            raise RuntimeError("Final entropy state is missing its controller or prior")
+        entropy_state.assert_matches(state.X_syn)
+        final_entropy_regularizer = float(entropy_state.regularizer)
+        final_regularized_objective = entropy_controller.regularized_objective(
+            final_optimization_objective,
+            final_entropy_regularizer,
+        )
+        entropy_diagnostics = {
+            "enabled": True,
+            "prior": entropy_prior.diagnostics(),
+            "state": entropy_state.diagnostics(),
+            "controller": entropy_controller.diagnostics(final_optimization_objective),
+        }
+    else:
+        final_entropy_regularizer = 0.0
+        final_regularized_objective = final_optimization_objective
+        entropy_diagnostics = {
+            "enabled": False,
+            "prior": None,
+            "state": None,
+            "controller": None,
+        }
+    confidence_stop_final_reached = bool(
+        confidence_stop is not None
+        and confidence_stop.reached(final_optimization_objective)
+    )
+    confidence_stop_diagnostics = (
+        confidence_stop.diagnostics()
+        if confidence_stop is not None
+        else {
+            "method": "none",
+            "alpha": None,
+            "confidence_level": None,
+            "effective_rank": None,
+            "squared_discrepancy_threshold": None,
+            "objective_threshold": None,
+        }
     )
     final_unweighted_loss = unweighted_measured_loss(state.residual)
     final_rms = rms_standardized_residual(final_loss, qcat.m)
@@ -3326,6 +4300,16 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     optimization_objective_reduction = float(initial_optimization_objective - final_optimization_objective)
     unweighted_loss_reduction = float(initial_unweighted_loss - final_unweighted_loss)
     log(f"Final measured loss: {final_loss:.6g}")
+    log(f"Final optimization objective: {final_optimization_objective:.6g}")
+    if entropy_state is not None and entropy_controller is not None:
+        log(
+            "Final entropy state: "
+            f"regularizer={final_entropy_regularizer:.6g}, "
+            f"kl_per_row={final_entropy_regularizer / n_syn:.6g}, "
+            f"regularized_objective={final_regularized_objective:.6g}, "
+            f"dual={entropy_controller.dual_weight:.6g}, "
+            f"inside_confidence={entropy_controller.inside(final_optimization_objective)}"
+        )
     log(f"Final unweighted measured loss: {final_unweighted_loss:.6g}")
     log(f"Final incremental answer drift before recompute: {final_incremental_answer_drift:.6g}")
     log(f"Candidates scored: {stats.num_candidates_scored}")
@@ -3338,6 +4322,13 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     final_metrics: dict[str, Any] = {
         "dataset_name": run_cfg.get("dataset_name"),
         "privacy_mode": measurements.mode,
+        "dp_release_mode": bool(config.get("privacy", {}).get("dp_release_mode", False)),
+        "privacy_adjacency": str(config.get("privacy", {}).get("adjacency", "unspecified")),
+        "public_row_count_declared": bool(config.get("privacy", {}).get("public_row_count", False)),
+        "public_n_rows_declared": public_n_rows,
+        "public_schema_path": str(public_schema_path) if public_schema_path is not None else "",
+        "transcript_only_generation": transcript_only_generation,
+        "private_input_loaded_by_process": not transcript_only_generation,
         "measurement_reused": bool(reuse_path is not None),
         "measurement_reuse_from": str(reuse_path) if reuse_path is not None else "",
         "rho_total": measurements.rho_total,
@@ -3355,6 +4346,17 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "initial_optimization_objective": initial_optimization_objective,
         "final_optimization_objective": final_optimization_objective,
         "optimization_objective_reduction": optimization_objective_reduction,
+        "entropy_enabled": bool(entropy_state is not None),
+        "entropy_diagnostics": entropy_diagnostics,
+        "initial_entropy_regularizer": float(initial_entropy_regularizer),
+        "final_entropy_regularizer": float(final_entropy_regularizer),
+        "entropy_regularizer_reduction": float(
+            initial_entropy_regularizer - final_entropy_regularizer
+        ),
+        "initial_entropy_kl_per_row": float(initial_entropy_regularizer / n_syn),
+        "final_entropy_kl_per_row": float(final_entropy_regularizer / n_syn),
+        "initial_regularized_objective": float(initial_regularized_objective),
+        "final_regularized_objective": float(final_regularized_objective),
         "initial_unweighted_measured_loss": initial_unweighted_loss,
         "final_unweighted_measured_loss": final_unweighted_loss,
         "unweighted_measured_loss_reduction": unweighted_loss_reduction,
@@ -3364,6 +4366,21 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "final_rms_unweighted_residual": final_unweighted_rms,
         "objective_weighting": objective_weighting,
         "objective_loss": objective_loss,
+        "precision_operator": precision_operator_name,
+        "precision_operator_active": bool(optimization_precision is not None),
+        "precision_operator_diagnostics": precision_diagnostics,
+        "confidence_stop_enabled": bool(confidence_stop is not None),
+        "confidence_stop_diagnostics": confidence_stop_diagnostics,
+        "confidence_stop_initial_reached": confidence_stop_initial_reached,
+        "confidence_stop_triggered": confidence_stop_triggered,
+        "confidence_stop_iteration": confidence_stop_iteration,
+        "confidence_stop_objective_at_trigger": confidence_stop_objective_at_trigger,
+        "confidence_stop_final_reached": confidence_stop_final_reached,
+        "proposal_precision": (
+            "marginal_diagonal_surrogate"
+            if precision_operator_name.startswith("orthogonal_interaction")
+            else "objective_diagonal"
+        ),
         "objective_loss_weight_mean": float(np.mean(objective_loss_weights)),
         "objective_weight_profile": objective_weight_profile,
         "objective_query_weight_multiplier_mean": float(
@@ -3425,6 +4442,7 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         "num_candidate_shortfall": int(stats.num_candidate_shortfall),
         "num_accepted_edits": int(stats.num_accepted_edits),
         "structured_swap_enabled": bool(structured_swap_enabled),
+        "structured_swap_compiler": structured_swap_compiler,
         "structured_swap_start_iter": int(structured_swap_start_iter),
         "structured_swap_interval": int(structured_swap_interval),
         "structured_swap_candidate_units": int(structured_swap_candidate_units),
@@ -3450,6 +4468,20 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         ),
         "structured_swap_total_objective_advantage": float(
             structured_swap_total_objective_advantage
+        ),
+        "structured_swap_compiler_calls": int(structured_swap_compiler_calls),
+        "structured_swap_total_positive_rectangles": int(
+            structured_swap_total_positive_rectangles
+        ),
+        "structured_swap_max_selected_scopes": int(structured_swap_max_selected_scopes),
+        "structured_swap_target_linear_gain_mean": float(
+            structured_swap_target_linear_gain_sum
+            / max(1, structured_swap_target_linear_gain_count)
+        ),
+        "structured_swap_last_compiler_diagnostics": (
+            structured_swap_last_compiler_diagnostics
+            if structured_swap_last_compiler_diagnostics
+            else None
         ),
         "structured_swap_time_seconds": float(structured_swap_time_seconds),
         "structured_swap_generation_time_seconds": float(
@@ -3673,6 +4705,14 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
         np.mean(objective_query_weight_multipliers)
     )
     runtime_dict["objective_loss"] = objective_loss
+    runtime_dict["entropy_enabled"] = bool(entropy_state is not None)
+    runtime_dict["initial_entropy_regularizer"] = float(initial_entropy_regularizer)
+    runtime_dict["final_entropy_regularizer"] = float(final_entropy_regularizer)
+    runtime_dict["initial_entropy_kl_per_row"] = float(initial_entropy_regularizer / n_syn)
+    runtime_dict["final_entropy_kl_per_row"] = float(final_entropy_regularizer / n_syn)
+    runtime_dict["initial_regularized_objective"] = float(initial_regularized_objective)
+    runtime_dict["final_regularized_objective"] = float(final_regularized_objective)
+    runtime_dict["entropy_diagnostics"] = entropy_diagnostics
     runtime_dict["objective_loss_weight_mean"] = float(np.mean(objective_loss_weights))
     runtime_dict["objective_variance_mean"] = float(np.mean(state.variance))
     runtime_dict["objective_inv_variance_mean"] = float(np.mean(state.inv_variance))
@@ -3687,6 +4727,13 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     runtime_dict["gpu_devices"] = [str(d) for d in jax.devices()]
     runtime_dict["score_backend"] = score_backend
     runtime_dict["candidate_backend"] = candidate_backend
+    runtime_dict.update(
+        {
+            key: value
+            for key, value in final_metrics.items()
+            if key.startswith("structured_swap_")
+        }
+    )
     runtime_dict["accepted_per_iter"] = int(accepted_per_iter)
     runtime_dict["accepted_per_iter_schedule"] = accepted_per_iter_schedule
     runtime_dict["accepted_per_iter_start"] = int(accepted_per_iter_start)
@@ -3755,6 +4802,16 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     runtime_dict["directed_group_augment_pool_multiplier"] = int(directed_group_augment_pool_multiplier)
     runtime_dict["directed_group_augment_max_pool"] = int(directed_group_augment_max_pool)
     runtime_dict["candidate_diagnostics_enabled"] = bool(candidate_diagnostics_enabled)
+    runtime_dict["precision_operator"] = precision_operator_name
+    runtime_dict["precision_operator_active"] = bool(optimization_precision is not None)
+    runtime_dict["precision_operator_diagnostics"] = precision_diagnostics
+    runtime_dict["confidence_stop_enabled"] = bool(confidence_stop is not None)
+    runtime_dict["confidence_stop_diagnostics"] = confidence_stop_diagnostics
+    runtime_dict["confidence_stop_initial_reached"] = confidence_stop_initial_reached
+    runtime_dict["confidence_stop_triggered"] = confidence_stop_triggered
+    runtime_dict["confidence_stop_iteration"] = confidence_stop_iteration
+    runtime_dict["confidence_stop_objective_at_trigger"] = confidence_stop_objective_at_trigger
+    runtime_dict["confidence_stop_final_reached"] = confidence_stop_final_reached
     runtime_dict["use_pmap"] = bool(use_pmap)
     runtime_dict["gpu_batches_per_iter"] = int(qdte_cfg.get("gpu_batches_per_iter", 1))
     runtime_dict["gpu_score_query_block_size"] = int(
@@ -3777,6 +4834,8 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
     )
     runtime_dict["gpu_return_top_k"] = int(qdte_cfg.get("gpu_return_top_k", 0))
     runtime_dict["total_candidates_per_iter"] = configured_total_candidates
+    runtime_dict["transcript_only_generation"] = transcript_only_generation
+    runtime_dict["private_input_loaded_by_process"] = not transcript_only_generation
     metrics_by_family = _metrics_by_family(
         qcat,
         initial_residual,
@@ -3808,6 +4867,9 @@ def run_qdte(config: dict[str, Any]) -> dict[str, Any]:
             "seed": int(seed),
             "num_iterations": int(stats.num_iterations),
             "final_measured_loss": float(final_loss),
+            "final_optimization_objective": float(final_optimization_objective),
+            "confidence_stop_triggered": confidence_stop_triggered,
+            "confidence_stop_iteration": confidence_stop_iteration,
         },
         output_dir / "run_status.json",
     )

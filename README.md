@@ -106,6 +106,18 @@ generation、scoring、transport、stopping 或 hyperparameter selection，也�
 和 public metadata。完整边界见 `docs/DP_BOUNDARY.md`，外部代码审查入口见
 `docs/CODE_REVIEW_GUIDE.md`。
 
+可部署入口使用 `privacy.dp_release_mode: true`。该模式要求显式公开
+`schema.json`（包括 category codebook、数值 bin edges 和 missing-value 规则）、
+声明 `privacy.public_row_count: true` 并给出正整数
+`privacy.public_n_rows`、固定 `privacy.adjacency: add_remove`，并禁止进程内
+true-data evaluation；运行时私有输入行数必须与声明值一致，缺少任一条件都会
+直接报错。声明式配置见
+`configs/variants/dp_release_profile_overlay.yaml`，`scripts/run_sage_external.py`
+会自动执行同一边界。隐私报告中的 `epsilon_delta` 由实际 `rho_spent` 计算，
+`rho_total` 仅保留为声明上限。`measurements.json:privacy_ledger` 逐组记录
+Gaussian vector mechanism、add/remove adjacency、L2 sensitivity、noise scale 和
+实际 rho charge。
+
 held-out workload 也只用于离线评估：它不会进入 measurement 或 optimization loop。
 
 external evaluator 的 `full_true_*` 指标同样只属于离线评估。Evaluator 会在 `real_encoded.npy` 和 `synthetic_encoded.npy` 上精确回答同一个 public workload，按各自行数归一化，然后计算 `full_true_mae`、`full_true_rmse` 和 `full_true_max_error`。对于 partition/vector blocks，TVD 定义为 `0.5 * sum(abs(q(D_syn) / |D_syn| - q(D_real) / |D_real|))`；`full_true_avg_tvd` 和 `full_true_max_tvd` 分别是这些 block TVD 的均值和最大值。
@@ -166,6 +178,27 @@ python scripts/run_qdte.py \
 ```bash
 conda run -n qdte pytest -q
 ```
+
+部署型 DP 运行可以把私有测量和公开生成拆成两个进程。第一个进程是唯一
+读取私有 CSV 的进程，并输出带哈希和实际隐私账本的公开 transcript；第二个
+进程只读取该 transcript，配置校验会禁止 `run.input_csv` 和
+`init.encoded_npy`：
+
+```bash
+conda run -n qdte python scripts/measure_qdte_transcript.py \
+  --config /path/to/release_config.yaml \
+  --output-dir outputs/public_transcript
+
+conda run -n qdte python scripts/generate_qdte_from_transcript.py \
+  --config /path/to/release_config.yaml \
+  --transcript outputs/public_transcript \
+  --output-dir outputs/public_generation
+```
+
+公开 transcript 只包含 `schema.json`、`queries.json`、
+`measurements.json` 和 `transcript_manifest.json`。生成入口会先验证三份
+payload 的 SHA-256、add/remove 邻接关系、公开行数和 actual-spend zCDP
+账本，再进入 QDTE。
 
 候选生成消融入口是：
 

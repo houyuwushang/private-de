@@ -1,0 +1,36 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "20462e23754702bbb9c1e1594b2cac4c740046fd97369024aaf8e6c982871b09"
+  },
+  "artifact_role": "descriptive_frozen_wp9_gate_figure",
+  "descriptive_only": true,
+  "inputs": {
+    "gate": {
+      "path": "outputs/static_ice_wp9_eval_20260715/gate_summary.json",
+      "sha256": "e86a8ae409595b817fb03eab35e16d68c22b5e59f01be0e759110c1a85fa4c32"
+    },
+    "metrics": {
+      "path": "outputs/static_ice_wp9_eval_20260715/metrics.csv",
+      "sha256": "bef5cdf20e4f9a75a8326b7d68da6ed735227bc2479156078cd9bfcd4fb6df62"
+    }
+  },
+  "method_id": "SAGE-QDTE-Static-ICE-Exact-v1",
+  "method_promotion_authorized": false,
+  "outputs": {
+    "wp9_static_ice_vs_aim_gate.pdf": {
+      "bytes": 28118,
+      "sha256": "0c53152474cc8ddce3427a627c1187dec1dc65971edd44425c7320ad7139464b"
+    },
+    "wp9_static_ice_vs_aim_gate.png": {
+      "bytes": 127743,
+      "sha256": "a2e906b1b8fbcdd9a1ff0acc14bed48682ca3afe1b040c6eae493ef84b960639"
+    },
+    "wp9_static_ice_vs_aim_ratios.csv": {
+      "bytes": 6854,
+      "sha256": "58abc105606f8c257aa1a8c48b82a2f03a651dfa484efc2149f6242611540e9b"
+    }
+  },
+  "protocol_id": "SAGE-QDTE-ICE-WP9-STATIC-CONFIRMATION-20260715-v1",
+  "source_gate_decision": "retain_static_ice_as_development_candidate"
+}

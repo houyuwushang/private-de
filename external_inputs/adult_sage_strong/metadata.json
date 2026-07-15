@@ -1,0 +1,127 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "6955b6f0fa4f0e619a2e94492cfb1001cf8845e5d88e8d02ca3eb81fbb4876d4"
+  },
+  "cardinalities": [
+    16,
+    7,
+    16,
+    16,
+    16,
+    7,
+    14,
+    6,
+    5,
+    2,
+    8,
+    15,
+    16,
+    41,
+    2
+  ],
+  "config_path": "configs/adult_sage_strong.yaml",
+  "dataset": "adult_sage_strong",
+  "groups_by_family": {
+    "kway_mixed": 1,
+    "kway_prefix": 1,
+    "kway_range": 1,
+    "mixed": 54,
+    "oneway": 15,
+    "orthogonal_kway_mixed": 22,
+    "prefix": 6,
+    "range": 6,
+    "twoway": 105
+  },
+  "n_cols": 15,
+  "n_rows": 45222,
+  "notes": "Adult data with SAGE strong heterogeneous/orthogonal workload profile for main comparison.",
+  "num_queries": 28654,
+  "num_workload_groups": 211,
+  "preprocess": {
+    "auto_numeric_min_unique": 10,
+    "categorical_columns": [
+      "1",
+      "3",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "13",
+      "14"
+    ],
+    "label_column": "14",
+    "missing_token": "__MISSING__",
+    "numerical_bins": 32,
+    "numerical_columns": [
+      "0",
+      "2",
+      "4",
+      "10",
+      "11",
+      "12"
+    ]
+  },
+  "privacy_delta_default": 1e-09,
+  "queries_by_family": {
+    "kway_mixed": 256,
+    "kway_prefix": 256,
+    "kway_range": 256,
+    "mixed": 5558,
+    "oneway": 187,
+    "orthogonal_kway_mixed": 5708,
+    "prefix": 87,
+    "range": 668,
+    "twoway": 15678
+  },
+  "queries_sha256": "04a9c35ff742c989622879e9ef0833167e307de58d5e2ee767acf43b808a9af3",
+  "raw_csv": "external_inputs/adult_sage_strong/raw.csv",
+  "raw_sha256": "d5c485ea97bbea9bcc54f16d83e60932db558e567fc93a4d674d6f695f665c82",
+  "real_encoded_sha256": "3b943c5090c11586c94581310c62ea02b7135e63f7516c779bff8a3334ebd2ef",
+  "schema_sha256": "5422f4b3a59272c0d3bdcf91cdcc491550c2b8713b87d28ca46c2a3055e6edc5",
+  "source_dataset": "adult",
+  "source_input_dir": "external_inputs/adult",
+  "workload": {
+    "exact_group_sensitivity_max_cells": 200000,
+    "include_2way_cat": true,
+    "include_halfspace": false,
+    "include_kway": false,
+    "include_kway_mixed": true,
+    "include_kway_prefix": true,
+    "include_kway_range": true,
+    "include_mixed": true,
+    "include_oneway": true,
+    "include_orthogonal_kway_mixed": true,
+    "include_prefix": true,
+    "include_range": true,
+    "kway_mixed_orders": [
+      3
+    ],
+    "kway_mixed_queries_per_order": 256,
+    "kway_orders": [
+      3
+    ],
+    "kway_prefix_orders": [
+      3
+    ],
+    "kway_prefix_queries_per_order": 256,
+    "kway_range_orders": [
+      3
+    ],
+    "kway_range_queries_per_order": 256,
+    "max_2way_cells": 20000,
+    "max_queries": 40000,
+    "max_terms": 4,
+    "mixed_queries_per_pair": 128,
+    "orthogonal_kway_mixed_max_cells_per_group": 4096,
+    "orthogonal_kway_mixed_orders": [
+      2,
+      3
+    ],
+    "orthogonal_kway_mixed_range_bins": 4,
+    "orthogonal_kway_mixed_scopes_per_order": 16,
+    "random_seed": 0,
+    "range_intervals_per_num_attr": 128
+  }
+}

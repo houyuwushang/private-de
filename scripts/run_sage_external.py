@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 from qdte.config import load_yaml, parse_scalar, set_nested
 from qdte.dataio import read_json
 from qdte.evolution.engine import run_qdte
+from qdte.privacy.accountant import zcdp_epsilon
 
 
 DEFAULT_CONFIGS = {
@@ -125,9 +126,9 @@ def _schema_columns(schema: dict[str, Any]) -> list[dict[str, Any]]:
     return columns
 
 
-def _parse_n_syn(value: str, n_real: int) -> str | int:
+def _parse_n_syn(value: str, n_real: int) -> int:
     if value == "same_as_real":
-        return value
+        return int(n_real)
     parsed = int(value)
     if parsed <= 0:
         raise ValueError("--n-syn must be positive or same_as_real")
@@ -182,8 +183,13 @@ def _prepare_config(args: argparse.Namespace, n_real: int) -> tuple[dict[str, An
     set_nested(config, "run.output_dir", str(args.output_dir))
     set_nested(config, "run.seed", int(args.seed))
     set_nested(config, "privacy.mode", "dp")
+    set_nested(config, "privacy.dp_release_mode", True)
+    set_nested(config, "privacy.public_row_count", True)
+    set_nested(config, "privacy.public_n_rows", int(n_real))
+    set_nested(config, "privacy.adjacency", "add_remove")
     set_nested(config, "privacy.rho_total", float(args.rho_total))
     set_nested(config, "privacy.delta", float(args.delta))
+    set_nested(config, "preprocess.public_schema_json", str(args.input_dir / "schema.json"))
     set_nested(config, "init.N_syn", n_syn)
     if args.max_iters is not None:
         set_nested(config, "qdte.max_iters", int(args.max_iters))
@@ -249,10 +255,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if not (args.input_dir / "raw.csv").exists():
         raise FileNotFoundError(f"Missing canonical raw.csv: {args.input_dir / 'raw.csv'}")
-    real = np.load(args.input_dir / "real_encoded.npy")
+    if not (args.input_dir / "schema.json").exists():
+        raise FileNotFoundError(f"Missing public schema.json: {args.input_dir / 'schema.json'}")
+    input_metadata = read_json(args.input_dir / "metadata.json")
+    n_real = int(input_metadata.get("n_rows", 0))
+    if n_real <= 0:
+        raise ValueError("External input metadata must declare a positive public n_rows")
     start = time.time()
     start_iso = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    config, config_path = _prepare_config(args, int(real.shape[0]))
+    config, config_path = _prepare_config(args, n_real)
 
     if not bool(config.get("runtime", {}).get("xla_preallocate", True)):
         os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -281,9 +292,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "runtime_seconds": float(end - start),
             "status": "completed",
             "failure_reason": None,
-            "n_real": int(real.shape[0]),
+            "n_real": int(n_real),
             "n_synthetic": int(synthetic.shape[0]),
-            "num_columns": int(real.shape[1]),
+            "num_columns": int(synthetic.shape[1]),
             "epsilon_delta": final_metrics.get("epsilon_delta"),
             "rho_spent": final_metrics.get("rho_spent"),
             "device": config.get("run", {}).get("device"),
@@ -333,11 +344,48 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         expected_schema_hash = input_metadata.get("schema_sha256")
         expected_queries_hash = input_metadata.get("queries_sha256")
+        measurement_payload = read_json(args.output_dir / "measurements.json")
+        privacy_ledger = measurement_payload.get("privacy_ledger", {})
+        rho_spent = float(final_metrics.get("rho_spent", float("nan")))
+        epsilon_reported = float(final_metrics.get("epsilon_delta", float("nan")))
+        rho_tolerance = 1.0e-12 * max(1.0, abs(float(args.rho_total)))
         checks = {
             "mode_is_dp": str(config.get("privacy", {}).get("mode")) == "dp",
+            "dp_release_mode_enabled": config.get("privacy", {}).get("dp_release_mode") is True,
+            "public_row_count_declared": config.get("privacy", {}).get("public_row_count") is True,
+            "public_n_rows_matches_metadata": int(
+                config.get("privacy", {}).get("public_n_rows", 0)
+            )
+            == int(n_real),
+            "adjacency_is_add_remove": str(config.get("privacy", {}).get("adjacency"))
+            == "add_remove",
             "rho_matches": float(config.get("privacy", {}).get("rho_total"))
             == float(args.rho_total),
             "delta_matches": float(config.get("privacy", {}).get("delta")) == float(args.delta),
+            "actual_spend_within_declared_rho": bool(
+                np.isfinite(rho_spent)
+                and rho_spent <= float(args.rho_total) + rho_tolerance
+            ),
+            "epsilon_uses_actual_spend": bool(
+                np.isfinite(epsilon_reported)
+                and np.isclose(
+                    epsilon_reported,
+                    zcdp_epsilon(rho_spent, float(args.delta)),
+                    rtol=1.0e-12,
+                    atol=1.0e-12,
+                )
+            ),
+            "measurement_ledger_matches_actual_spend": bool(
+                isinstance(privacy_ledger, dict)
+                and privacy_ledger.get("accounting") == "zcdp_actual_spend_v1"
+                and privacy_ledger.get("adjacency") == "add_remove"
+                and np.isclose(
+                    float(privacy_ledger.get("rho_spent", float("nan"))),
+                    rho_spent,
+                    rtol=1.0e-12,
+                    atol=1.0e-12,
+                )
+            ),
             "true_metrics_disabled_during_generation": not any(
                 bool(config.get("evaluation", {}).get(key, False))
                 for key in ("compute_true_query_error", "compute_heldout_query_error", "downstream_ml")
@@ -350,6 +398,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             or artifacts["schema"]["sha256"] == expected_schema_hash,
             "queries_match_canonical_input": expected_queries_hash is None
             or artifacts["query_catalogue"]["sha256"] == expected_queries_hash,
+            "synthetic_row_count_matches_public_request": int(synthetic.shape[0])
+            == int(config.get("init", {}).get("N_syn", 0)),
         }
         manifest = {
             "protocol_id": str(protocol_id),
@@ -368,7 +418,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "privacy": {
                 "mode": "dp",
                 "adjacency": "add_remove_one",
+                "public_n_rows": int(n_real),
                 "rho_total": float(args.rho_total),
+                "rho_spent": rho_spent,
                 "delta": float(args.delta),
                 "epsilon_recomputed": final_metrics.get("epsilon_delta"),
             },

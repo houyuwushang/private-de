@@ -286,6 +286,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         projection_diagnostics=projection_diagnostics,
         projection_uncertainty_bias=uncertainty_bias,
         num_rows=int(total),
+        strategy_transcript=(
+            dict(measurement_data["strategy_transcript"])
+            if isinstance(measurement_data.get("strategy_transcript"), dict)
+            else None
+        ),
+        privacy_ledger=(
+            dict(measurement_data["privacy_ledger"])
+            if isinstance(measurement_data.get("privacy_ledger"), dict)
+            else None
+        ),
     )
 
     write_json(measurements.to_public_dict(), output_dir / "measurements.json")

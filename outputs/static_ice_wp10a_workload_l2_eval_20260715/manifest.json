@@ -1,0 +1,14 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "9aeadf1874af754ad09fbaecfdc4c812a40fa4273297766aa4e1f72545952188"
+  },
+  "artifact_role": "wp10a_evaluation_manifest",
+  "decision": "freeze_workload_l2_allocation",
+  "gate_summary": {
+    "bytes": 1815,
+    "path": "outputs/static_ice_wp10a_workload_l2_eval_20260715/gate_summary.json",
+    "sha256": "8cd0a99d765a0d3c0f1efe609701e6a6a855ba57540fdc7a1581d8476c6f34c2"
+  },
+  "protocol_id": "SAGE-QDTE-ICE-WP10A-WORKLOAD-ALLOCATION-20260715-v1"
+}

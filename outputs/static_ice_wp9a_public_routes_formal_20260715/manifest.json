@@ -1,0 +1,27 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "53b24827d98b855816d0854f17121a2649c0347362a9cecee1e7d69e7d75522a"
+  },
+  "artifact_role": "public_route_diagnostic_manifest",
+  "artifacts": {
+    "allocation_risk_summary.csv": {
+      "bytes": 897,
+      "path": "outputs/static_ice_wp9a_public_routes_formal_20260715/allocation_risk_summary.csv",
+      "sha256": "1f1934c6fe12877846ec04abd6f5a8ca3b8f459ed8065f7f7ca4d74d1bd6857d"
+    },
+    "public_route_diagnostics.json": {
+      "bytes": 199775,
+      "path": "outputs/static_ice_wp9a_public_routes_formal_20260715/public_route_diagnostics.json",
+      "sha256": "1608863b5f8d5da2d95095b2647fb56632658e495c62bddbe3691bdfb66b8fc3"
+    },
+    "released_tree_stability.csv": {
+      "bytes": 1490,
+      "path": "outputs/static_ice_wp9a_public_routes_formal_20260715/released_tree_stability.csv",
+      "sha256": "3d6abc76b4e2e5e69732d74e5810e33fc25c3c8354e6d81dbbfdfe50a84d5663"
+    }
+  },
+  "protocol_id": "SAGE-QDTE-ICE-WP9A-PUBLIC-ROUTE-DIAGNOSTIC-20260715-v1",
+  "true_data_loaded": false,
+  "true_utility_evaluated": false
+}

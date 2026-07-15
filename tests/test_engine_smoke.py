@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,20 @@ from qdte.evolution.engine import (
     _search_adjusted_noise_guard_kappa,
     run_qdte,
 )
+from qdte.measurement.factorization import (
+    compile_hierarchical_pair_strategy,
+    measure_hierarchical_pair_interactions,
+)
+from qdte.measurement.interaction_adapter import (
+    interaction_transcript_to_diagonal_measurements,
+    interaction_transcript_to_local_polytope_bootdiag_measurements,
+    interaction_transcript_to_local_polytope_measurements,
+    interaction_transcript_to_shrunk_measurements,
+)
 from qdte.queries.types import QueryCatalogue, query_key
+from qdte.schema import ColumnSchema, TableSchema
+from scripts.run_orthogonal_low_budget_pilot import build_complete_low_order_workload
+from scripts.run_static_ice_qdte_pilot import _generation_config, _write_measurement_artifact
 
 
 def test_scheduled_accept_limit_cosine_anneals_to_one() -> None:
@@ -152,6 +166,660 @@ def test_disabled_structured_swap_preserves_base_output(tmp_path: Path) -> None:
     assert base_metrics["final_measured_loss"] == disabled_metrics["final_measured_loss"]
     assert base_metrics["num_candidates_scored"] == disabled_metrics["num_candidates_scored"]
     assert disabled_metrics["structured_swap_total_candidates"] == 0
+
+
+def test_dp_release_engine_uses_declared_public_row_count_and_writes_ledger(
+    tmp_path: Path,
+) -> None:
+    rows = np.asarray(
+        [[0, 0], [0, 1], [1, 0], [1, 1], [0, 0], [1, 1]],
+        dtype=np.int32,
+    )
+    data_path = tmp_path / "release.csv"
+    pd.DataFrame(rows, columns=["a", "b"]).to_csv(data_path, index=False)
+    schema = TableSchema(
+        columns=[
+            ColumnSchema(name="a", kind="categorical", cardinality=2, categories=["0", "1"]),
+            ColumnSchema(name="b", kind="categorical", cardinality=2, categories=["0", "1"]),
+        ]
+    )
+    schema_path = tmp_path / "schema.json"
+    schema.save_json(schema_path)
+    output_dir = tmp_path / "release_run"
+    config = {
+        "run": {
+            "dataset_name": "release_contract",
+            "input_csv": str(data_path),
+            "output_dir": str(output_dir),
+            "seed": 7,
+        },
+        "preprocess": {"public_schema_json": str(schema_path)},
+        "workload": {
+            "include_oneway": True,
+            "include_2way_cat": True,
+            "include_prefix": False,
+            "include_range": False,
+            "include_mixed": False,
+            "max_queries": 32,
+            "max_terms": 2,
+            "max_2way_cells": 16,
+        },
+        "privacy": {
+            "mode": "dp",
+            "dp_release_mode": True,
+            "public_row_count": True,
+            "public_n_rows": len(rows),
+            "adjacency": "add_remove",
+            "rho_total": 0.1,
+            "delta": 1.0e-9,
+            "measurement_allocation": {"oneway": 0.5, "twoway": 0.5},
+        },
+        "projection": {"project_partitions": True, "clip_nonpartition": True},
+        "init": {"N_syn": "same_as_real", "method": "independent_oneway"},
+        "qdte": {
+            "max_iters": 1,
+            "num_active_targets": 4,
+            "total_candidates_per_iter": 16,
+            "accepted_per_iter": 2,
+            "kappa_noise": 0.0,
+            "lambda_cost": 0.0,
+            "random_candidate_fraction": 0.1,
+            "full_recompute_every": 1,
+            "stop_patience": 1,
+            "min_advantage": 0.0,
+            "log_every": 1,
+        },
+        "runtime": {
+            "use_pmap": False,
+            "scoring_chunk_size": 16,
+            "answer_batch_size": 32,
+            "xla_preallocate": False,
+        },
+        "evaluation": {
+            "compute_true_query_error": False,
+            "compute_heldout_query_error": False,
+            "downstream_ml": False,
+            "save_synthetic_csv": False,
+        },
+    }
+
+    metrics = run_qdte(config)
+    measurement = orjson.loads((output_dir / "measurements.json").read_bytes())
+
+    assert metrics["dp_release_mode"] is True
+    assert metrics["public_n_rows_declared"] == len(rows)
+    assert metrics["num_rows_synthetic"] == len(rows)
+    assert measurement["num_rows"] == len(rows)
+    assert measurement["privacy_ledger"]["accounting"] == "zcdp_actual_spend_v1"
+    assert measurement["privacy_ledger"]["adjacency"] == "add_remove"
+    assert measurement["privacy_ledger"]["rho_spent"] == pytest.approx(0.1)
+
+    mismatch = copy.deepcopy(config)
+    mismatch["run"]["output_dir"] = str(tmp_path / "release_mismatch")
+    mismatch["privacy"]["public_n_rows"] = len(rows) + 1
+    with pytest.raises(ValueError, match="does not match declared"):
+        run_qdte(mismatch)
+
+
+def test_exact_orthogonal_precision_engine_smoke(tmp_path: Path) -> None:
+    schema = TableSchema(
+        columns=[
+            ColumnSchema(
+                name=name,
+                kind="categorical",
+                cardinality=2,
+                categories=["0", "1"],
+            )
+            for name in ("a", "b", "c")
+        ]
+    )
+    rng = np.random.default_rng(71)
+    rows = rng.integers(0, 2, size=(96, 3), dtype=np.int32)
+    data_path = tmp_path / "raw.csv"
+    pd.DataFrame(rows, columns=["a", "b", "c"]).to_csv(data_path, index=False)
+    schema_path = tmp_path / "schema.json"
+    schema.save_json(schema_path)
+    qcat, groups = build_complete_low_order_workload(schema, max_pair_cells=16)
+    transcript = measure_hierarchical_pair_interactions(
+        rows,
+        compile_hierarchical_pair_strategy(schema.cardinalities, [(0, 1), (0, 2), (1, 2)]),
+        public_total=len(rows),
+        rho_total=0.2,
+        rng=np.random.default_rng(72),
+        allocation_mode="public_optimal",
+    )
+    measurements = interaction_transcript_to_diagonal_measurements(
+        transcript,
+        qcat,
+        groups,
+        delta=1.0e-9,
+        target_projection="raw_reconstruction",
+    )
+    artifact = tmp_path / "measurement"
+    _write_measurement_artifact(
+        artifact,
+        qcat=qcat,
+        schema=schema,
+        measurements=measurements,
+    )
+    output_dir = tmp_path / "run"
+    config = {
+        "run": {
+            "dataset_name": "exact_precision_smoke",
+            "input_csv": str(data_path),
+            "output_dir": str(output_dir),
+            "seed": 73,
+        },
+        "preprocess": {
+            "public_schema_json": str(schema_path),
+            "force_all_categorical": True,
+        },
+        "workload": {"reuse_from_measurement": True},
+        "privacy": {
+            "mode": "dp",
+            "adjacency": "add_remove",
+            "rho_total": 0.2,
+            "delta": 1.0e-9,
+            "measurement_mode": "static_all",
+        },
+        "measurement": {"reuse_from": str(artifact), "fission": {"enabled": False}},
+        "projection": {"uncertainty": {"enabled": False}},
+        "init": {"N_syn": "same_as_real", "method": "independent_oneway"},
+        "qdte": {
+            "precision_operator": "orthogonal_interaction",
+            "objective_loss": "quadratic",
+            "objective_weighting": "variance",
+            "objective_weight_profile": "none",
+            "candidate_backend": "cpu_repair",
+            "score_backend": "precision_operator",
+            "transport_mode": "atom_flow",
+            "atom_flow_update_mode": "batch",
+            "atom_flow_pool_multiplier": 8,
+            "transport_prefix_strategy": "best_advantage",
+            "max_iters": 3,
+            "num_active_targets": 12,
+            "total_candidates_per_iter": 96,
+            "accepted_per_iter": 8,
+            "kappa_noise": 0.0,
+            "allow_below_noise_fallback": True,
+            "lambda_cost": 0.0,
+            "random_candidate_fraction": 0.1,
+            "source_over_sample_factor": 8,
+            "full_recompute_every": 1,
+            "stop_patience": 3,
+            "min_advantage": 0.0,
+            "log_every": 1,
+            "structured_swap_enabled": False,
+            "candidate_diagnostics": False,
+        },
+        "runtime": {
+            "use_pmap": False,
+            "scoring_chunk_size": 32,
+            "answer_batch_size": 128,
+            "xla_preallocate": False,
+        },
+        "debug": {
+            "recompute_after_batch": True,
+            "assert_batch_loss_decrease": True,
+        },
+        "evaluation": {"compute_true_query_error": False, "save_synthetic_csv": False},
+    }
+
+    metrics = run_qdte(config)
+
+    assert metrics["precision_operator"] == "orthogonal_interaction"
+    assert metrics["precision_operator_active"] is True
+    assert metrics["precision_operator_diagnostics"]["effective_rank"] == 6
+    assert metrics["num_accepted_edits"] > 0
+    assert metrics["final_optimization_objective"] < metrics["initial_optimization_objective"]
+    assert (output_dir / "measurements.json").exists()
+    output_measurement = orjson.loads((output_dir / "measurements.json").read_bytes())
+    assert output_measurement["strategy_transcript"]["adjacency"] == "add_remove"
+
+    stop_output_dir = tmp_path / "run_confidence_stop"
+    stop_config = copy.deepcopy(config)
+    stop_config["run"]["output_dir"] = str(stop_output_dir)
+    stop_config["qdte"]["max_iters"] = 100
+    stop_config["qdte"]["confidence_stop"] = {
+        "enabled": True,
+        "method": "chi_square",
+        "alpha": 0.05,
+    }
+    stop_metrics = run_qdte(stop_config)
+
+    assert stop_metrics["confidence_stop_enabled"] is True
+    assert stop_metrics["confidence_stop_triggered"] is True
+    assert stop_metrics["confidence_stop_iteration"] is not None
+    assert stop_metrics["confidence_stop_iteration"] < 100
+    assert stop_metrics["final_optimization_objective"] <= (
+        stop_metrics["confidence_stop_diagnostics"]["objective_threshold"] + 1.0e-9
+    )
+    stop_runtime = orjson.loads((stop_output_dir / "runtime.json").read_bytes())
+    assert stop_runtime["confidence_stop_triggered"] is True
+    assert stop_runtime["confidence_stop_iteration"] == stop_metrics["confidence_stop_iteration"]
+
+    shrink_measurements, shrinkage = interaction_transcript_to_shrunk_measurements(
+        transcript,
+        qcat,
+        groups,
+        delta=1.0e-9,
+    )
+    assert shrinkage.diagnostics()["no_op"] is True
+    shrink_artifact = tmp_path / "measurement_shrink"
+    _write_measurement_artifact(
+        shrink_artifact,
+        qcat=qcat,
+        schema=schema,
+        measurements=shrink_measurements,
+    )
+    for precision_name in (
+        "orthogonal_interaction_shrink_raw",
+        "orthogonal_interaction_shrink_analytic",
+    ):
+        shrink_output = tmp_path / precision_name
+        shrink_config = copy.deepcopy(config)
+        shrink_config["run"]["output_dir"] = str(shrink_output)
+        shrink_config["measurement"]["reuse_from"] = str(shrink_artifact)
+        shrink_config["qdte"]["precision_operator"] = precision_name
+        shrink_metrics = run_qdte(shrink_config)
+        assert shrink_metrics["precision_operator"] == precision_name
+        assert shrink_metrics["final_optimization_objective"] <= (
+            shrink_metrics["initial_optimization_objective"] + 1.0e-9
+        )
+        assert shrink_metrics["precision_operator_diagnostics"]["interaction_shrinkage"][
+            "method"
+        ] == "positive_part_block_james_stein_v1"
+
+    p3_transcript = copy.deepcopy(transcript)
+    p3_transcript.noisy_components["oneway_contrast:0"] += np.asarray([100.0])
+    p3_measurements, p3_projection = interaction_transcript_to_local_polytope_measurements(
+        p3_transcript,
+        qcat,
+        groups,
+        delta=1.0e-9,
+    )
+    assert p3_projection.diagnostics["active_cell_count"] > 0
+    p3_artifact = tmp_path / "measurement_p3"
+    _write_measurement_artifact(
+        p3_artifact,
+        qcat=qcat,
+        schema=schema,
+        measurements=p3_measurements,
+    )
+    p3_boot_measurements, _, _ = (
+        interaction_transcript_to_local_polytope_bootdiag_measurements(
+            p3_transcript,
+            qcat,
+            groups,
+            delta=1.0e-9,
+            rng=np.random.default_rng(741),
+            num_samples=16,
+            min_variance=1.0e-6,
+            min_raw_variance_fraction=0.02,
+        )
+    )
+    p3_boot_artifact = tmp_path / "measurement_p3_bootdiag"
+    _write_measurement_artifact(
+        p3_boot_artifact,
+        qcat=qcat,
+        schema=schema,
+        measurements=p3_boot_measurements,
+    )
+    for precision_name, precision_artifact in (
+        ("orthogonal_interaction_p3_raw", p3_artifact),
+        ("orthogonal_interaction_p3_bootdiag", p3_boot_artifact),
+        ("orthogonal_interaction_p3_active_set", p3_artifact),
+    ):
+        p3_output = tmp_path / precision_name
+        p3_config = copy.deepcopy(config)
+        p3_config["run"]["output_dir"] = str(p3_output)
+        p3_config["measurement"]["reuse_from"] = str(precision_artifact)
+        p3_config["qdte"]["precision_operator"] = precision_name
+        p3_metrics = run_qdte(p3_config)
+        assert p3_metrics["precision_operator"] == precision_name
+        assert p3_metrics["final_optimization_objective"] <= (
+            p3_metrics["initial_optimization_objective"] + 1.0e-9
+        )
+        assert p3_metrics["precision_operator_diagnostics"]["local_polytope_p3"][
+            "certificate_passed"
+        ] is True
+        if precision_name.endswith("active_set"):
+            assert p3_metrics["precision_operator_diagnostics"][
+                "active_set_covariance_certificate"
+            ]["certificate_passed"] is True
+        if precision_name.endswith("bootdiag"):
+            assert p3_metrics["precision_operator_diagnostics"][
+                "coefficient_bootstrap_diagonal"
+            ]["num_samples"] == 16
+
+
+def test_active_interaction_shrinkage_engine_smoke(tmp_path: Path) -> None:
+    schema = TableSchema(
+        columns=[
+            ColumnSchema(name="a", kind="categorical", cardinality=4),
+            ColumnSchema(name="b", kind="categorical", cardinality=3),
+        ]
+    )
+    rows = np.asarray(
+        [[left, left % 3] for left in range(4) for _ in range(32)],
+        dtype=np.int32,
+    )
+    data_path = tmp_path / "raw.csv"
+    pd.DataFrame(rows, columns=["a", "b"]).to_csv(data_path, index=False)
+    schema_path = tmp_path / "schema.json"
+    schema.save_json(schema_path)
+    qcat, groups = build_complete_low_order_workload(schema, max_pair_cells=16)
+    transcript = measure_hierarchical_pair_interactions(
+        rows,
+        compile_hierarchical_pair_strategy(schema.cardinalities, [(0, 1)]),
+        public_total=len(rows),
+        rho_total=50.0,
+        rng=np.random.default_rng(1702),
+        allocation_mode="public_optimal",
+    )
+    measurements, shrinkage = interaction_transcript_to_shrunk_measurements(
+        transcript,
+        qcat,
+        groups,
+        delta=1.0e-9,
+    )
+    diagnostics = shrinkage.diagnostics()
+    assert diagnostics["num_affected_pair_blocks"] == 1
+    assert diagnostics["no_op"] is False
+    assert diagnostics["analytic_covariance_stable"] is True
+    assert 0.0 < diagnostics["factor_min"] < 1.0
+    artifact = tmp_path / "shrink_measurement"
+    _write_measurement_artifact(
+        artifact,
+        qcat=qcat,
+        schema=schema,
+        measurements=measurements,
+    )
+
+    base = {
+        "init": {"N_syn": "same_as_real", "method": "independent_oneway"},
+        "qdte": {
+            "max_iters": 3,
+            "num_active_targets": 12,
+            "total_candidates_per_iter": 96,
+            "accepted_per_iter": 8,
+            "kappa_noise": 0.0,
+            "allow_below_noise_fallback": True,
+            "lambda_cost": 0.0,
+            "random_candidate_fraction": 0.1,
+            "source_over_sample_factor": 8,
+            "full_recompute_every": 1,
+            "stop_patience": 3,
+            "min_advantage": 0.0,
+            "log_every": 1,
+        },
+        "runtime": {
+            "use_pmap": False,
+            "scoring_chunk_size": 32,
+            "answer_batch_size": 128,
+        },
+        "debug": {
+            "recompute_after_batch": True,
+            "assert_batch_loss_decrease": True,
+        },
+        "evaluation": {"compute_true_query_error": False},
+    }
+    for precision_name in (
+        "orthogonal_interaction_shrink_raw",
+        "orthogonal_interaction_shrink_analytic",
+    ):
+        output = tmp_path / precision_name
+        config = _generation_config(
+            base,
+            input_csv=data_path,
+            public_schema=schema_path,
+            artifact_dir=artifact,
+            output_dir=output,
+            dataset_name="active_shrinkage_smoke",
+            epsilon=10.0,
+            rho_total=50.0,
+            delta=1.0e-9,
+            seed=1703,
+            max_iters=3,
+            precision_operator=precision_name,
+            exact_scoring_chunk_size=32,
+        )
+        metrics = run_qdte(config)
+        assert metrics["precision_operator"] == precision_name
+        assert metrics["precision_operator_diagnostics"]["interaction_shrinkage"][
+            "no_op"
+        ] is False
+        assert metrics["final_optimization_objective"] <= (
+            metrics["initial_optimization_objective"] + 1.0e-9
+        )
+
+
+def test_confidence_constrained_entropy_nonbinary_engine_smoke(tmp_path: Path) -> None:
+    schema = TableSchema(
+        columns=[
+            ColumnSchema(name="a", kind="categorical", cardinality=4),
+            ColumnSchema(name="b", kind="categorical", cardinality=3),
+            ColumnSchema(name="c", kind="categorical", cardinality=2),
+        ]
+    )
+    rows = np.asarray(
+        [
+            [left, (left + repeat) % 3, (left + repeat) % 2]
+            for left in range(4)
+            for repeat in range(24)
+        ],
+        dtype=np.int32,
+    )
+    data_path = tmp_path / "entropy_raw.csv"
+    pd.DataFrame(rows, columns=["a", "b", "c"]).to_csv(data_path, index=False)
+    schema_path = tmp_path / "entropy_schema.json"
+    schema.save_json(schema_path)
+    pairs = [(0, 1), (0, 2), (1, 2)]
+    qcat, groups = build_complete_low_order_workload(schema, max_pair_cells=16)
+    transcript = measure_hierarchical_pair_interactions(
+        rows,
+        compile_hierarchical_pair_strategy(schema.cardinalities, pairs),
+        public_total=len(rows),
+        rho_total=0.2,
+        rng=np.random.default_rng(1801),
+        allocation_mode="public_optimal",
+    )
+    measurements = interaction_transcript_to_diagonal_measurements(
+        transcript,
+        qcat,
+        groups,
+        delta=1.0e-9,
+        target_projection="raw_reconstruction",
+    )
+    artifact = tmp_path / "entropy_measurement"
+    _write_measurement_artifact(
+        artifact,
+        qcat=qcat,
+        schema=schema,
+        measurements=measurements,
+    )
+    output = tmp_path / "entropy_run"
+    base = {
+        "init": {"N_syn": "same_as_real", "method": "independent_oneway"},
+        "qdte": {
+            "max_iters": 4,
+            "num_active_targets": 16,
+            "total_candidates_per_iter": 128,
+            "accepted_per_iter": 8,
+            "kappa_noise": 0.0,
+            "allow_below_noise_fallback": True,
+            "lambda_cost": 0.0,
+            "random_candidate_fraction": 0.1,
+            "source_over_sample_factor": 8,
+            "atom_flow_pool_multiplier": 8,
+            "full_recompute_every": 1,
+            "stop_patience": 4,
+            "min_advantage": 0.0,
+            "log_every": 1,
+        },
+        "runtime": {
+            "use_pmap": False,
+            "scoring_chunk_size": 64,
+            "answer_batch_size": 128,
+        },
+        "debug": {
+            "recompute_after_batch": True,
+            "assert_batch_loss_decrease": True,
+        },
+        "evaluation": {"compute_true_query_error": False},
+    }
+    config = _generation_config(
+        base,
+        input_csv=data_path,
+        public_schema=schema_path,
+        artifact_dir=artifact,
+        output_dir=output,
+        dataset_name="entropy_nonbinary_smoke",
+        epsilon=0.1,
+        rho_total=0.2,
+        delta=1.0e-9,
+        seed=1802,
+        max_iters=4,
+        precision_operator="orthogonal_interaction",
+        exact_scoring_chunk_size=64,
+        entropy=True,
+    )
+
+    metrics = run_qdte(config)
+
+    assert metrics["entropy_enabled"] is True
+    assert metrics["precision_operator"] == "orthogonal_interaction"
+    assert np.isfinite(metrics["initial_entropy_regularizer"])
+    assert np.isfinite(metrics["final_entropy_regularizer"])
+    assert metrics["entropy_diagnostics"]["prior"]["domain_size"] == 24
+    assert metrics["entropy_diagnostics"]["state"]["num_rows"] == len(rows)
+    assert metrics["entropy_diagnostics"]["controller"]["dual_updates"] == 4
+    timeseries = pd.read_csv(output / "metrics_timeseries.csv")
+    assert "entropy_regularizer" in timeseries.columns
+    assert "entropy_dual_weight" in timeseries.columns
+    assert timeseries["atom_flow_custom_prefix"].max() == 1
+    runtime = orjson.loads((output / "runtime.json").read_bytes())
+    assert runtime["entropy_enabled"] is True
+    assert runtime["entropy_diagnostics"]["state"]["num_rows"] == len(rows)
+
+
+def test_exact_interaction_cycle_nonbinary_engine_smoke(tmp_path: Path) -> None:
+    schema = TableSchema(
+        columns=[
+            ColumnSchema(name="a", kind="categorical", cardinality=4),
+            ColumnSchema(name="b", kind="categorical", cardinality=3),
+            ColumnSchema(name="c", kind="categorical", cardinality=2),
+        ]
+    )
+    rows = np.asarray(
+        [
+            [left, (left + repeat) % 3, (left + 2 * repeat) % 2]
+            for left in range(4)
+            for repeat in range(32)
+        ],
+        dtype=np.int32,
+    )
+    data_path = tmp_path / "cycle_raw.csv"
+    pd.DataFrame(rows, columns=["a", "b", "c"]).to_csv(data_path, index=False)
+    schema_path = tmp_path / "cycle_schema.json"
+    schema.save_json(schema_path)
+    pairs = [(0, 1), (0, 2), (1, 2)]
+    qcat, groups = build_complete_low_order_workload(schema, max_pair_cells=16)
+    transcript = measure_hierarchical_pair_interactions(
+        rows,
+        compile_hierarchical_pair_strategy(schema.cardinalities, pairs),
+        public_total=len(rows),
+        rho_total=0.2,
+        rng=np.random.default_rng(1901),
+        allocation_mode="public_optimal",
+    )
+    measurements = interaction_transcript_to_diagonal_measurements(
+        transcript,
+        qcat,
+        groups,
+        delta=1.0e-9,
+        target_projection="raw_reconstruction",
+    )
+    artifact = tmp_path / "cycle_measurement"
+    _write_measurement_artifact(
+        artifact,
+        qcat=qcat,
+        schema=schema,
+        measurements=measurements,
+    )
+    output = tmp_path / "cycle_run"
+    base = {
+        "init": {"N_syn": "same_as_real", "method": "independent_oneway"},
+        "qdte": {
+            "max_iters": 4,
+            "num_active_targets": 16,
+            "total_candidates_per_iter": 128,
+            "accepted_per_iter": 8,
+            "kappa_noise": 0.0,
+            "allow_below_noise_fallback": True,
+            "lambda_cost": 0.0,
+            "random_candidate_fraction": 0.1,
+            "source_over_sample_factor": 8,
+            "atom_flow_pool_multiplier": 8,
+            "full_recompute_every": 1,
+            "stop_patience": 4,
+            "min_advantage": 0.0,
+            "log_every": 1,
+        },
+        "runtime": {
+            "use_pmap": False,
+            "scoring_chunk_size": 64,
+            "answer_batch_size": 128,
+        },
+        "debug": {
+            "recompute_after_batch": True,
+            "assert_batch_loss_decrease": True,
+        },
+        "evaluation": {"compute_true_query_error": False},
+    }
+    config = _generation_config(
+        base,
+        input_csv=data_path,
+        public_schema=schema_path,
+        artifact_dir=artifact,
+        output_dir=output,
+        dataset_name="cycle_nonbinary_smoke",
+        epsilon=0.1,
+        rho_total=0.2,
+        delta=1.0e-9,
+        seed=1902,
+        max_iters=4,
+        precision_operator="orthogonal_interaction",
+        exact_scoring_chunk_size=64,
+        interaction_cycles=True,
+    )
+    config["qdte"].update(
+        {
+            "structured_swap_interval": 1,
+            "structured_swap_candidate_units": 64,
+            "structured_swap_transport_pool": 64,
+            "structured_swap_accept_start": 8,
+            "structured_swap_accept_end": 1,
+            "structured_swap_noise_guard_kappa": 0.0,
+            "structured_swap_trigger_rms": 0.0,
+        }
+    )
+
+    metrics = run_qdte(config)
+
+    assert metrics["structured_swap_compiler"] == "interaction_rectangle_v1"
+    assert metrics["structured_swap_compiler_calls"] > 0
+    assert metrics["structured_swap_total_candidates"] > 0
+    assert metrics["structured_swap_total_positive_rectangles"] > 0
+    assert metrics["final_optimization_objective"] <= (
+        metrics["initial_optimization_objective"] + 1.0e-9
+    )
+    assert metrics["final_incremental_answer_drift"] == 0.0
+    timeseries = pd.read_csv(output / "metrics_timeseries.csv")
+    assert "structured_swap_positive_rectangles" in timeseries.columns
+    assert timeseries["structured_swap_candidates"].max() > 0
+    runtime = orjson.loads((output / "runtime.json").read_bytes())
+    assert runtime["structured_swap_compiler"] == "interaction_rectangle_v1"
 
 
 def test_measurement_fission_selects_reproducible_checkpoint(tmp_path: Path) -> None:

@@ -215,7 +215,7 @@ def audit_sources(package_dir: Path) -> list[str]:
 
 def audit_no_private_paths(package_dir: Path) -> list[str]:
     errors: list[str] = []
-    forbidden = ("/home/" + "qianqiu", str(ROOT), str(BASELINE_ROOT))
+    forbidden = ("/home/" + "qian" + "qiu", str(ROOT), str(BASELINE_ROOT))
     for path in package_dir.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in {
             ".csv",

@@ -14,9 +14,41 @@ Before private data are accessed, a run fixes:
 - the synthetic row count;
 - QDTE candidate, transport, stopping, and random-seed configuration.
 
-Cardinalities are treated as public known schema information. Inferring them
-from an input CSV when no separate schema file is supplied is an input-loader
-convenience, not a private schema-estimation mechanism.
+Cardinalities, category codebooks, numerical bin edges, missing-value rules,
+and the row count are treated as public metadata. Research runs may infer a
+schema for convenience, but such a run is not a deployable DP release profile.
+With `privacy.dp_release_mode=true`, validation fails closed unless:
+
+- `preprocess.public_schema_json` names an explicit public schema;
+- `privacy.public_row_count=true` declares `n` public and
+  `privacy.public_n_rows` supplies its positive integer value;
+- `privacy.adjacency=add_remove` fixes the adjacency used by the sensitivity
+  and accounting proofs; and
+- all in-process true-data evaluation is disabled.
+
+`configs/variants/dp_release_profile_overlay.yaml` records these requirements.
+The canonical external runner additionally reads `n_rows` from public input
+metadata rather than opening `real_encoded.npy` to configure the run. The
+active runner verifies that the private input has exactly this declared row
+count before measurement and uses the declared value for projection and the
+default synthetic row count.
+
+For deployment, the repository also exposes a process-separated path:
+
+```text
+private measurement process:
+  private CSV + public schema/workload -> sealed public transcript
+
+public generation process:
+  sealed transcript + public generation config -> synthetic table
+```
+
+The sealed transcript contains only `schema.json`, `queries.json`,
+`measurements.json`, and `transcript_manifest.json`. The manifest hashes the
+three payloads and certifies the add/remove privacy ledger and public row
+count. `run.transcript_only_generation=true` forbids both `run.input_csv` and
+`init.encoded_npy`; the generation process verifies the manifest before QDTE
+starts and never invokes the private-data loader.
 
 ## 2. Private Measurement
 
@@ -28,6 +60,12 @@ zCDP budget:
 rho_j = sensitivity_l2_j^2 / (2 * noise_variance_j)
 sum_j rho_j <= rho_total
 ```
+
+The serialized ledger records both declared `rho_total` and actual
+`rho_spent`; reported `epsilon_delta` is computed from `rho_spent`.
+Each Gaussian-vector ledger entry records its scope label, add/remove
+adjacency, L2 sensitivity, sigma multiplier, realized noise standard
+deviation, and charged rho under `gaussian_zcdp_exact_v1`.
 
 Projection, clipping, partition repair, variance post-processing, and row
 generation are post-processing when they read only these releases and public
@@ -130,7 +168,10 @@ The public checks include:
 
 ```bash
 conda run -n qdte pytest -q tests/test_dp_boundary_no_true_answers_in_generator.py
+conda run -n qdte pytest -q tests/test_public_transcript_generation.py
+conda run -n qdte pytest -q tests/test_preprocess.py tests/test_config_validation.py
 conda run -n qdte pytest -q tests/test_edit_advantage.py
+conda run -n qdte pytest -q tests/test_transport.py
 conda run -n qdte pytest -q tests/test_measurement_fission.py
 conda run -n qdte pytest -q tests/test_run_integrated_sage_qdte.py
 conda run -n qdte pytest -q tests/test_run_orthogonal_low_budget_pilot.py

@@ -1,0 +1,78 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "4daac6c7a6957356c4efb874eda61bdec6affcafba6e83a28c9505cf531a575c"
+  },
+  "cardinalities": [
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "config_path": "configs/nltcs_sage_strong.yaml",
+  "dataset": "nltcs_sage_strong",
+  "groups_by_family": {
+    "kway": 2,
+    "oneway": 16,
+    "twoway": 120
+  },
+  "n_cols": 16,
+  "n_rows": 21574,
+  "notes": "Strong binary workload with sampled 3/4-way k-way queries for SAGE external baselines.",
+  "num_queries": 8704,
+  "num_workload_groups": 138,
+  "preprocess": {
+    "force_all_categorical": true,
+    "label_column": null,
+    "missing_token": "__MISSING__",
+    "numerical_bins": 32
+  },
+  "privacy_delta_default": 1e-09,
+  "queries_by_family": {
+    "kway": 8192,
+    "oneway": 32,
+    "twoway": 480
+  },
+  "queries_sha256": "a1fca6efc56485f6d9c89c1afc463d4f774c79ae32150de2503980464634eef2",
+  "raw_csv": "external_inputs/nltcs_sage_strong/raw.csv",
+  "raw_sha256": "31d23617ba74786d2d163c9c31a841e11e5a5f5f8266918d8021ec4e562684b4",
+  "real_encoded_sha256": "8c2658ca5a200e5b73660d88abe6533b6e6e945b18a015bab26db06eed824e6f",
+  "schema_sha256": "e84e9b1a1f2bce2906bc1accb96f7142bfd741dff8d9ae2411f6e23e4b3b4c8f",
+  "source_dataset": "nltcs",
+  "source_input_dir": "external_inputs/nltcs",
+  "workload": {
+    "exact_group_sensitivity_max_cells": 200000,
+    "include_2way_cat": true,
+    "include_halfspace": false,
+    "include_kway": true,
+    "include_kway_mixed": false,
+    "include_kway_prefix": false,
+    "include_kway_range": false,
+    "include_mixed": false,
+    "include_oneway": true,
+    "include_orthogonal_kway_mixed": false,
+    "include_prefix": false,
+    "include_range": false,
+    "kway_orders": [
+      3,
+      4
+    ],
+    "kway_queries_per_order": 4096,
+    "max_2way_cells": 20000,
+    "max_queries": 40000,
+    "max_terms": 4,
+    "random_seed": 0
+  }
+}

@@ -26,6 +26,7 @@ except ModuleNotFoundError:
 
 MANIFEST = Path("docs/PUBLIC_RELEASE_MANIFEST_20260706.md")
 REQUIRED_VERIFY_COMMANDS = [
+    ["python3", "scripts/audit_reproducibility_docs.py"],
     ["python3", "scripts/verify_public_release.py", "--strict"],
     [
         "conda",

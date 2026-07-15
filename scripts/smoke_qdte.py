@@ -25,6 +25,12 @@ def make_smoke_csv(path: Path, seed: int = 0, n: int = 1000) -> None:
     df.to_csv(path, index=False)
 
 
+def smoke_paths(output_dir: Path | None, mode: str) -> tuple[Path, Path]:
+    resolved_output = output_dir or ROOT / "outputs" / f"smoke_qdte_{mode}"
+    data_path = resolved_output.parent / f"{resolved_output.name}_input.csv"
+    return data_path, resolved_output
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["dp", "oracle"], default="dp")
@@ -33,13 +39,13 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=None)
     args = parser.parse_args()
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-    data_path = ROOT / "outputs" / "smoke_input.csv"
+    data_path, output_dir = smoke_paths(args.output_dir, args.mode)
     make_smoke_csv(data_path, n=args.rows)
     config = {
         "run": {
             "dataset_name": "smoke",
             "input_csv": str(data_path),
-            "output_dir": str(args.output_dir or ROOT / "outputs" / f"smoke_qdte_{args.mode}"),
+            "output_dir": str(output_dir),
             "seed": 0,
         },
         "preprocess": {

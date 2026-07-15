@@ -85,7 +85,7 @@ def test_fact_audit_rejects_universal_gsd_claim() -> None:
 def test_private_path_audit_rejects_home_path(tmp_path: Path) -> None:
     module = _load_module()
     (tmp_path / "bad.json").write_text(
-        '{"path": "/home/' + 'qianqiu/private"}', encoding="utf-8"
+        '{"path": "/home/' + "qian" + 'qiu/private"}', encoding="utf-8"
     )
 
     errors = module.audit_no_private_paths(tmp_path)

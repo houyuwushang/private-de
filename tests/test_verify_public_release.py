@@ -34,6 +34,8 @@ def test_release_audit_allows_known_tracked_internal_as_warning(tmp_path: Path) 
     assert "qdte" in mod.PUBLIC_VISIBLE_PATHS
     assert "qdte/eval/external.py" not in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/run_qdte.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "scripts/measure_qdte_transcript.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "scripts/generate_qdte_from_transcript.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/smoke_qdte.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/run_ablation.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/run_adaptive_selection_ablation.py" in mod.PUBLIC_VISIBLE_PATHS
@@ -52,6 +54,11 @@ def test_release_audit_allows_known_tracked_internal_as_warning(tmp_path: Path) 
     assert "tests/test_run_integrated_sage_qdte.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "tests/test_run_orthogonal_low_budget_pilot.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "tests/test_nonnegative_projection_theorem.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "configs/variants/dp_release_profile_overlay.yaml" in mod.PUBLIC_VISIBLE_PATHS
+    assert "tests/test_config_validation.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "tests/test_public_transcript_generation.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "tests/test_preprocess.py" in mod.PUBLIC_VISIBLE_PATHS
+    assert "tests/test_transport.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "docs/CODE_REVIEW_GUIDE.md" in mod.PUBLIC_VISIBLE_PATHS
     assert "scripts/verify_paper_package_tarball.py" in mod.PUBLIC_VISIBLE_PATHS
     assert "tests/test_verify_paper_package_tarball.py" in mod.PUBLIC_VISIBLE_PATHS
@@ -142,11 +149,12 @@ def test_release_audit_rejects_local_paths_in_public_files(tmp_path: Path) -> No
     _git(tmp_path, "init")
     (tmp_path / ".gitignore").write_text("docs/HANDOFF.md\n")
     _write_paths(tmp_path, mod.PUBLIC_VISIBLE_PATHS)
-    (tmp_path / "README.md").write_text("/home/" + "qianqiu/private/path\n")
+    private_user = "qian" + "qiu"
+    (tmp_path / "README.md").write_text("/home/" + private_user + "/private/path\n")
 
     result = mod.verify(root=tmp_path, strict=False)
 
-    assert any("README.md" in error and "/home/" + "qianqiu" in error for error in result.errors)
+    assert any("README.md" in error and "/home/" + private_user in error for error in result.errors)
 
 
 def test_release_audit_rejects_local_paths_in_tracked_release_files(tmp_path: Path) -> None:
@@ -156,13 +164,45 @@ def test_release_audit_rejects_local_paths_in_tracked_release_files(tmp_path: Pa
     _write_paths(tmp_path, mod.PUBLIC_VISIBLE_PATHS)
     _write_paths(tmp_path, ["scripts/non_manifest_release_helper.py"])
     (tmp_path / "scripts" / "non_manifest_release_helper.py").write_text(
-        "ROOT = '/home/" + "qianqiu/private/path'\n"
+        "ROOT = '/home/" + "qian" + "qiu/private/path'\n"
     )
     _git(tmp_path, "add", ".")
 
     result = mod.verify(root=tmp_path, strict=False)
 
     assert any(
-        "scripts/non_manifest_release_helper.py" in error and "/home/" + "qianqiu" in error
+        "scripts/non_manifest_release_helper.py" in error
+        and "/home/" + "qian" + "qiu" in error
         for error in result.errors
     )
+
+
+def test_release_audit_ignores_untracked_nonmanifest_research_helper(tmp_path: Path) -> None:
+    mod = _load_release_module()
+    _git(tmp_path, "init")
+    (tmp_path / ".gitignore").write_text("docs/HANDOFF.md\n")
+    _write_paths(tmp_path, mod.PUBLIC_VISIBLE_PATHS)
+    helper = tmp_path / "scripts" / "local_research_only.py"
+    helper.write_text("ROOT = '/home/" + "qian" + "qiu/private/path'\n")
+
+    result = mod.verify(root=tmp_path, strict=False)
+
+    assert not any("local_research_only.py" in error for error in result.errors)
+
+
+def test_release_audit_scans_untracked_files_under_public_package_directory(
+    tmp_path: Path,
+) -> None:
+    mod = _load_release_module()
+    _git(tmp_path, "init")
+    (tmp_path / ".gitignore").write_text("docs/HANDOFF.md\n")
+    _write_paths(tmp_path, mod.PUBLIC_VISIBLE_PATHS)
+    (tmp_path / "qdte").unlink()
+    (tmp_path / "qdte").mkdir()
+    (tmp_path / "qdte" / "__init__.py").write_text("\n")
+    helper = tmp_path / "qdte" / "new_public_module.py"
+    helper.write_text("ROOT = '/home/" + "qian" + "qiu/private/path'\n")
+
+    result = mod.verify(root=tmp_path, strict=False)
+
+    assert any("new_public_module.py" in error for error in result.errors)

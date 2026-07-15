@@ -13,7 +13,7 @@ from qdte.measurement.consistency import (
     project_query_space_lsq,
 )
 from qdte.measurement.projection import clip_counts, project_non_decreasing, project_simplex
-from qdte.privacy.accountant import zcdp_epsilon
+from qdte.privacy.accountant import ZCDPPrivacyFilter, zcdp_epsilon
 from qdte.privacy.gaussian import add_zcdp_gaussian_noise, sigma_from_rho
 from qdte.queries.eval_jax import answer_queries
 from qdte.queries.types import QueryCatalogue
@@ -59,9 +59,11 @@ class Measurements:
     projection_diagnostics: dict[str, Any] | None = None
     projection_uncertainty_bias: np.ndarray | None = None
     num_rows: int | None = None
+    strategy_transcript: dict[str, Any] | None = None
+    privacy_ledger: dict[str, Any] | None = None
 
     def to_public_dict(self) -> dict:
-        return {
+        payload = {
             "mode": self.mode,
             "rho_total": self.rho_total,
             "rho_spent": self.rho_spent,
@@ -74,6 +76,11 @@ class Measurements:
             "projection_diagnostics": self.projection_diagnostics or {},
             "num_rows": self.num_rows,
         }
+        if self.strategy_transcript is not None:
+            payload["strategy_transcript"] = self.strategy_transcript
+        if self.privacy_ledger is not None:
+            payload["privacy_ledger"] = self.privacy_ledger
+        return payload
 
 
 def measurement_group_from_dict(data: dict[str, Any]) -> MeasurementGroup:
@@ -102,6 +109,9 @@ def measurements_from_public_dict(data: dict[str, Any]) -> Measurements:
     inv_variances = 1.0 / np.maximum(variances, 1.0e-12)
     groups = [measurement_group_from_dict(group) for group in data.get("groups", [])]
     _validate_measurement_groups(len(target_noisy), groups)
+    raw_ledger = data.get("privacy_ledger")
+    if raw_ledger is not None and not isinstance(raw_ledger, dict):
+        raise ValueError("Serialized privacy_ledger must be a mapping")
     return Measurements(
         target_noisy=target_noisy,
         target_projected=target_projected,
@@ -115,6 +125,12 @@ def measurements_from_public_dict(data: dict[str, Any]) -> Measurements:
         delta=float(data["delta"]),
         projection_diagnostics=dict(data.get("projection_diagnostics", {})),
         num_rows=int(data["num_rows"]) if data.get("num_rows") is not None else None,
+        strategy_transcript=(
+            dict(data["strategy_transcript"])
+            if data.get("strategy_transcript") is not None
+            else None
+        ),
+        privacy_ledger=dict(raw_ledger) if raw_ledger is not None else None,
     )
 
 
@@ -470,6 +486,10 @@ def measure_real_dataset(
     privacy_cfg = config.get("privacy", {})
     projection_cfg = config.get("projection", {})
     mode = str(privacy_cfg.get("mode", "dp")).lower()
+    adjacency = str(privacy_cfg.get("adjacency", "add_remove"))
+    if adjacency != "add_remove":
+        raise ValueError("Static measurement currently requires privacy.adjacency='add_remove'")
+    dp_release_mode = bool(privacy_cfg.get("dp_release_mode", False))
     measurement_mode = str(privacy_cfg.get("measurement_mode", "static_all")).lower()
     if measurement_mode != "static_all":
         raise NotImplementedError(
@@ -480,7 +500,25 @@ def measure_real_dataset(
     delta = float(privacy_cfg.get("delta", 1.0e-9))
     if mode == "dp" and rho_total <= 0.0:
         raise ValueError("privacy.rho_total must be positive in DP mode")
-    epsilon_delta = zcdp_epsilon(rho_total, delta)
+
+    if dp_release_mode and mode == "dp":
+        public_total = privacy_cfg.get("public_n_rows")
+        if (
+            not isinstance(public_total, int)
+            or isinstance(public_total, bool)
+            or public_total <= 0
+        ):
+            raise ValueError(
+                "privacy.dp_release_mode=true requires positive integer privacy.public_n_rows"
+            )
+        if int(X_real.shape[0]) != public_total:
+            raise ValueError(
+                "Private input row count does not match declared privacy.public_n_rows: "
+                f"input={int(X_real.shape[0])}, public={public_total}"
+            )
+        projection_total = int(public_total)
+    else:
+        projection_total = int(X_real.shape[0])
 
     _validate_measurement_groups(qcat.m, workload_groups)
     if mode == "dp" and cardinalities is None:
@@ -493,6 +531,7 @@ def measure_real_dataset(
     variances = np.ones(qcat.m, dtype=np.float32)
     measurement_groups: list[MeasurementGroup] = []
     rho_spent = 0.0
+    privacy_filter = ZCDPPrivacyFilter(rho_total) if mode == "dp" else None
 
     if mode == "oracle":
         target = true_answers.astype(np.float32).copy()
@@ -514,9 +553,24 @@ def measure_real_dataset(
         budgets = _allocate_group_budgets(workload_groups, privacy_cfg)
         for wg in workload_groups:
             rho_g = float(budgets[wg.family])
-            rho_spent += rho_g
             idx = wg.query_indices
             noisy, sigma, noise_std = add_zcdp_gaussian_noise(true_answers[idx], rho_g, wg.sensitivity_l2, rng)
+            if privacy_filter is None:
+                raise RuntimeError("DP measurement is missing its privacy filter")
+            privacy_filter.spend(
+                label=wg.name,
+                mechanism="gaussian_vector",
+                rho=rho_g,
+                public_metadata={
+                    "accounting": "gaussian_zcdp_exact_v1",
+                    "adjacency": adjacency,
+                    "family": wg.family,
+                    "num_queries": int(len(idx)),
+                    "sensitivity_l2": float(wg.sensitivity_l2),
+                    "sigma_multiplier": float(sigma),
+                    "noise_std": float(noise_std),
+                },
+            )
             target[idx] = noisy
             variances[idx] = np.float32(noise_std * noise_std)
             measurement_groups.append(
@@ -542,7 +596,7 @@ def measure_real_dataset(
         target,
         qcat,
         measurement_groups,
-        X_real.shape[0],
+        projection_total,
         projection_cfg,
         variances,
         cards,
@@ -552,7 +606,7 @@ def measure_real_dataset(
         projected,
         qcat,
         measurement_groups,
-        X_real.shape[0],
+        projection_total,
         projection_cfg,
         variances,
         cards,
@@ -564,8 +618,26 @@ def measure_real_dataset(
         raise RuntimeError("Measurement or projection produced non-finite targets")
     if not np.all(np.isfinite(variances)) or np.any(variances <= 0.0):
         raise RuntimeError("Measurement or projection produced invalid variances")
+    if privacy_filter is not None:
+        rho_spent = privacy_filter.rho_spent
     if rho_spent > rho_total + 1.0e-10 * max(1.0, abs(rho_total)):
         raise RuntimeError(f"Measurement spent rho={rho_spent} above configured rho_total={rho_total}")
+    epsilon_delta = zcdp_epsilon(float(rho_spent), delta)
+    privacy_ledger = None
+    if privacy_filter is not None:
+        privacy_ledger = privacy_filter.to_public_dict(delta=delta)
+        privacy_ledger.update(
+            {
+                "accounting_theorem": "gaussian_zcdp_rho_equals_delta2_over_2_noise_variance",
+                "accounting_version": "static_gaussian_vector_v1",
+                "adjacency": adjacency,
+                "postprocessing": [
+                    "configured_projection",
+                    "projection_aware_uncertainty",
+                    "qdte_generation",
+                ],
+            }
+        )
     inv_variances = (1.0 / variances).astype(np.float32)
     return Measurements(
         target_noisy=target.astype(np.float32),
@@ -580,5 +652,6 @@ def measure_real_dataset(
         delta=delta,
         projection_diagnostics=projection_diagnostics,
         projection_uncertainty_bias=uncertainty_bias,
-        num_rows=int(X_real.shape[0]),
+        num_rows=projection_total,
+        privacy_ledger=privacy_ledger,
     )

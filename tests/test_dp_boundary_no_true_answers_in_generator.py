@@ -84,6 +84,8 @@ runtime:
     config, _ = runner._prepare_config(args, n_real=4)
 
     assert config["privacy"]["mode"] == "dp"
+    assert config["privacy"]["public_n_rows"] == 4
+    assert config["init"]["N_syn"] == 4
     assert config["evaluation"]["compute_true_query_error"] is False
     assert config["evaluation"]["compute_heldout_query_error"] is False
     assert config["evaluation"]["downstream_ml"] is False

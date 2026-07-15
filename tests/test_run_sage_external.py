@@ -78,9 +78,14 @@ runtime:
     assert config["run"]["output_dir"] == str(output_dir)
     assert config["run"]["seed"] == 5
     assert config["privacy"]["mode"] == "dp"
+    assert config["privacy"]["dp_release_mode"] is True
+    assert config["privacy"]["public_row_count"] is True
+    assert config["privacy"]["public_n_rows"] == 4
+    assert config["privacy"]["adjacency"] == "add_remove"
     assert config["privacy"]["rho_total"] == 1.25
     assert config["privacy"]["delta"] == 1e-9
-    assert config["init"]["N_syn"] == "same_as_real"
+    assert config["preprocess"]["public_schema_json"] == str(input_dir / "schema.json")
+    assert config["init"]["N_syn"] == 4
     assert config["qdte"]["max_iters"] == 11
 
     assert config["evaluation"]["compute_true_query_error"] is False
@@ -132,7 +137,7 @@ def test_external_sage_protocol_manifest_hashes_dp_only_generation_artifacts(
         ),
         encoding="utf-8",
     )
-    (input_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    (input_dir / "metadata.json").write_text('{"n_rows": 4}', encoding="utf-8")
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
@@ -160,14 +165,30 @@ runtime: {}
             "config_resolved.yaml",
             "schema.json",
             "queries.json",
-            "measurements.json",
             "metrics_final.json",
             "runtime.json",
         ):
             (out / name).write_text("{}", encoding="utf-8")
+        rho_spent = 0.1
+        (out / "measurements.json").write_text(
+            json.dumps(
+                {
+                    "privacy_ledger": {
+                        "accounting": "zcdp_actual_spend_v1",
+                        "adjacency": "add_remove",
+                        "rho_spent": rho_spent,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
         (out / "metrics_timeseries.csv").write_text("iteration,loss\n", encoding="utf-8")
         (out / "logs.txt").write_text("done\n", encoding="utf-8")
-        return {"epsilon_delta": 1.0, "rho_spent": 0.1, "score_backend": "cpu"}
+        return {
+            "epsilon_delta": runner.zcdp_epsilon(rho_spent, 1.0e-9),
+            "rho_spent": rho_spent,
+            "score_backend": "cpu",
+        }
 
     monkeypatch.setattr(runner, "run_qdte", fake_run)
     args = Namespace(
@@ -195,6 +216,9 @@ runtime: {}
     assert manifest["protocol_id"] == "protocol-v1"
     assert manifest["paper_evidence_qualified"] is True
     assert manifest["checks"]["true_metrics_disabled_during_generation"] is True
+    assert manifest["checks"]["public_n_rows_matches_metadata"] is True
+    assert manifest["checks"]["measurement_ledger_matches_actual_spend"] is True
+    assert manifest["checks"]["epsilon_uses_actual_spend"] is True
     assert manifest["checks"]["objective_is_variance"] is True
     assert manifest["checks"]["transport_is_atom_flow"] is True
     assert manifest["artifacts"]["synthetic"]["sha256"]

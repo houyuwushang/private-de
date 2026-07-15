@@ -19,6 +19,7 @@ PREFLIGHT_COMMANDS = [
     ["git", "status", "--short", "--untracked-files=all"],
 ]
 VERIFY_COMMANDS = [
+    ["python3", "scripts/audit_reproducibility_docs.py"],
     ["python3", "scripts/verify_public_release.py", "--strict"],
     [
         "conda",

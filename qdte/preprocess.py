@@ -15,6 +15,7 @@ class PreprocessResult:
     X: np.ndarray
     schema: TableSchema
     raw_columns: list[str]
+    public_schema_path: Path | None = None
 
 
 def _is_numeric_series(s: pd.Series) -> bool:
@@ -26,6 +27,107 @@ def _sorted_categories(values: pd.Series, missing_token: str) -> list[str]:
     filled = values.astype("string").fillna(missing_token).replace({"": missing_token, "?": missing_token})
     cats = sorted(str(x) for x in filled.unique().tolist())
     return cats
+
+
+def _normalized_strings(values: pd.Series, missing_token: str) -> pd.Series:
+    return values.astype("string").fillna(missing_token).replace({"": missing_token, "?": missing_token})
+
+
+def _encode_public_codebook(
+    values: pd.Series,
+    column: ColumnSchema,
+) -> np.ndarray:
+    labels = column.categories or column.representatives
+    if labels is None:
+        numeric = pd.to_numeric(values, errors="coerce")
+        if numeric.isna().any():
+            raise ValueError(
+                f"Public schema column {column.name!r} has no codebook and requires integer encoded input"
+            )
+        array = numeric.to_numpy(dtype=np.float64)
+        rounded = np.rint(array)
+        if not np.allclose(array, rounded, atol=0.0, rtol=0.0):
+            raise ValueError(f"Public schema column {column.name!r} contains non-integer encoded values")
+        encoded = rounded.astype(np.int32)
+        if np.any(encoded < 0) or np.any(encoded >= int(column.cardinality)):
+            raise ValueError(f"Public schema column {column.name!r} contains values outside its public domain")
+        return encoded
+
+    mapping = {str(label): idx for idx, label in enumerate(labels)}
+    normalized = _normalized_strings(values, column.missing_token)
+    observed = [str(value) for value in normalized.tolist()]
+    unknown = sorted(set(observed) - set(mapping))
+    if unknown:
+        preview = unknown[:5]
+        raise ValueError(
+            f"Public schema column {column.name!r} contains values absent from its public codebook: {preview}"
+        )
+    return np.asarray([mapping[value] for value in observed], dtype=np.int32)
+
+
+def _encode_public_numeric(values: pd.Series, column: ColumnSchema) -> np.ndarray:
+    edges = np.asarray(column.bin_edges or [], dtype=np.float64)
+    if edges.size < 2:
+        return _encode_public_codebook(values, column)
+
+    normalized = _normalized_strings(values, column.missing_token)
+    missing = normalized == column.missing_token
+    numeric = pd.to_numeric(normalized.mask(missing), errors="coerce")
+    invalid = numeric.isna() & ~missing
+    if invalid.any():
+        bad = sorted(set(str(value) for value in normalized[invalid].tolist()))[:5]
+        raise ValueError(f"Public numeric schema column {column.name!r} contains non-numeric values: {bad}")
+
+    num_bins = int(edges.size - 1)
+    if int(column.cardinality) not in {num_bins, num_bins + 1}:
+        raise ValueError(
+            f"Public numeric schema column {column.name!r} cardinality must equal its bin count "
+            "or bin count plus one missing category"
+        )
+    if missing.any() and int(column.cardinality) != num_bins + 1:
+        raise ValueError(
+            f"Public numeric schema column {column.name!r} has missing values but no public missing category"
+        )
+
+    array = numeric.fillna(float(edges[0])).to_numpy(dtype=np.float64)
+    encoded = np.searchsorted(edges[1:-1], array, side="right").astype(np.int32)
+    if missing.any():
+        encoded[missing.to_numpy()] = num_bins
+    return encoded
+
+
+def _encode_with_public_schema(df: pd.DataFrame, schema: TableSchema) -> np.ndarray:
+    schema.validate()
+    raw_columns = [str(column) for column in df.columns.tolist()]
+    schema_columns = [str(column.name) for column in schema.columns]
+    if raw_columns != schema_columns:
+        raise ValueError(
+            "Input CSV columns must exactly match the ordered public schema columns; "
+            f"input={raw_columns}, schema={schema_columns}"
+        )
+
+    encoded_columns: list[np.ndarray] = []
+    for column in schema.columns:
+        values = df[str(column.name)]
+        if column.kind == "categorical":
+            encoded = _encode_public_codebook(values, column)
+        elif column.kind == "numerical_binned":
+            encoded = _encode_public_numeric(values, column)
+        else:
+            raise ValueError(f"Unsupported public schema kind {column.kind!r}")
+        encoded_columns.append(encoded)
+    return np.stack(encoded_columns, axis=1).astype(np.int32)
+
+
+def _public_schema_path(input_csv: Path, configured: Any) -> Path | None:
+    if configured is None:
+        return None
+    text = str(configured).strip()
+    if not text:
+        raise ValueError("preprocess.public_schema_json must be a non-empty path")
+    if text in {"sibling", "input_sibling"}:
+        return input_csv.parent / "schema.json"
+    return Path(text).expanduser()
 
 
 def _encode_categorical(values: pd.Series, name: str, missing_token: str) -> tuple[np.ndarray, ColumnSchema]:
@@ -117,6 +219,7 @@ def _encode_numeric_binned(
 def load_and_preprocess_csv(config: dict[str, Any]) -> PreprocessResult:
     run_cfg = config.get("run", {})
     pp_cfg = config.get("preprocess", {})
+    privacy_cfg = config.get("privacy", {})
     input_csv = Path(run_cfg["input_csv"]).expanduser()
     missing_token = str(pp_cfg.get("missing_token", "__MISSING__"))
     numerical_bins = int(pp_cfg.get("numerical_bins", 32))
@@ -131,6 +234,23 @@ def load_and_preprocess_csv(config: dict[str, Any]) -> PreprocessResult:
     df.columns = raw_columns
     if len(df) == 0 or len(raw_columns) == 0:
         raise ValueError("Input CSV must contain at least one row and one column")
+
+    public_schema_path = _public_schema_path(input_csv, pp_cfg.get("public_schema_json"))
+    dp_release_mode = bool(privacy_cfg.get("dp_release_mode", False))
+    if dp_release_mode and str(privacy_cfg.get("mode", "dp")).lower() == "dp" and public_schema_path is None:
+        raise ValueError("privacy.dp_release_mode=true requires preprocess.public_schema_json")
+    if public_schema_path is not None:
+        if not public_schema_path.is_file():
+            raise FileNotFoundError(f"Public schema file does not exist: {public_schema_path}")
+        schema = TableSchema.load_json(public_schema_path)
+        X = _encode_with_public_schema(df, schema)
+        return PreprocessResult(
+            X=X,
+            schema=schema,
+            raw_columns=raw_columns,
+            public_schema_path=public_schema_path.resolve(),
+        )
+
     configured_columns = numerical_columns | categorical_columns
     unknown_columns = sorted(configured_columns - set(raw_columns))
     if unknown_columns:

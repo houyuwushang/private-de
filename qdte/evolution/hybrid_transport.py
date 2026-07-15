@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from qdte.evolution.hybrid_candidates import HybridCandidateUnitBatch, exact_unit_advantage
+from qdte.evolution.precision import OrthogonalInteractionPrecision
 from qdte.queries.delta_index import QueryDeltaIndex
 from qdte.queries.types import QueryCatalogue
 
@@ -44,6 +45,8 @@ def select_nonconflicting_candidate_units(
     precomputed_deltas: np.ndarray | None = None,
     objective: str = "quadratic",
     objective_weights: np.ndarray | None = None,
+    precision_operator: OrthogonalInteractionPrecision | None = None,
+    precomputed_feature_deltas: np.ndarray | None = None,
 ) -> HybridTransportResult:
     """Select an exact-positive, row-nonconflicting unit prefix.
 
@@ -62,6 +65,8 @@ def select_nonconflicting_candidate_units(
     objective_name = str(objective)
     if objective_name not in {"quadratic", "l1"}:
         raise ValueError("objective must be quadratic or l1")
+    if precision_operator is not None and objective_name != "quadratic":
+        raise ValueError("Orthogonal precision transport requires the quadratic objective")
     l1_weights = (
         inv_arr
         if objective_weights is None
@@ -69,6 +74,22 @@ def select_nonconflicting_candidate_units(
     )
     if l1_weights.shape != (qcat.m,):
         raise ValueError("objective_weights must match the query catalogue")
+    feature_deltas = None
+    weighted_feature_residual = None
+    inverse_feature_variance = None
+    if precision_operator is not None:
+        if precomputed_feature_deltas is None:
+            raise ValueError("Orthogonal precision transport requires precomputed feature deltas")
+        feature_deltas = np.asarray(precomputed_feature_deltas, dtype=np.float64)
+        if feature_deltas.shape != (
+            candidates.count,
+            precision_operator.coefficient_dimension,
+        ) or not np.all(np.isfinite(feature_deltas)):
+            raise ValueError("precomputed_feature_deltas have an invalid shape or value")
+        weighted_feature_residual = precision_operator.weighted_coefficient_residual(
+            residual_arr
+        )
+        inverse_feature_variance = 1.0 / precision_operator.coefficient_variances
     limit = max(0, int(max_accept))
     kappa = float(noise_guard_kappa)
     if not np.isfinite(kappa) or kappa < 0.0:
@@ -129,7 +150,24 @@ def select_nonconflicting_candidate_units(
         sparse_values: np.ndarray | None = None
         if dense_deltas is not None:
             delta = dense_deltas[idx]
-            if objective_name == "l1":
+            if precision_operator is not None:
+                if (
+                    feature_deltas is None
+                    or weighted_feature_residual is None
+                    or inverse_feature_variance is None
+                ):
+                    raise RuntimeError("Orthogonal precision transport state is incomplete")
+                feature_delta = feature_deltas[idx]
+                quadratic = float(
+                    (feature_delta * feature_delta) @ inverse_feature_variance
+                )
+                advantage = float(
+                    feature_delta @ weighted_feature_residual
+                    - 0.5 * quadratic
+                    - float(lambda_cost) * float(candidates.edit_cost[idx])
+                )
+                noise_variance = quadratic
+            elif objective_name == "l1":
                 advantage = float(
                     (
                         np.abs(virtual_residual.astype(np.float64))
@@ -149,10 +187,11 @@ def select_nonconflicting_candidate_units(
                     lambda_cost=lambda_cost,
                     edit_cost=float(candidates.edit_cost[idx]),
                 )
-            delta64 = np.asarray(delta, dtype=np.float64)
-            noise_variance = float(
-                delta64 @ (delta64 * noise_variance_per_query)
-            )
+            if precision_operator is None:
+                delta64 = np.asarray(delta, dtype=np.float64)
+                noise_variance = float(
+                    delta64 @ (delta64 * noise_variance_per_query)
+                )
         else:
             sparse_delta = index.sparse_delta_sum(  # type: ignore[union-attr]
                 candidates.old_rows[idx, mask],
@@ -162,7 +201,24 @@ def select_nonconflicting_candidate_units(
             sparse_values = sparse_delta.values.astype(np.float32, copy=False)
             values64 = sparse_values.astype(np.float64)
             local_inv64 = inv64[sparse_qids]
-            if objective_name == "l1":
+            if precision_operator is not None:
+                if (
+                    feature_deltas is None
+                    or weighted_feature_residual is None
+                    or inverse_feature_variance is None
+                ):
+                    raise RuntimeError("Orthogonal precision transport state is incomplete")
+                feature_delta = feature_deltas[idx]
+                quadratic = float(
+                    (feature_delta * feature_delta) @ inverse_feature_variance
+                )
+                advantage = float(
+                    feature_delta @ weighted_feature_residual
+                    - 0.5 * quadratic
+                    - float(lambda_cost) * float(candidates.edit_cost[idx])
+                )
+                noise_variance = quadratic
+            elif objective_name == "l1":
                 local_residual = virtual_residual[sparse_qids].astype(np.float64)
                 advantage = float(
                     (
@@ -179,10 +235,11 @@ def select_nonconflicting_candidate_units(
                     - 0.5 * ((values64 * values64) @ local_inv64)
                     - float(lambda_cost) * float(candidates.edit_cost[idx])
                 )
-            noise_variance = float(
-                (values64 * values64)
-                @ noise_variance_per_query[sparse_qids]
-            )
+            if precision_operator is None:
+                noise_variance = float(
+                    (values64 * values64)
+                    @ noise_variance_per_query[sparse_qids]
+                )
         noise_std = float(np.sqrt(np.maximum(0.0, noise_variance)))
         if not np.isfinite(advantage) or advantage <= float(min_advantage) + kappa * noise_std:
             if np.isfinite(advantage) and advantage > float(min_advantage):
@@ -201,6 +258,14 @@ def select_nonconflicting_candidate_units(
             sparse_accepted_qids.append(sparse_qids)
             sparse_accepted_values.append(sparse_values)
             virtual_residual[sparse_qids] -= sparse_values
+        if precision_operator is not None:
+            if (
+                feature_deltas is None
+                or weighted_feature_residual is None
+                or inverse_feature_variance is None
+            ):
+                raise RuntimeError("Orthogonal precision transport state is incomplete")
+            weighted_feature_residual -= feature_deltas[idx] * inverse_feature_variance
         used_rows.update(int(row_id) for row_id in row_ids.tolist())
         if len(accepted) >= limit:
             break

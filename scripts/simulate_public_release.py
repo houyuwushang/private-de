@@ -16,7 +16,7 @@ except ModuleNotFoundError:
     from scripts.verify_public_release import PUBLIC_VISIBLE_PATHS
 
 
-EXTRA_PUBLIC_PATHS = [".gitignore"]
+EXTRA_PUBLIC_PATHS = [".gitignore", "pytest.ini"]
 PUBLIC_IMPORT_MODULES = [
     "qdte",
     "qdte.config",
@@ -34,6 +34,7 @@ PUBLIC_IMPORT_MODULES = [
     "qdte.measurement.projection",
     "qdte.measurement.consistency",
     "qdte.measurement.measure",
+    "qdte.measurement.public_artifact",
     "qdte.evolution.state",
     "qdte.evolution.candidates",
     "qdte.evolution.initialization",
@@ -152,6 +153,17 @@ def _qdte_smoke_command() -> list[str]:
     ]
 
 
+def _public_transcript_boundary_command() -> list[str]:
+    return [
+        sys.executable,
+        "-B",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_public_transcript_generation.py",
+    ]
+
+
 def simulate_public_release(source_root: Path, output_dir: Path, *, force: bool = False) -> SimulationResult:
     copied = copy_release_surface(source_root, output_dir, force=force)
     _run(["git", "init"], output_dir)
@@ -160,10 +172,17 @@ def simulate_public_release(source_root: Path, output_dir: Path, *, force: bool 
     verification = _run(verifier, output_dir, check=False)
     import_smoke = None
     qdte_smoke = None
+    transcript_boundary = None
     if verification.returncode == 0:
         import_smoke = _run(_import_smoke_command(), output_dir, check=False)
     if import_smoke is not None and import_smoke.returncode == 0:
         qdte_smoke = _run(_qdte_smoke_command(), output_dir, check=False)
+    if qdte_smoke is not None and qdte_smoke.returncode == 0:
+        transcript_boundary = _run(
+            _public_transcript_boundary_command(),
+            output_dir,
+            check=False,
+        )
     stdout = verification.stdout
     stderr = verification.stderr
     returncode = verification.returncode
@@ -179,6 +198,13 @@ def simulate_public_release(source_root: Path, output_dir: Path, *, force: bool 
             stdout += "public release QDTE smoke passed\n"
         else:
             returncode = qdte_smoke.returncode
+    if transcript_boundary is not None:
+        stdout += transcript_boundary.stdout
+        stderr += transcript_boundary.stderr
+        if transcript_boundary.returncode == 0:
+            stdout += "public transcript process-boundary smoke passed\n"
+        else:
+            returncode = transcript_boundary.returncode
     return SimulationResult(
         output_dir=output_dir,
         copied_paths=copied,

@@ -42,6 +42,12 @@ external_inputs/<dataset>/
 
 The true-answer cache is for offline evaluation only. It must not be used by QDTE during measurement, generation, selection, stopping, or hyperparameter selection.
 
+`schema.json` is the authoritative public category/binning specification, and
+`metadata.json:n_rows` is the declared public row count. A deployable run must
+not regenerate either value from the private table. The resolved deployable
+config records that value as `privacy.public_n_rows`; a mismatch with the
+private input fails closed.
+
 ## 3. Smoke Run
 
 Run a small DP smoke test that generates its own toy CSV and writes a short
@@ -83,16 +89,61 @@ qdte.score_backend = dense_gpu
 qdte.transport_mode = atom_flow
 ```
 
-The config paths may point to local canonical input directories. For a public reproduction run, override `run.input_csv` and `run.output_dir` as needed:
+The config paths may point to local canonical input directories. The strong
+YAML files are research profiles and may enable in-process offline metrics. For
+a fail-closed public reproduction run, apply the release overlay and override
+the input/output paths:
 
 ```bash
 conda run -n qdte python scripts/run_qdte.py \
   --config configs/adult_sage_strong.yaml \
+  --privacy.dp_release_mode true \
+  --privacy.public_row_count true \
+  --privacy.public_n_rows 48842 \
+  --privacy.adjacency add_remove \
+  --preprocess.public_schema_json /path/to/adult_sage_strong/schema.json \
+  --evaluation.compute_true_query_error false \
   --run.input_csv /path/to/adult_sage_strong/raw.csv \
   --run.output_dir outputs/adult_sage_strong_qdte
 ```
 
-## 5. Canonical External SAGE Run
+## 5. Process-Separated DP Release
+
+For the strongest deployable boundary, split measurement and generation into
+different processes. The first command is the only process that opens the
+private CSV and writes a sealed public transcript:
+
+```bash
+conda run -n qdte python scripts/measure_qdte_transcript.py \
+  --config configs/adult_sage_strong.yaml \
+  --output-dir outputs/adult_public_transcript \
+  --override run.input_csv=/path/to/adult/raw.csv \
+  --override preprocess.public_schema_json=/path/to/adult/schema.json \
+  --override privacy.dp_release_mode=true \
+  --override privacy.public_row_count=true \
+  --override privacy.public_n_rows=48842 \
+  --override privacy.adjacency=add_remove \
+  --override evaluation.compute_true_query_error=false
+```
+
+The second command accepts only that transcript. It removes any configured
+private input path, disables in-process evaluation, verifies every artifact
+hash and the actual-spend privacy ledger, and then runs QDTE:
+
+```bash
+conda run -n qdte python scripts/generate_qdte_from_transcript.py \
+  --config configs/adult_sage_strong.yaml \
+  --transcript outputs/adult_public_transcript \
+  --output-dir outputs/adult_public_generation
+```
+
+`tests/test_public_transcript_generation.py` proves that, for the same seed,
+this split path produces byte-identical measurement artifacts and
+byte-identical initial/final synthetic arrays relative to the existing
+in-process path. It also removes the private CSV before generation and makes
+any attempted private-loader call fail the test.
+
+## 6. Canonical External SAGE Run
 
 To run SAGE on a canonical external input package:
 
@@ -110,9 +161,14 @@ conda run -n qdte python scripts/run_sage_external.py \
   --xla-preallocate
 ```
 
-This runner disables active true-query evaluation inside SAGE and leaves true answers to the shared offline evaluator.
+This runner enables the fail-closed DP release profile, loads the sibling
+public `schema.json`, reads the declared public `n_rows` from metadata, disables
+active true-query evaluation inside SAGE, and leaves true answers to the shared
+offline evaluator. Its evidence manifest also checks the per-group measurement
+privacy ledger, actual-spend epsilon conversion, adjacency, and public row
+count.
 
-## 6. Shared Offline Evaluation
+## 7. Shared Offline Evaluation
 
 Evaluate any row-level synthetic table with:
 
@@ -142,7 +198,7 @@ computes block TVD as:
 selection, generation, scoring, transport, stopping, or hyperparameter
 selection.
 
-## 7. Planning And Collecting External Runs
+## 8. Planning And Collecting External Runs
 
 Plan commands without executing:
 
@@ -177,7 +233,7 @@ conda run -n qdte python scripts/collect_external_results.py \
   --output-md /path/to/external_results/summary_all.md
 ```
 
-## 8. Figures And Tables
+## 9. Figures And Tables
 
 Plot canonical result CSVs:
 
@@ -250,7 +306,7 @@ tarball integrity, claim traceability, original-protocol baseline evidence, GPU
 provenance, public-release audit, strict public-release simulation, and
 whitespace checks.
 
-## 9. Current QDTE Paper Package
+## 10. Current QDTE Paper Package
 
 The paper-facing method names and claim boundaries are frozen in:
 
@@ -303,7 +359,7 @@ Encoded column cardinalities are treated as public known schema information.
 When no separate schema file is supplied, the loader infers them from the input
 CSV as an input convenience, not as a private schema-estimation contribution.
 
-## 10. Original-Protocol Reproduced Baselines
+## 11. Original-Protocol Reproduced Baselines
 
 The strict same-protocol table and the upstream original-protocol reproduced
 tables are separate. RAP++ official and PrivMRF official require their upstream
@@ -325,7 +381,7 @@ The generated CSV/Markdown outputs should be stored under the external results
 workspace and packaged as paper artifacts, not committed to the source
 repository.
 
-## 11. Expected Output Files
+## 12. Expected Output Files
 
 A QDTE run should write:
 
@@ -350,7 +406,7 @@ An external evaluation adds:
 evaluation.json
 ```
 
-## 12. Public Release Notes
+## 13. Public Release Notes
 
 Large generated outputs, local baseline repositories, and paper scratch notes are not part of the source release. See:
 

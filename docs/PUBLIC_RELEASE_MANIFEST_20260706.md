@@ -1,6 +1,6 @@
 # Public Release Manifest
 
-Updated: 2026-07-11
+Updated: 2026-07-15
 
 This document defines the intended public GitHub surface for the QDTE code release. It separates public reproducibility assets from internal handoff notes, paper drafts, expert memos, and experiment scratch artifacts.
 
@@ -64,6 +64,7 @@ configs/acs_sage_strong.yaml
 configs/br2000_sage_strong.yaml
 configs/nltcs_sage_strong.yaml
 configs/integrated_sage_qdte_smoke.yaml
+configs/variants/dp_release_profile_overlay.yaml
 configs/variants/qdte_gsd_breadth_seed0_manifest.yaml
 configs/variants/qdte_gsd_converged_seed0_manifest.yaml
 configs/variants/qdte_pa_diag16_overlay.yaml
@@ -90,10 +91,13 @@ Include core scripts:
 scripts/check_env.py
 scripts/path_defaults.py
 scripts/audit_public_release_plan.py
+scripts/audit_reproducibility_docs.py
 scripts/audit_gpu_provenance.py
 scripts/audit_original_protocol_baselines.py
 scripts/audit_paper_result_state.py
 scripts/run_qdte.py
+scripts/measure_qdte_transcript.py
+scripts/generate_qdte_from_transcript.py
 scripts/smoke_qdte.py
 scripts/run_sage_external.py
 scripts/evaluate_external_synthetic.py
@@ -120,6 +124,7 @@ scripts/plot_qdte_paper_results.py
 scripts/verify_qdte_paper_package.py
 scripts/materialize_gsd_measurement.py
 scripts/run_official_gsd_on_qdte_workload.py
+scripts/gsd_released_target_utils.py
 scripts/run_qdte_fission_refit_external.py
 scripts/run_same_target_gsd_generator.py
 scripts/materialize_row_realizable_target.py
@@ -342,6 +347,61 @@ qdte_paper_package_20260711.tar.gz
 sha256: 7bcacf49270d3f478deca9c8375b3f30b51502ca9d8c54caa812f93ce2972f7b
 ```
 
+### Prepared E5 delta, not yet admitted
+
+The essential same-target E5 comparison now has a minimal release delta:
+
+```text
+docs/E5_PUBLIC_ARTIFACT_DELTA_20260715.json
+scripts/package_essential_same_target_e5_public.py
+outputs/sage_qdte_e5_public_bundle_20260715/
+```
+
+The lightweight bundle is 264 KB and contains 11 hash-recorded payloads:
+protocol, aggregate summary, three per-seed CSV tables, and F8/F9 in PDF/PNG.
+It contains no private rows, exact-answer cache, local absolute paths, or raw
+run logs. The complete 24-cell generation/public-target tree is about 484 MB
+and belongs in a separately versioned anonymous artifact, not the GitHub source
+repository.
+
+This delta remains `prepared_not_admitted_until_paper_scope_freezes`. Do not
+add it to `PUBLIC_VISIBLE_PATHS` or the public branch merely because the local
+bundle audit passes. Admit it only when the ICE A/B method boundary and final
+paper scope are frozen.
+
+The E5 delta metadata is now version `v2`. This is a packaging closure only:
+it adds the frozen E5 protocol and the released-target GSD helper/test that the
+official adapter imports. The two sealed evaluator hashes and every aggregate
+result payload remain unchanged. The helper and its DP released-target adapter
+test are also part of the strict base public surface because the already-public
+official-GSD runner cannot operate without them.
+
+### Prepared anonymous candidate, not published
+
+The local assembler creates a single reviewable candidate at:
+
+```text
+outputs/sage_qdte_anonymous_artifact_candidate_20260715/
+  README.md
+  ARTIFACT_SCOPE.json
+  MANIFEST.json
+  source/
+  evidence/e5/
+```
+
+`source/` is the strict public surface plus the exact E5 source delta and the
+candidate verifier. `evidence/e5/` is the 264 KB aggregate bundle. Every file
+except `MANIFEST.json` has a byte count and SHA-256 record, and the verifier
+checks source synchronization, sealed evaluator hashes, E5 nested-manifest
+integrity, absence of git metadata/private inputs/internal handoff notes, and
+anonymous text/path hygiene.
+
+The candidate is explicitly marked
+`prepared_unpublished_scope_pending`: it has not been uploaded, has no final
+URL, and is not admitted until the ICE A/B paper boundary freezes. It supports
+source and aggregate-evidence audit, not a self-contained rerun of the omitted
+484 MB E5 tree or the external official-GSD repository.
+
 Manuscript-local helpers such as `scripts/audit_usenix_pdf_format.py` are not
 part of the explicit public `git add` list below unless the release scope is
 expanded to include the paper source. Diagnostic helpers are included only when
@@ -386,6 +446,7 @@ git add \
   configs/br2000_sage_strong.yaml \
   configs/nltcs_sage_strong.yaml \
   configs/integrated_sage_qdte_smoke.yaml \
+  configs/variants/dp_release_profile_overlay.yaml \
   configs/variants/qdte_gsd_breadth_seed0_manifest.yaml \
   configs/variants/qdte_gsd_converged_seed0_manifest.yaml \
   configs/variants/qdte_pa_diag16_overlay.yaml \
@@ -406,13 +467,16 @@ git add \
   scripts/check_env.py \
   scripts/path_defaults.py \
   scripts/run_qdte.py \
+  scripts/measure_qdte_transcript.py \
+  scripts/generate_qdte_from_transcript.py \
   scripts/smoke_qdte.py \
   scripts/audit_baseline_admission.py \
   scripts/audit_gpu_provenance.py \
   scripts/audit_integrated_sage_qdte_run.py \
   scripts/audit_original_protocol_baselines.py \
   scripts/audit_paper_result_state.py \
-  scripts/audit_public_release_plan.py \
+scripts/audit_public_release_plan.py \
+  scripts/audit_reproducibility_docs.py \
   scripts/audit_qdte_paper_claim_matrix.py \
   scripts/archive_qdte_paper_package.py \
   scripts/collect_baseline_calibration.py \
@@ -455,6 +519,7 @@ git add \
   scripts/run_rappp_official_paper_grid.py \
   scripts/run_sage_external.py \
   scripts/run_official_gsd_on_qdte_workload.py \
+  scripts/gsd_released_target_utils.py \
   scripts/run_qdte_fission_refit_external.py \
   scripts/run_same_target_gsd_generator.py \
   scripts/materialize_gsd_measurement.py \
@@ -484,8 +549,10 @@ git add \
   tests/test_verify_public_release.py \
   tests/test_archive_qdte_paper_package.py \
   tests/test_audit_qdte_paper_claim_matrix.py \
+  tests/test_audit_reproducibility_docs.py \
   tests/test_compute_transfer_gap_diagnostics.py \
   tests/test_consistency_projection.py \
+  tests/test_config_validation.py \
   tests/test_dp_boundary_no_true_answers_in_generator.py \
   tests/test_edit_advantage.py \
   tests/test_engine_smoke.py \
@@ -496,17 +563,22 @@ git add \
   tests/test_materialize_teacher_target.py \
   tests/test_measurement.py \
   tests/test_measurement_fission.py \
+  tests/test_public_transcript_generation.py \
   tests/test_nonnegative_projection_theorem.py \
   tests/test_package_qdte_paper_results.py \
   tests/test_plot_qdte_paper_results.py \
+  tests/test_preprocess.py \
   tests/test_run_official_gsd_on_qdte_workload.py \
+  tests/test_official_gsd_released_target_adapter.py \
   tests/test_run_integrated_sage_qdte.py \
   tests/test_run_nonnegative_projection_pilot.py \
   tests/test_run_orthogonal_low_budget_pilot.py \
   tests/test_run_qdte_fission_refit_external.py \
   tests/test_reproject_measurements.py \
+  tests/test_transport.py \
   tests/test_verify_qdte_paper_package.py
 
+python3 scripts/audit_reproducibility_docs.py
 python3 scripts/verify_public_release.py --strict
 conda run -n qdte python scripts/simulate_public_release.py --output-dir /tmp/private_de_public_release_strict_check --force
 conda run -n qdte python scripts/rehearse_public_release_branch.py --output-dir /tmp/private_de_public_release_branch_rehearsal --force
@@ -518,6 +590,9 @@ git status --short
 Expected result on the release branch:
 
 ```text
+python3 scripts/audit_reproducibility_docs.py
+# reproducibility documentation audit passed
+
 python3 scripts/verify_public_release.py --strict
 # public release verification passed
 

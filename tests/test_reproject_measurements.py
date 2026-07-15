@@ -55,6 +55,11 @@ def _write_artifact(tmp_path: Path) -> tuple[Path, Path]:
         epsilon_delta=1.0,
         delta=1.0e-9,
         projection_diagnostics={"consistency": {"enabled": False}},
+        privacy_ledger={
+            "accounting": "zcdp_actual_spend_v1",
+            "adjacency": "add_remove",
+            "rho_spent": 1.0,
+        },
     )
     schema.save_json(artifact_dir / "schema.json")
     qcat.save_json(artifact_dir / "queries.json")
@@ -105,6 +110,7 @@ def test_reproject_measurements_applies_configured_projection_without_true_metri
     assert np.all(projected >= -1.0e-6)
     assert np.isclose(float(projected.sum()), 4.0)
     assert out["target_noisy"] == [5.0, -1.0]
+    assert out["privacy_ledger"]["rho_spent"] == 1.0
     assert not (output_dir / "projection_target_metrics_offline.json").exists()
     assert module.read_json(output_dir / "reproject_metadata.json")["offline_true_metrics_computed"] is False
 

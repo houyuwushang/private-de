@@ -21,6 +21,7 @@ PUBLIC_VISIBLE_PATHS = [
     "configs/br2000_sage_strong.yaml",
     "configs/nltcs_sage_strong.yaml",
     "configs/integrated_sage_qdte_smoke.yaml",
+    "configs/variants/dp_release_profile_overlay.yaml",
     "configs/variants/qdte_gsd_breadth_seed0_manifest.yaml",
     "configs/variants/qdte_gsd_converged_seed0_manifest.yaml",
     "configs/variants/qdte_pa_diag16_overlay.yaml",
@@ -41,6 +42,8 @@ PUBLIC_VISIBLE_PATHS = [
     "scripts/check_env.py",
     "scripts/path_defaults.py",
     "scripts/run_qdte.py",
+    "scripts/measure_qdte_transcript.py",
+    "scripts/generate_qdte_from_transcript.py",
     "scripts/smoke_qdte.py",
     "scripts/audit_baseline_admission.py",
     "scripts/audit_gpu_provenance.py",
@@ -48,6 +51,7 @@ PUBLIC_VISIBLE_PATHS = [
     "scripts/audit_original_protocol_baselines.py",
     "scripts/audit_paper_result_state.py",
     "scripts/audit_public_release_plan.py",
+    "scripts/audit_reproducibility_docs.py",
     "scripts/audit_qdte_paper_claim_matrix.py",
     "scripts/archive_qdte_paper_package.py",
     "scripts/collect_baseline_calibration.py",
@@ -86,6 +90,7 @@ PUBLIC_VISIBLE_PATHS = [
     "scripts/run_rappp_official_paper_grid.py",
     "scripts/run_sage_external.py",
     "scripts/run_official_gsd_on_qdte_workload.py",
+    "scripts/gsd_released_target_utils.py",
     "scripts/run_qdte_fission_refit_external.py",
     "scripts/run_same_target_gsd_generator.py",
     "scripts/materialize_gsd_measurement.py",
@@ -119,9 +124,11 @@ PUBLIC_VISIBLE_PATHS = [
     "tests/test_verify_public_release.py",
     "tests/test_archive_qdte_paper_package.py",
     "tests/test_audit_qdte_paper_claim_matrix.py",
+    "tests/test_audit_reproducibility_docs.py",
     "tests/test_compute_transfer_gap_diagnostics.py",
     "tests/test_dp_boundary_no_true_answers_in_generator.py",
     "tests/test_consistency_projection.py",
+    "tests/test_config_validation.py",
     "tests/test_edit_advantage.py",
     "tests/test_engine_smoke.py",
     "tests/test_gsd_diagnostic_helpers.py",
@@ -131,15 +138,19 @@ PUBLIC_VISIBLE_PATHS = [
     "tests/test_materialize_teacher_target.py",
     "tests/test_measurement_fission.py",
     "tests/test_measurement.py",
+    "tests/test_public_transcript_generation.py",
     "tests/test_nonnegative_projection_theorem.py",
     "tests/test_package_qdte_paper_results.py",
     "tests/test_plot_qdte_paper_results.py",
+    "tests/test_preprocess.py",
     "tests/test_run_official_gsd_on_qdte_workload.py",
+    "tests/test_official_gsd_released_target_adapter.py",
     "tests/test_run_integrated_sage_qdte.py",
     "tests/test_run_nonnegative_projection_pilot.py",
     "tests/test_run_orthogonal_low_budget_pilot.py",
     "tests/test_run_qdte_fission_refit_external.py",
     "tests/test_reproject_measurements.py",
+    "tests/test_transport.py",
     "tests/test_verify_qdte_paper_package.py",
 ]
 
@@ -197,7 +208,7 @@ KNOWN_TRACKED_INTERNAL = {
 }
 
 BANNED_PUBLIC_TOKENS = [
-    "/home/" + "qianqiu",
+    "/home/" + "qian" + "qiu",
     "/train" + "34",
     "/mnt" + "/",
 ]
@@ -243,6 +254,16 @@ def _is_ignored(path: str, root: Path) -> bool:
 
 def _matches_any(path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
+
+
+def _is_explicit_public_path(path: str, root: Path) -> bool:
+    for public_path in PUBLIC_VISIBLE_PATHS:
+        if path == public_path:
+            return True
+        public_root = root / public_path
+        if public_root.is_dir() and path.startswith(public_path.rstrip("/") + "/"):
+            return True
+    return False
 
 
 def _git_lines(args: list[str], root: Path) -> list[str]:
@@ -298,9 +319,12 @@ def verify(root: Path, strict: bool) -> CheckResult:
     if visible_internal:
         errors.extend(f"untracked internal path is not ignored: {path}" for path in visible_internal)
 
+    explicit_public_untracked = [
+        path for path in visible_untracked if _is_explicit_public_path(path, root)
+    ]
     release_paths = [
         path
-        for path in [*tracked, *visible_untracked, *PUBLIC_VISIBLE_PATHS]
+        for path in [*tracked, *explicit_public_untracked, *PUBLIC_VISIBLE_PATHS]
         if not _matches_any(path, INTERNAL_PATTERNS)
     ]
     _scan_banned_tokens(release_paths, root, errors)
