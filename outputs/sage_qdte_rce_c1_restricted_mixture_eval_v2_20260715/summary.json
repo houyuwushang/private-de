@@ -1,0 +1,89 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "b2c6cfa684c5fef88d7f15dfddfc37075f8f79d3977b8574df55783ae0a78192"
+  },
+  "allowed_use": "post-seal diagnosis only; no method promotion or tuning",
+  "artifact_role": "offline_nonreleasable_restricted_mixture_rce_evaluation",
+  "artifacts": {
+    "evaluation_plan": {
+      "bytes": 1068,
+      "path": "outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/evaluation_plan.json",
+      "sha256": "6c21b79c4a9a69f9203153783d0eff69fc0c75134972202fc2efb7de612d56a2"
+    },
+    "metrics": {
+      "bytes": 6330,
+      "path": "outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/metrics.csv",
+      "sha256": "0627754f31affb15ba66c4f945e37aec47aa2327ff9ca74d51f3df3472d5afe4"
+    },
+    "restricted_seal": {
+      "bytes": 18395,
+      "path": "outputs/sage_qdte_rce_c1_restricted_mixture_v2_cpu_20260715/sealed_manifest.json",
+      "sha256": "b4bac336b6643232815768add8cb91526fc224bcdeeecff673efdb7d3d021fd8"
+    },
+    "source_c1_evaluation": {
+      "bytes": 13528,
+      "path": "outputs/sage_qdte_rce_c1_v3_eval_20260715/summary.json",
+      "sha256": "44e53fd81f6a8040191aabd67a11e8cecd3b4e28cf512dffd4bf2e3df1406cf3"
+    },
+    "weights": {
+      "bytes": 1411,
+      "path": "outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/weights.csv",
+      "sha256": "2ecc735504e4cd1fc502943831fe87bf8fac7882c020de61a1bbc041d87a7b0b"
+    }
+  },
+  "classification": {
+    "beats_rce_v1_overall": true,
+    "beats_wp9_overall": false,
+    "product_kl_prefers_wp9_on_average": false
+  },
+  "evaluator_id": "SAGE-QDTE-RCE-C1-RESTRICTED-MIXTURE-EVAL-20260715-v2",
+  "global_relaxed_certificate": false,
+  "mean_component_weights": {
+    "initial": 0.0790887516523804,
+    "rce_v1": 0.828082720993622,
+    "wp9_control": 0.09282852735399753
+  },
+  "primary_ratios": {
+    "official_aim": {
+      "cell": {
+        "adult|0.1": 1.5786100364935227,
+        "adult|0.3": 1.0653214208312778,
+        "br2000|0.1": 1.3725487824147988,
+        "br2000|0.3": 1.2598068522931305
+      },
+      "dataset": {
+        "adult": 1.2968142068221626,
+        "br2000": 1.3149700989728843
+      },
+      "overall": 1.305860599717436
+    },
+    "rce_v1": {
+      "cell": {
+        "adult|0.1": 0.8314264660172608,
+        "adult|0.3": 0.9671851361025923,
+        "br2000|0.1": 0.8798691904039851,
+        "br2000|0.3": 0.9161340629335899
+      },
+      "dataset": {
+        "adult": 0.8967403858944916,
+        "br2000": 0.897818543055829
+      },
+      "overall": 0.8972793025380192
+    },
+    "wp9_control": {
+      "cell": {
+        "adult|0.1": 1.423160690006167,
+        "adult|0.3": 0.9941816064208062,
+        "br2000|0.1": 1.31203453062756,
+        "br2000|0.3": 1.1627501466877894
+      },
+      "dataset": {
+        "adult": 1.1894873605823957,
+        "br2000": 1.235138997419578
+      },
+      "overall": 1.21209827406568
+    }
+  },
+  "private_truth_used": true
+}

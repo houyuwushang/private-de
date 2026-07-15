@@ -1,0 +1,27 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "6c21b79c4a9a69f9203153783d0eff69fc0c75134972202fc2efb7de612d56a2"
+  },
+  "artifact_role": "frozen_offline_restricted_mixture_evaluation_plan",
+  "batch_size": 8192,
+  "evaluator": {
+    "bytes": 17761,
+    "path": "scripts/evaluate_rce_c1_restricted_mixture.py",
+    "sha256": "36e53ba89020b7dfda397c5685327b8469535334ef16eebffbbb7768135e9f4a"
+  },
+  "evaluator_id": "SAGE-QDTE-RCE-C1-RESTRICTED-MIXTURE-EVAL-20260715-v2",
+  "input_root": "external_inputs",
+  "plan_id": "SAGE-QDTE-RCE-C1-RESTRICTED-MIXTURE-EVAL-PLAN-20260715-v2",
+  "restricted_seal": {
+    "bytes": 18395,
+    "path": "outputs/sage_qdte_rce_c1_restricted_mixture_v2_cpu_20260715/sealed_manifest.json",
+    "sha256": "b4bac336b6643232815768add8cb91526fc224bcdeeecff673efdb7d3d021fd8"
+  },
+  "source_c1_evaluation": {
+    "bytes": 13528,
+    "path": "outputs/sage_qdte_rce_c1_v3_eval_20260715/summary.json",
+    "sha256": "44e53fd81f6a8040191aabd67a11e8cecd3b4e28cf512dffd4bf2e3df1406cf3"
+  },
+  "true_utility_evaluated": false
+}

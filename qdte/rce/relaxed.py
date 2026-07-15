@@ -42,6 +42,50 @@ class RelaxedRCEResult:
         }
 
 
+@dataclass(frozen=True)
+class RestrictedMixtureRCEResult:
+    component_weights: np.ndarray
+    mixture_probabilities: np.ndarray
+    residual: np.ndarray
+    slack_star: float
+    kl_objective: float
+    confidence: dict[str, Any]
+    stage_one: dict[str, Any]
+    stage_two: dict[str, Any]
+    component_names: tuple[str, ...]
+    support_size: int
+    support_kind: str
+    globally_certified: bool = False
+
+    def to_dict(self, *, include_mixture_probabilities: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "component_weights": {
+                name: float(weight)
+                for name, weight in zip(
+                    self.component_names,
+                    self.component_weights,
+                    strict=True,
+                )
+            },
+            "residual": self.residual.tolist(),
+            "slack_star": self.slack_star,
+            "kl_objective": self.kl_objective,
+            "confidence": self.confidence,
+            "stage_one": self.stage_one,
+            "stage_two": self.stage_two,
+            "component_names": list(self.component_names),
+            "support_size": self.support_size,
+            "support_kind": self.support_kind,
+            "globally_certified": self.globally_certified,
+            "exact_on_declared_convex_hull": bool(
+                self.stage_one["success"] and self.stage_two["success"]
+            ),
+        }
+        if include_mixture_probabilities:
+            payload["mixture_probabilities"] = self.mixture_probabilities.tolist()
+        return payload
+
+
 def _solver_record(result: Any) -> dict[str, Any]:
     return {
         "success": bool(result.success),
@@ -52,6 +96,244 @@ def _solver_record(result: Any) -> dict[str, Any]:
         "jacobian_evaluations": int(getattr(result, "njev", -1)),
         "objective": float(result.fun),
     }
+
+
+def solve_restricted_mixture_rce(
+    component_probabilities: np.ndarray,
+    component_residuals: np.ndarray,
+    log_prior_probabilities: np.ndarray,
+    confidence: RCEConfidenceSet,
+    *,
+    component_names: tuple[str, ...] | None = None,
+    max_iterations: int = 5_000,
+    ftol: float = 1.0e-12,
+    optimal_face_tolerance: float = 1.0e-10,
+    feasibility_tolerance: float = 1.0e-9,
+    weight_floor: float = 1.0e-12,
+) -> RestrictedMixtureRCEResult:
+    """Solve RCE exactly on the convex hull of declared empirical tables.
+
+    This is a released-only restricted diagnostic. It removes the integer
+    interpolation barrier between the supplied tables, but it is not a global
+    relaxed-RCE certificate over the full row domain.
+    """
+
+    probabilities = np.asarray(component_probabilities, dtype=np.float64)
+    residuals = np.asarray(component_residuals, dtype=np.float64)
+    log_prior = np.asarray(log_prior_probabilities, dtype=np.float64)
+    if probabilities.ndim != 2 or probabilities.shape[0] < 2:
+        raise ValueError("component_probabilities must contain at least two components")
+    num_components, support_size = probabilities.shape
+    if support_size <= 0:
+        raise ValueError("component_probabilities must have non-empty support")
+    if residuals.shape != (num_components, confidence.dimension):
+        raise ValueError("component_residuals must match components and confidence dimension")
+    if log_prior.shape != (support_size,):
+        raise ValueError("log_prior_probabilities must match the declared support")
+    if not np.all(np.isfinite(probabilities)) or np.any(probabilities < 0.0):
+        raise ValueError("component_probabilities must be finite and nonnegative")
+    if not np.all(np.isfinite(residuals)) or not np.all(np.isfinite(log_prior)):
+        raise ValueError("component_residuals and log_prior_probabilities must be finite")
+    if not np.allclose(
+        probabilities.sum(axis=1),
+        1.0,
+        rtol=1.0e-10,
+        atol=1.0e-12,
+    ):
+        raise ValueError("Every component distribution must sum to one")
+    if np.any(probabilities.sum(axis=0) <= 0.0):
+        raise ValueError("The declared support contains an unused atom")
+    if int(max_iterations) <= 0:
+        raise ValueError("max_iterations must be positive")
+    if not math.isfinite(float(ftol)) or float(ftol) <= 0.0:
+        raise ValueError("ftol must be finite and positive")
+    if not math.isfinite(float(optimal_face_tolerance)) or optimal_face_tolerance < 0.0:
+        raise ValueError("optimal_face_tolerance must be finite and nonnegative")
+    if not math.isfinite(float(feasibility_tolerance)) or feasibility_tolerance < 0.0:
+        raise ValueError("feasibility_tolerance must be finite and nonnegative")
+    floor = float(weight_floor)
+    if not math.isfinite(floor) or floor <= 0.0 or floor * num_components >= 1.0:
+        raise ValueError("weight_floor must be positive and leave a non-empty simplex")
+
+    names = (
+        tuple(f"component_{index}" for index in range(num_components))
+        if component_names is None
+        else tuple(str(name) for name in component_names)
+    )
+    if len(names) != num_components or len(set(names)) != num_components:
+        raise ValueError("component_names must be unique and match the components")
+
+    tube_indices = np.flatnonzero(confidence.tube_mask)
+    bounds = confidence.coordinate_bounds[tube_indices]
+
+    def mixed_residual(weights: np.ndarray) -> np.ndarray:
+        return np.asarray(weights, dtype=np.float64) @ residuals
+
+    def constraints_for(weights: np.ndarray, slack: float) -> np.ndarray:
+        current = mixed_residual(weights)
+        ellipsoid = (
+            1.0
+            + float(slack)
+            - confidence.squared_discrepancy(current)
+            / confidence.squared_discrepancy_threshold
+        )
+        local = current[tube_indices]
+        positive = bounds * (1.0 + float(slack)) - local
+        negative = bounds * (1.0 + float(slack)) + local
+        return np.concatenate(([ellipsoid], positive, negative))
+
+    def constraints_jacobian(weights: np.ndarray, *, include_slack: bool) -> np.ndarray:
+        current = mixed_residual(weights)
+        precision_residual = confidence.precision_matvec(current)
+        width = num_components + int(include_slack)
+        jacobian = np.zeros((1 + 2 * len(tube_indices), width), dtype=np.float64)
+        jacobian[0, :num_components] = (
+            -2.0
+            * (residuals @ precision_residual)
+            / confidence.squared_discrepancy_threshold
+        )
+        jacobian[1 : 1 + len(tube_indices), :num_components] = -residuals[
+            :, tube_indices
+        ].T
+        jacobian[1 + len(tube_indices) :, :num_components] = residuals[
+            :, tube_indices
+        ].T
+        if include_slack:
+            jacobian[0, -1] = 1.0
+            jacobian[1 : 1 + len(tube_indices), -1] = bounds
+            jacobian[1 + len(tube_indices) :, -1] = bounds
+        return jacobian
+
+    component_slacks = np.asarray(
+        [confidence.evaluate(row).slack for row in residuals],
+        dtype=np.float64,
+    )
+    best_component = int(np.argmin(component_slacks))
+    initial_weights = np.zeros(num_components, dtype=np.float64)
+    initial_weights[best_component] = 1.0
+    if component_slacks[best_component] <= float(feasibility_tolerance):
+        # Slack is constrained to be nonnegative. A feasible declared component
+        # therefore certifies the exact stage-one optimum s*=0 without asking a
+        # boundary-sensitive numerical solver to rediscover that fact.
+        stage_one_weights = initial_weights
+        slack_star = 0.0
+        stage_one_record = {
+            "success": True,
+            "status": 0,
+            "message": "analytic feasible-component certificate",
+            "iterations": 0,
+            "function_evaluations": 0,
+            "jacobian_evaluations": 0,
+            "objective": 0.0,
+        }
+    else:
+        initial_stage_one = np.concatenate(
+            (initial_weights, [float(component_slacks[best_component])])
+        )
+        stage_one = minimize(
+            lambda values: float(values[-1]),
+            initial_stage_one,
+            jac=lambda values: np.concatenate((np.zeros(num_components), [1.0])),
+            method="SLSQP",
+            bounds=[(0.0, 1.0)] * num_components + [(0.0, None)],
+            constraints=[
+                {
+                    "type": "eq",
+                    "fun": lambda values: float(np.sum(values[:-1]) - 1.0),
+                    "jac": lambda values: np.concatenate(
+                        (np.ones(num_components), [0.0])
+                    ),
+                },
+                {
+                    "type": "ineq",
+                    "fun": lambda values: constraints_for(
+                        values[:-1], float(values[-1])
+                    ),
+                    "jac": lambda values: constraints_jacobian(
+                        values[:-1], include_slack=True
+                    ),
+                },
+            ],
+            options={
+                "maxiter": int(max_iterations),
+                "ftol": float(ftol),
+                "disp": False,
+            },
+        )
+        stage_one_weights = np.maximum(
+            np.asarray(stage_one.x[:-1], dtype=np.float64),
+            0.0,
+        )
+        stage_one_weights /= float(np.sum(stage_one_weights))
+        measured_slack = confidence.evaluate(mixed_residual(stage_one_weights)).slack
+        slack_star = max(0.0, float(stage_one.x[-1]), measured_slack)
+        stage_one_record = _solver_record(stage_one)
+    face_slack = slack_star + float(optimal_face_tolerance)
+
+    stage_two_initial = np.maximum(stage_one_weights, floor)
+    stage_two_initial /= float(np.sum(stage_two_initial))
+
+    def mixture_probabilities(weights: np.ndarray) -> np.ndarray:
+        return np.asarray(weights, dtype=np.float64) @ probabilities
+
+    def kl_objective(weights: np.ndarray) -> float:
+        mixed = mixture_probabilities(weights)
+        positive = mixed > 0.0
+        return float(
+            np.sum(
+                mixed[positive] * (np.log(mixed[positive]) - log_prior[positive]),
+                dtype=np.float64,
+            )
+        )
+
+    def kl_gradient(weights: np.ndarray) -> np.ndarray:
+        mixed = mixture_probabilities(weights)
+        stabilized = np.maximum(mixed, np.finfo(np.float64).tiny)
+        return probabilities @ (np.log(stabilized) - log_prior + 1.0)
+
+    stage_two = minimize(
+        kl_objective,
+        stage_two_initial,
+        jac=kl_gradient,
+        method="SLSQP",
+        bounds=[(floor, 1.0)] * num_components,
+        constraints=[
+            {
+                "type": "eq",
+                "fun": lambda values: float(np.sum(values) - 1.0),
+                "jac": lambda values: np.ones(num_components, dtype=np.float64),
+            },
+            {
+                "type": "ineq",
+                "fun": lambda values: constraints_for(values, face_slack),
+                "jac": lambda values: constraints_jacobian(
+                    values, include_slack=False
+                ),
+            },
+        ],
+        options={"maxiter": int(max_iterations), "ftol": float(ftol), "disp": False},
+    )
+    weights = np.maximum(np.asarray(stage_two.x, dtype=np.float64), floor)
+    weights /= float(np.sum(weights))
+    final_residual = mixed_residual(weights)
+    evaluation = confidence.evaluate(
+        final_residual,
+        tolerance=float(feasibility_tolerance),
+    )
+    return RestrictedMixtureRCEResult(
+        component_weights=weights,
+        mixture_probabilities=mixture_probabilities(weights),
+        residual=final_residual,
+        slack_star=max(slack_star, evaluation.slack),
+        kl_objective=kl_objective(weights),
+        confidence=evaluation.to_dict(),
+        stage_one=stage_one_record,
+        stage_two=_solver_record(stage_two),
+        component_names=names,
+        support_size=int(support_size),
+        support_kind="convex_hull_of_declared_empirical_tables",
+        globally_certified=False,
+    )
 
 
 def solve_relaxed_rce(

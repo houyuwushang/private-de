@@ -183,24 +183,73 @@ RCE 相比 released-one-way initial table 改善约 34.6%，说明 exact RCE row
 
 更关键的反例是 BR2000：WP9 在 `6/6` cells 中也位于 RCE confidence set 内，并且 true utility 显著更好；RCE 选择了更低 KL、但更差的表。因此 **只修 integer feasibility 或继续增加候选，不足以解释或解决全部失败**。
 
+### 4.5 Released-only restricted-mixture 诊断
+
+为了进一步区分 integer row-edit trajectory 与 estimator objective，我们在不读取
+truth 的独立进程中冻结并求解了下面的三表凸包：
+
+```text
+p(w) = w_initial p_initial + w_wp9 p_wp9 + w_rce p_rce
+w >= 0, sum(w) = 1
+```
+
+它保留 C1 的同一个 confidence operator 和 released one-way product prior，先最小化
+confidence slack，再在最优 slack face 上最小化完整 row-distribution
+`D_KL(p(w) || p0)`。KL 在三张表的 full-row atom union 上计算，不是把三张表当成
+三个类别计算。全部 12 个解先封存，随后才运行冻结的 full-workload evaluator。
+
+该对象只是在声明的三表凸包上的 restricted relaxed diagnostic，**不是全局 relaxed
+RCE ceiling**。
+
+平均 component weights：
+
+| initial | WP9 control | RCE-v1 |
+|---:|---:|---:|
+| 0.079089 | 0.092829 | 0.828083 |
+
+Primary composite：
+
+| Slice | Restricted / RCE-v1 | Restricted / WP9 | Restricted / AIM |
+|---|---:|---:|---:|
+| Adult epsilon 0.1 | 0.831426 | 1.423161 | 1.578610 |
+| Adult epsilon 0.3 | 0.967185 | 0.994182 | 1.065321 |
+| BR2000 epsilon 0.1 | 0.879869 | 1.312035 | 1.372549 |
+| BR2000 epsilon 0.3 | 0.916134 | 1.162750 | 1.259807 |
+| Overall | 0.897279 | 1.212098 | 1.305861 |
+
+这个结果补上了一个重要缺口：
+
+1. fractional interpolation 相对 integer RCE 平均改善约 `10.3%`，所以存在次要的
+   integer/search-path gap；
+2. 但 constrained minimum-KL 解仍平均给 RCE `82.8%` 权重，只给高 utility WP9
+   `9.3%` 权重；
+3. 它仍比 WP9 差 `21.2%`，比 AIM 差 `30.6%`；
+4. Adult `epsilon=0.1` 的 fractional mixture 已将 integer feasibility gap 消到数值
+   tolerance，但仍比 WP9 差 `42.3%`。
+
+因此，在这个明确包含 WP9 方向的 convex relaxation 中，去掉 integer interpolation
+障碍并没有让 minimum-product-KL 选择高 utility 方向。它比原来的相关性证据更直接地
+支持：**当前主要失败来自 product-prior minimum-KL estimator geometry；integer QDTE
+不是第一瓶颈。**
+
 ## 5. 我们当前的判断
 
 1. **RCE-v1 本身已经被否证为 broad replacement。** 不应继续调 alpha、KL scale 或根据 true metric 选 checkpoint。
-2. **当前证据强烈指向 one-way product prior / minimum-KL estimator 过度收缩。** 它把真实 interaction 与 noisy interaction 一起丢掉了。
-3. Adult `epsilon=0.1` 同时存在 integer/oracle gap，但 BR2000 和 Adult `epsilon=0.3` 的可行失败证明：即使解决可行性，也不能保证 primary utility 恢复。
-4. **Adult 仍不构成数学不可能。** 冻结 WP9 对 AIM 原本只差约 7%--11%，且 RCE `epsilon=0.3` 已接近 WP9；但下一步必须引入有明确统计来源的结构先验或新增信息，而不是更强地最小化当前 product-prior KL。
+2. **当前证据已经把 one-way product prior / minimum-KL estimator 过度收缩定位为第一瓶颈。** 它把真实 interaction 与 noisy interaction 一起丢掉了。
+3. integer/search-path gap真实存在但属于次要项；restricted fractional mixture改善 RCE，却仍主动避开 WP9 方向并明显输给 WP9。
+4. **Adult 仍不构成数学不可能。** 冻结 WP9 对 AIM 原本只差约 7%--11%；但下一步若继续，更合理的是引入唯一、DP-safe 的 released structural prior，而不是继续优化当前 product-prior RCE 或直接假定 measurement 不足。
 
 ## 6. 请专家回答的集中问题
 
 ### Q1：这个证据是否已经足以判定 product-prior RCE 目标错误？
 
-请明确判断下面哪一项最符合证据：
+加入 restricted-mixture 结果后，请明确判断下面哪一项最符合证据：
 
 ```text
-A. 主要是当前 integer primal-dual / row oracle 不够强；
-B. 主要是 one-way product prior + 95% confidence set 过度收缩；
-C. 主要是 frozen transcript 信息不足；
-D. B 和 C 都成立，但请给出可被下一实验区分的必要条件。
+A. 证据已足以把 product-prior minimum-KL 判为第一瓶颈；
+B. 仍主要是 frozen transcript 信息不足；
+C. 仍主要是 integer/global row oracle 不足；
+D. A 与 B 都成立，但请说明同一 transcript 下 WP9 可行反例为何仍不足以优先修 prior。
 ```
 
 尤其请解释：BR2000 的 WP9 table 已在集合内且 utility 更好，而 RCE 以更低 KL 选择更差 table，这是否已经是 minimum-product-KL estimator 不对齐的充分诊断？
@@ -221,13 +270,13 @@ CONTINUE:
 
 ### Q3：如果继续，下一个唯一机制是什么？
 
-我们认为真正有逻辑的候选只剩两个：
+基于 restricted-mixture 结果，我们认为优先级已经不再对称：
 
 ```text
-1. richer released prior:
+1. preferred: richer released prior:
    released tree / low-rank / latent interaction prior
 
-2. tighter information:
+2. only with a new justification: tighter information:
    C3 confidence-dual adaptive refinement or direct low-rank sketch
 ```
 
@@ -283,8 +332,15 @@ frozen offline evaluation:
 post-seal confidence/KL diagnostic:
   outputs/sage_qdte_rce_c1_v3_postseal_20260715/summary.json
   outputs/sage_qdte_rce_c1_v3_postseal_20260715/confidence_and_kl.csv
+
+released-only restricted-mixture seal:
+  outputs/sage_qdte_rce_c1_restricted_mixture_v2_cpu_20260715/sealed_manifest.json
+
+frozen restricted-mixture offline evaluation:
+  outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/summary.json
+  outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/weights.csv
 ```
 
 ## 8. 一句话问题
 
-> RCE-v1 证明了 row-realizable confidence constraints 可以由 QDTE 实现，但 one-way product-prior minimum-KL 在一般基数低预算上过度抹掉了真实 interaction。Adult 原始 WP9 仍只差 AIM 约 7%--11%。请判断这是值得用一个 released structural prior / dual-driven refinement继续解决的问题，还是已经应当冻结为方法边界；若继续，请给出唯一可预声明机制，而不是组件菜单。
+> RCE-v1 以及包含 WP9 方向的 restricted convex-hull optimum 都显示，one-way product-prior minimum-KL 会主动压低有效 interaction；integer interpolation 不是第一瓶颈。Adult 原始 WP9 仍只差 AIM 约 7%--11%。请判断是否值得用一个唯一的 DP-released structural prior 继续解决；若否则冻结为方法边界，若继续则给出不可自由调节的完整公式与一次性 gate。

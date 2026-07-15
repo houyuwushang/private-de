@@ -48,13 +48,14 @@ except ModuleNotFoundError:
     )
 
 
-DEFAULT_OUTPUT = ROOT / "outputs" / "sage_qdte_rce_c1_expert_review_20260715"
-PACKAGE_ID = "SAGE-QDTE-RCE-C1-EXPERT-REVIEW-20260715-v1"
-MANIFEST_ID = "SAGE-QDTE-RCE-C1-EXPERT-REVIEW-MANIFEST-20260715-v1"
+DEFAULT_OUTPUT = ROOT / "outputs" / "sage_qdte_rce_c1_expert_review_v2_20260715"
+PACKAGE_ID = "SAGE-QDTE-RCE-C1-EXPERT-REVIEW-20260715-v2"
+MANIFEST_ID = "SAGE-QDTE-RCE-C1-EXPERT-REVIEW-MANIFEST-20260715-v2"
 
 RCE_PATHS = (
     "docs/SAGE_QDTE_RCE_方法极限路线_20260715.md",
     "docs/SAGE_QDTE_RCE_C0_C1_PROTOCOL_20260715.md",
+    "docs/SAGE_QDTE_RCE_C1_RESTRICTED_MIXTURE_PROTOCOL_20260715.md",
     "docs/SAGE_QDTE_RCE_C1_RESULT_AND_NEXT_EXPERT_QUESTIONS_20260715.md",
     "qdte/config_validation.py",
     "qdte/evolution/engine.py",
@@ -72,17 +73,21 @@ RCE_PATHS = (
     "qdte/rce/relaxed.py",
     "scripts/analyze_rce_c1_postseal.py",
     "scripts/evaluate_rce_c1_panel.py",
+    "scripts/evaluate_rce_c1_restricted_mixture.py",
     "scripts/generate_qdte_from_transcript.py",
     "scripts/package_rce_c1_expert_review.py",
     "scripts/run_rce_c1_cell.py",
     "scripts/run_rce_c1_panel.py",
+    "scripts/run_rce_c1_restricted_mixture.py",
     "tests/test_analyze_rce_c1_postseal.py",
+    "tests/test_evaluate_rce_c1_restricted_mixture.py",
     "tests/test_public_transcript_generation.py",
     "tests/test_rce_confidence_set.py",
     "tests/test_rce_dual.py",
     "tests/test_rce_integer.py",
     "tests/test_rce_relaxed.py",
     "tests/test_rce_scoring.py",
+    "tests/test_run_rce_c1_restricted_mixture.py",
     "tests/test_package_rce_c1_expert_review.py",
 )
 
@@ -95,6 +100,12 @@ RCE_RESULT_PATHS = (
     "outputs/sage_qdte_rce_c1_v3_postseal_20260715/summary.json",
     "outputs/sage_qdte_rce_c1_v3_postseal_20260715/confidence_and_kl.csv",
     "outputs/sage_qdte_rce_c1_v3_postseal_20260715/metrics_with_initial.csv",
+    "outputs/sage_qdte_rce_c1_restricted_mixture_v2_cpu_20260715/summary.json",
+    "outputs/sage_qdte_rce_c1_restricted_mixture_v2_cpu_20260715/sealed_manifest.json",
+    "outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/evaluation_plan.json",
+    "outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/summary.json",
+    "outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/metrics.csv",
+    "outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/weights.csv",
 )
 
 DATASETS = ("adult", "br2000")
@@ -121,6 +132,16 @@ def _cell_result_paths() -> tuple[str, ...]:
                     )
                 )
     return tuple(paths)
+
+
+def _restricted_cell_result_paths() -> tuple[str, ...]:
+    return tuple(
+        f"outputs/sage_qdte_rce_c1_restricted_mixture_v2_cpu_20260715/"
+        f"{dataset}/epsilon_{epsilon}/seed_{seed}/restricted_result.json"
+        for dataset in DATASETS
+        for epsilon in EPSILONS
+        for seed in SEEDS
+    )
 
 
 def _copy_sanitized_paths(
@@ -167,6 +188,8 @@ Start with:
 - [Expert RCE method-limit route](docs/SAGE_QDTE_RCE_方法极限路线_20260715.md)
 - [Frozen offline evaluation](outputs/sage_qdte_rce_c1_v3_eval_20260715/summary.json)
 - [Post-seal confidence/KL diagnosis](outputs/sage_qdte_rce_c1_v3_postseal_20260715/summary.json)
+- [Restricted-mixture evaluation](outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/summary.json)
+- [Restricted-mixture protocol](docs/SAGE_QDTE_RCE_C1_RESTRICTED_MIXTURE_PROTOCOL_20260715.md)
 - [Sealed blind-panel manifest](outputs/sage_qdte_rce_c1_v3_20260715/sealed_panel_manifest.json)
 
 The twelve-cell same-transcript panel was fully generated and sealed before
@@ -174,8 +197,12 @@ one frozen offline evaluation. RCE-v1 did not improve WP9 and did not beat
 Official AIM. The post-seal diagnostic found truth inside all twelve confidence
 sets, while RCE moved much closer to the released one-way product prior and
 discarded useful interaction structure. The decision packet asks whether to
-stop Adult rescue or authorize exactly one richer released prior, dual-driven
-measurement refinement, or fully specified ceiling experiment.
+stop Adult rescue or authorize exactly one richer released structural prior.
+The released-only restricted-mixture diagnostic removes interpolation within
+the fixed initial/WP9/RCE convex hull. It improves integer RCE but still gives
+RCE 82.8% mean weight, gives WP9 only 9.3%, and remains 21.2% worse than WP9.
+This directly identifies minimum product-prior KL as the first bottleneck on
+the declared convex hull, while making no global relaxed-ceiling claim.
 
 This snapshot includes implementation, focused tests, sanitized manifests,
 per-cell runtime/certificates, and aggregate true-utility metrics. It excludes
@@ -195,7 +222,10 @@ def build_rce_review(source_root: Path, output: Path, *, force: bool) -> dict[st
     records = _copy_sanitized_paths(
         source_root,
         output,
-        RCE_PATHS + RCE_RESULT_PATHS + _cell_result_paths(),
+        RCE_PATHS
+        + RCE_RESULT_PATHS
+        + _cell_result_paths()
+        + _restricted_cell_result_paths(),
     )
     hashes_path = output / "EXPERT_REVIEW_SOURCE_HASHES.json"
     hashes = read_json(hashes_path)
@@ -264,7 +294,12 @@ def verify_rce_review(output: Path) -> list[str]:
     if manifest.get("tree_sha256") != tree_sha256(canonical):
         errors.append("RCE C1 review tree SHA-256 mismatch")
 
-    for required in RCE_PATHS + RCE_RESULT_PATHS + _cell_result_paths():
+    for required in (
+        RCE_PATHS
+        + RCE_RESULT_PATHS
+        + _cell_result_paths()
+        + _restricted_cell_result_paths()
+    ):
         if not (output / required).is_file():
             errors.append(f"Missing RCE C1 review payload: {required}")
     for relpath, path in actual.items():
@@ -308,6 +343,23 @@ def verify_rce_review(output: Path) -> list[str]:
     truth = postseal.get("confidence", {}).get("truth", {})
     if truth.get("inside") != 12 or truth.get("total") != 12:
         errors.append("RCE C1 truth confidence-coverage diagnosis changed")
+    restricted = read_json(
+        output
+        / "outputs/sage_qdte_rce_c1_restricted_mixture_eval_v2_20260715/summary.json"
+    )
+    restricted_classification = restricted.get("classification", {})
+    if restricted_classification != {
+        "beats_rce_v1_overall": True,
+        "beats_wp9_overall": False,
+        "product_kl_prefers_wp9_on_average": False,
+    }:
+        errors.append("Restricted-mixture estimator diagnosis changed")
+    weights = restricted.get("mean_component_weights", {})
+    if not (
+        float(weights.get("rce_v1", 0.0)) > 0.8
+        and float(weights.get("wp9_control", 1.0)) < 0.1
+    ):
+        errors.append("Restricted-mixture component preference changed")
     return errors
 
 
