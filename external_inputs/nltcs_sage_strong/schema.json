@@ -1,0 +1,249 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "e84e9b1a1f2bce2906bc1accb96f7142bfd741dff8d9ae2411f6e23e4b3b4c8f"
+  },
+  "columns": [
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "0",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "1",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "2",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "3",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "4",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "5",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "6",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "7",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "8",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "9",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "10",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "11",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "12",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "13",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "14",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "15",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    }
+  ],
+  "label_column": null
+}

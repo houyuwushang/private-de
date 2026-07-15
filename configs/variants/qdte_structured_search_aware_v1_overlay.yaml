@@ -1,0 +1,23 @@
+# Predeclared search-width calibration for QDTE-Structured v2.
+# Apply after qdte_structured_standard_v2_overlay.yaml.
+#
+# A fixed per-candidate 2-sigma guard ignores winner's curse from selecting
+# among a wide candidate family. This overlay uses a one-sided Bonferroni
+# Gaussian threshold based on the actual number of structured units scored in
+# each pulse. Alpha and the rule are frozen before any Search-Aware utility run.
+
+qdte:
+  structured_swap_noise_guard_mode: bonferroni
+  structured_swap_noise_guard_alpha: 0.05
+
+evidence_boundary:
+  frozen_at: 2026-07-10
+  status: predeclared_before_any_search_aware_utility_run
+  method_name: QDTE-Structured-SA
+  base_overlay: qdte_structured_standard_v2_overlay
+  correction: one_sided_bonferroni_per_structured_pulse
+  alpha: 0.05
+  family_size: actual_structured_candidate_units_scored_per_pulse
+  proposal_inputs: released_residuals_inverse_variances_public_schema_internal_randomness
+  true_answers_during_generation: forbidden
+  promotion_gate: multi_dataset_fixed_noise_utility_runtime_and_tail_validation

@@ -1,0 +1,371 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "16a09b06284c1ef2581a509876641981105a8725af686477f617d188ab808035"
+  },
+  "columns": [
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "0",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 7,
+      "categories": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "1",
+      "representatives": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 21,
+      "categories": [
+        "0",
+        "1",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "2",
+        "20",
+        "21",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "2",
+      "representatives": [
+        "0",
+        "1",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "2",
+        "20",
+        "21",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 10,
+      "categories": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "3",
+      "representatives": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 16,
+      "categories": [
+        "0",
+        "1",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "4",
+      "representatives": [
+        "0",
+        "1",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "5",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "6",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "7",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "8",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 4,
+      "categories": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "9",
+      "representatives": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 16,
+      "categories": [
+        "0",
+        "1",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "10",
+      "representatives": [
+        "0",
+        "1",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "11",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 16,
+      "categories": [
+        "0",
+        "1",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "12",
+      "representatives": [
+        "0",
+        "1",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ]
+    },
+    {
+      "bin_edges": null,
+      "cardinality": 2,
+      "categories": [
+        "0",
+        "1"
+      ],
+      "kind": "categorical",
+      "missing_token": "__MISSING__",
+      "name": "13",
+      "representatives": [
+        "0",
+        "1"
+      ]
+    }
+  ],
+  "label_column": null
+}

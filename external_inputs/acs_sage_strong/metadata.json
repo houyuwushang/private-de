@@ -1,0 +1,87 @@
+{
+  "_expert_review_copy": {
+    "local_paths_sanitized": true,
+    "source_sha256": "343908ed98f71466fc013c5c5361540072fcb9cb6dc0adf74167a2ed8163b966"
+  },
+  "cardinalities": [
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "config_path": "configs/acs_sage_strong.yaml",
+  "dataset": "acs_sage_strong",
+  "groups_by_family": {
+    "kway": 2,
+    "oneway": 23,
+    "twoway": 253
+  },
+  "n_cols": 23,
+  "n_rows": 47461,
+  "notes": "ACS data with SAGE strong categorical k-way workload profile for main comparison.",
+  "num_queries": 5154,
+  "num_workload_groups": 278,
+  "preprocess": {
+    "auto_numeric_min_unique": 10,
+    "label_column": null,
+    "missing_token": "__MISSING__",
+    "numerical_bins": 32
+  },
+  "privacy_delta_default": 1e-09,
+  "queries_by_family": {
+    "kway": 4096,
+    "oneway": 46,
+    "twoway": 1012
+  },
+  "queries_sha256": "e4007fa5aa3f75d4e26b562d233b989dfca31e8a850766ae7c99bfeeab4cc030",
+  "raw_csv": "external_inputs/acs_sage_strong/raw.csv",
+  "raw_sha256": "89e337a3431f9b3f76d84142cb048495fec93ff10018b1f38b25a19491582cc8",
+  "real_encoded_sha256": "c1d16b99e50325364570681678c5b80033530039fe82b1b5cf0f256280de24a5",
+  "schema_sha256": "6b092f1f805c821a53caa61505ca6589c290fedb4f651930345dd607734ccccd",
+  "source_dataset": "acs",
+  "source_input_dir": "external_inputs/acs",
+  "workload": {
+    "exact_group_sensitivity_max_cells": 200000,
+    "include_2way_cat": true,
+    "include_halfspace": false,
+    "include_kway": true,
+    "include_kway_mixed": false,
+    "include_kway_prefix": false,
+    "include_kway_range": false,
+    "include_mixed": true,
+    "include_oneway": true,
+    "include_orthogonal_kway_mixed": false,
+    "include_prefix": true,
+    "include_range": true,
+    "kway_orders": [
+      3,
+      4
+    ],
+    "kway_queries_per_order": 2048,
+    "max_2way_cells": 20000,
+    "max_queries": 40000,
+    "max_terms": 4,
+    "mixed_queries_per_pair": 64,
+    "random_seed": 0,
+    "range_intervals_per_num_attr": 64
+  }
+}

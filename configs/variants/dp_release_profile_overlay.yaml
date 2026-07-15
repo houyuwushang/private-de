@@ -1,0 +1,27 @@
+# Fail-closed deployment boundary. Apply only when raw.csv and the declared
+# public schema.json are siblings and the dataset row count is public metadata.
+
+privacy:
+  mode: dp
+  dp_release_mode: true
+  public_row_count: true
+  # Required numeric public metadata. The canonical external runner fills this
+  # from metadata.json:n_rows; direct CLI runs must override the null value.
+  public_n_rows: null
+  adjacency: add_remove
+
+preprocess:
+  public_schema_json: sibling
+
+evaluation:
+  compute_true_query_error: false
+  compute_heldout_query_error: false
+  downstream_ml: false
+  oracle_projection_bias:
+    enabled: false
+
+evidence_boundary:
+  profile: deployable_dp_release
+  schema_provenance: explicit_public_schema_json
+  row_count_provenance: declared_public_metadata
+  true_evaluation: separate_offline_process_only

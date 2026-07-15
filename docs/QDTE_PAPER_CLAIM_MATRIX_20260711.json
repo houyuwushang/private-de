@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "date": "2026-07-11",
+  "paper_family": "QDTE",
+  "terminology": {
+    "QDTE-Standard": {
+      "aliases": ["SAGE", "QDTE-Base", "static SAGE/QDTE"],
+      "role": "end_to_end_dp_default"
+    },
+    "QDTE-Structured": {
+      "aliases": ["Structured-v2", "Structured-SA", "structured atomic swap"],
+      "role": "controlled_generator_profile"
+    },
+    "QDTE-FissionRefit": {
+      "aliases": ["Structured-FissionRefit-v2", "validation-minimum refit"],
+      "role": "qualified_l2_variant"
+    },
+    "QDTE-RTP-local": {
+      "aliases": ["single-scope RTP", "local feasible target"],
+      "role": "transfer_diagnostic"
+    },
+    "Query-LSQ": {
+      "aliases": ["query_space_lsq"],
+      "role": "projection_diagnostic"
+    }
+  },
+  "claims": [
+    {
+      "id": "QDTE-C1",
+      "role": "main",
+      "short_name": "end_to_end_dp_utility",
+      "scope": "Adult/ACS/BR2000/NLTCS, seeds 0-4, rho=1, shared row-level protocol",
+      "evidence": ["paper_package_seed0to4_20260706", "primary_run_evidence_audit_20260707"],
+      "required_facts": {"aim_wins": 20, "mst_wins": 20, "rap_wins": 20, "gsd_wins": 16, "cells": 20},
+      "forbidden": ["universal GSD dominance", "adaptive-selection main-table claim"]
+    },
+    {
+      "id": "QDTE-C2",
+      "role": "main_theory",
+      "short_name": "exact_edit_advantage",
+      "evidence": ["objective invariant tests", "incremental answer drift checks"],
+      "forbidden": ["guaranteed exact private-truth decrease"]
+    },
+    {
+      "id": "QDTE-C3",
+      "role": "main_theory",
+      "short_name": "dp_postprocessing_boundary",
+      "evidence": ["static zCDP theorem", "DP-boundary tests", "measurement audits"],
+      "forbidden": ["true-answer active decisions"]
+    },
+    {
+      "id": "QDTE-C4",
+      "role": "main_mechanism",
+      "short_name": "controlled_generator_capability",
+      "scope": "ACS/BR2000/Adult seed0, same exact mixed no-noise target",
+      "evidence": ["qdte_structured_optimized_gate1_v1", "qdte_gsd_converged_no_noise_v1", "qdte_gsd_no_noise_breadth_v1"],
+      "required_facts": {"datasets": 3, "target_loss_wins": 3, "offline_metric_wins": 15, "offline_metric_cells": 15},
+      "forbidden": ["multiseed claim", "end-to-end DP interpretation", "universal speed claim"]
+    },
+    {
+      "id": "QDTE-C5",
+      "role": "main_diagnostic",
+      "short_name": "structured_noisy_target_boundary",
+      "scope": "four fixed-noise seed0 datasets",
+      "evidence": ["qdte_structured_standard_v2_optimized_fixed_noise_seed0", "qdte_structured_search_aware_v1_fixed_noise_seed0"],
+      "required_facts": {"released_loss_wins": 4, "datasets": 4, "replacement_gate_passed": false},
+      "forbidden": ["Structured is DP default", "more search guarantees true utility"]
+    },
+    {
+      "id": "QDTE-C6",
+      "role": "qualified_variant",
+      "short_name": "fission_refit_l2_alignment",
+      "scope": "predeclared seed3 four-dataset confirmation",
+      "evidence": ["qdte_structured_sa_terminal_fixed_noise_seed3", "qdte_structured_fission_refit_v2_fixed_noise_seed3"],
+      "required_facts": {"mae_wins": 4, "rmse_wins": 3, "combined_wins": 7, "combined_cells": 8, "max_l2_regression_percent": 0.62},
+      "forbidden": ["universal utility improvement", "development seed1 as confirmation", "exact refit transfer theorem"]
+    },
+    {
+      "id": "QDTE-C7",
+      "role": "diagnostic_future_work",
+      "short_name": "projection_generation_transfer_gap",
+      "evidence": ["query-space LSQ", "RTP-local", "teacher-target", "T/F/C/E decomposition"],
+      "forbidden": ["RTP solves transfer", "target improvement guarantees final utility", "unique causal identification"]
+    },
+    {
+      "id": "QDTE-C8",
+      "role": "main_theory",
+      "short_name": "row_answer_polytope_view",
+      "evidence": ["row-answer polytope formulation", "finite-difference identities"],
+      "forbidden": ["exact standard Frank-Wolfe equivalence", "inherited Frank-Wolfe convergence"]
+    },
+    {
+      "id": "QDTE-C9",
+      "role": "appendix_limitation",
+      "short_name": "joint_utility_unresolved",
+      "evidence": ["QDTE_JOINT_UTILITY_RESULTS_20260711", "pool rounding", "Structured TVD-L1", "released-validation mixtures"],
+      "forbidden": ["joint five-metric solution", "expanded-row default fairness"]
+    }
+  ],
+  "main_contributions": ["QDTE-C2", "QDTE-C4", "QDTE-C6", "QDTE-C7"],
+  "main_empirical_claims": ["QDTE-C1", "QDTE-C4", "QDTE-C5", "QDTE-C6"],
+  "appendix_or_limitations": ["QDTE-C7", "QDTE-C9"],
+  "excluded_from_main_stack": ["SAGE-Select", "PA-Diag16 default", "RTP-local method", "TVD-L1 utility solution"]
+}

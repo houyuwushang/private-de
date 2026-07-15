@@ -1,0 +1,20 @@
+# Predeclared overlay for the QDTE-PA-Diag16 paper-variant candidate.
+#
+# Apply these values on top of a dataset's existing *_sage_strong.yaml config.
+# This overlay intentionally does not change the released target values except
+# through the same current lightweight projection/post-processing path. It only
+# replaces raw diagonal objective variances with bootstrap-estimated diagonal
+# post-projection variances.
+
+projection:
+  uncertainty:
+    enabled: true
+    method: bootstrap_diagonal
+    num_samples: 16
+    center: projected
+    min_raw_variance_fraction: 0.02
+    min_variance: 1.0e-6
+    debias_target: false
+
+qdte:
+  objective_weighting: variance

@@ -1,0 +1,36 @@
+protocol:
+  name: qdte_vs_official_gsd_no_noise_breadth_v1
+  frozen_at: 2026-07-10
+  seed: 0
+  datasets: [br2000_sage_strong, adult_sage_strong]
+  primary_endpoint: exact_mixed_target_count_loss
+  secondary_endpoints: [mae, rmse, max_error, avg_tvd, max_tvd, time_to_quality]
+  evidence_role: cross_dataset_seed0_screen
+
+qdte:
+  phase_a_config: configs/variants/qdte_structured_converged_batch_v1.yaml
+  phase_b_config: configs/variants/qdte_structured_breadth_tail_v1.yaml
+  refinement_seed: 20260710
+  include_base_runtime_in_total: true
+  br2000_source: qdte_base_impl_audit_mixed_no_noise_final/br2000_sage_strong/seed0
+  adult_source: qdte_on_mixed_no_noise_target/adult_sage_strong/seed0
+
+official_gsd:
+  implementation: genetic_sd.generator.generator_genetic_sd.GeneticSD
+  initialization: native
+  genetic_operators: [mutate, swap, cross]
+  num_generations_cap: 1000000
+  seed_streams: [jax, python_random, numpy]
+  proposals_per_generation: 50
+
+paths:
+  input_root: $SAGE_BASELINE_ROOT/external_inputs
+  query_root: $SAGE_BASELINE_ROOT/external_runs/sage
+  output_root: $SAGE_BASELINE_ROOT/external_runs/qdte_gsd_no_noise_breadth_v1
+
+scope_resolution:
+  acs: retained_from_qdte_gsd_converged_no_noise_v1
+  br2000: completed
+  adult: completed
+  nltcs: not_run_no_existing_exact_mixed_no_noise_source_artifact
+  additional_depth: false

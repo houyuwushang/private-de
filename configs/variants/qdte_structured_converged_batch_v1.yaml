@@ -1,0 +1,37 @@
+variant:
+  name: QDTE-Structured-Converged-Batch-v1
+  status: predeclared_no_noise_seed0_phase_a
+  frozen_at: 2026-07-10
+
+structured_refinement:
+  operator_mix: directed=0.15,mutation=0.15,global_directed_swap=0.70
+  candidate_units_per_iter: 2048
+  max_tail_iters: 2500
+  max_candidate_units: 5120000
+  wall_time_seconds: 600.0
+  patience: 5000
+  num_active_targets: 64
+  source_over_sample_factor: 32
+  global_swap_exploration_floor: 0.20
+  global_swap_policy: adaptive_advantage
+  global_swap_policy_decay: 0.95
+  global_swap_policy_prior_strength: 32.0
+  accepted_per_iter_start: 64
+  accepted_per_iter_end: 1
+  accepted_per_iter_schedule: cosine
+  scoring_chunk_size: 4096
+  scoring_backend: dense
+  use_pmap: true
+  objective_weighting: unweighted
+  min_advantage: 1.0e-6
+  noise_guard_kappa: 0.0
+  full_recompute_every: 1000
+  drift_tolerance: 1.0e-5
+  answer_batch_size: 8192
+  log_every: 100
+
+evidence_boundary:
+  privacy_mode: non_dp_oracle_diagnostic
+  target: exact_mixed_no_noise
+  true_evaluator_during_generation: forbidden
+  selection_rule: exact_shared_quadratic_target_loss
