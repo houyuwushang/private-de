@@ -35,6 +35,7 @@ def test_cdwf_uniform_and_dual_share_noise_streams_on_single_block() -> None:
         "base_noise_seed": 101,
         "refinement_noise_seed": 202,
         "generation_seed": 303,
+        "shadow_dictionary_rounds": 4,
         "shadow_max_iterations": 2_000,
     }
 
@@ -47,11 +48,17 @@ def test_cdwf_uniform_and_dual_share_noise_streams_on_single_block() -> None:
     assert uniform.dual_fallback_count == 0
     assert dual.dual_fallback_count == 0
     assert dual.promotion_eligible_dual is True
-    assert dual.shadow_dictionary is not None
-    assert dual.shadow_dictionary.path_diagnostics["entered_confidence_set"] is True
+    assert dual.public_row_domain.domain_size == 4
+    assert dual.rhcg_columns.atom_count <= 4
+    assert dual.rhcg_columns.column_count <= 4
     assert all(record.shadow is not None for record in dual.rounds)
     assert all(
-        record.shadow["dual"]["eligible"] is True for record in dual.rounds
+        record.shadow["certified"] is True for record in dual.rounds
+    )
+    assert all(
+        record.shadow["phase_one"]["global_gap"] <= 1.0e-8
+        and record.shadow["phase_two"]["global_gap"] <= 1.0e-8
+        for record in dual.rounds
     )
     for uniform_stream, dual_stream in zip(
         uniform.transcript.streams,
@@ -70,4 +77,10 @@ def test_cdwf_uniform_and_dual_share_noise_streams_on_single_block() -> None:
     assert payload["selection_rho"] == 0.0
     assert payload["truth_accessed_by_allocation"] is False
     assert payload["per_round_full_qdte"] is False
+    assert payload["public_row_domain"]["manifest_sha256"]
+    assert payload["rhcg_columns"]["method"] == (
+        "released_history_legal_row_column_set_v1"
+    )
+    assert payload["rhcg_warm_start"]["role"] == "aggregate_warm_start_only"
+    assert payload["rhcg_warm_start"]["global_pricing_certificate"] is False
     assert len(payload["rounds"]) == 4

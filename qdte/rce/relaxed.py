@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import warnings
 from typing import Any
 
 import numpy as np
@@ -179,13 +180,16 @@ def _restricted_supporting_hyperplane_certificate(
     )
     inequalities[:, : len(values)] = -jacobian.T
     inequalities[:, -1] = 1.0
-    lp = linprog(
-        objective_coefficients,
-        A_ub=inequalities,
-        b_ub=gradient,
-        bounds=[(0.0, None)] * len(values) + [(None, None)],
-        method="highs",
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Unrecognized options detected:.*")
+        lp = linprog(
+            objective_coefficients,
+            A_ub=inequalities,
+            b_ub=gradient,
+            bounds=[(0.0, None)] * len(values) + [(None, None)],
+            method="highs",
+            options={"threads": 1, "random_seed": 0},
+        )
     if not lp.success:
         return {
             "certificate_kind": "restricted_supporting_hyperplane_dual",

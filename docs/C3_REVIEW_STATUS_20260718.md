@@ -6,6 +6,64 @@
 
 用途：给外部专家提供可复核的当前代码状态和唯一剩余机制问题。
 
+## 0. RHCG-CCMP v2 更新（当前状态）
+
+本节取代下方旧 restricted-hull 状态作为当前决策入口；旧章节保留用于说明
+问题如何从 finite dictionary coverage 推进到 full-row pricing tractability。
+
+专家选择 released-history column generation 后，公开分支现已实现：
+
+```text
+sealed public legal-row domain
+unary/pairwise canonical shadow map
+Phase-I global row-realizable margin
+minimal confidence inflation
+Phase-II CCF moment projection
+minimum-norm dual
+exact legal-row MAP pricing
+global Frank-Wolfe certificate
+```
+
+Stage 0 exhaustive certification通过。Adult、epsilon=0.1、no-truth Stage 1 的
+首个 master也已通过：
+
+```text
+s_star:                -6.8405247478e-06
+inflation:              0
+active face:            global ellipsoid
+master runtime:         0.0234 seconds
+master dual:            certified
+```
+
+因此旧的 31-table coverage问题已解决。当前新阻塞是完整 105-pair
+categorical MAP pricing：
+
+```text
+HiGHS:  roughly 3 minutes without a global certificate
+SCIP:   119.46 seconds, remaining gap 42.85%
+public branching / binary-pair / triangle-cut variants:
+        no paper-scale exact certificate
+```
+
+按照冻结协议，uncertified pricing是 computational fallback，所以 Stage 1、
+formal seeds、最终 QDTE、true evaluator和 AIM panel均未获准启动。该结果不表示
+C3 utility输给 AIM，也不表示 full row polytope与 confidence set不相交。
+
+完整实现结果、数值和下一项四选一决策见：
+
+```text
+docs/SAGE_QDTE_RCE_C3_RHCG_CCMP_V1_专家决断与实施计划_20260718.md
+```
+
+建议专家只冻结一个 tractability boundary：
+
+```text
+A. bounded-treewidth exact shadow
+B. certified nonzero pricing interval
+C. separable/blockwise exact pressure
+D. stop RHCG-CDWF for the current paper
+```
+
 ## 1. 当前结论
 
 `C3-CDWF` 的预算拆分、streamwise Gaussian transcript、sequential CCF、

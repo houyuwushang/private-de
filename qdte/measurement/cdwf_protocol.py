@@ -6,7 +6,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-from qdte.evolution.initialization import initialize_independent_oneway
+from qdte.evolution.entropy import ReleasedProductPrior
 from qdte.measurement.cdwf import (
     CDWFAllocationResult,
     CDWFBudgetPlan,
@@ -29,18 +29,26 @@ from qdte.measurement.interaction_adapter import (
 )
 from qdte.queries.types import QueryCatalogue
 from qdte.queries.workload import WorkloadGroup
+from qdte.rce.confidence_set import RCEConfidenceSet
 from qdte.rce.cdwf_shadow import (
     CDWFShadowDictionary,
     build_released_directed_shadow_dictionary,
-    solve_cdwf_shadow_rce,
+    sample_released_forest_prior,
 )
+from qdte.rce.public_domain import PublicLegalRowDomain
+from qdte.rce.rhcg_ccmp import (
+    CanonicalConfidenceGeometry,
+    RHCGColumnSet,
+    solve_rhcg_ccmp,
+)
+from qdte.rce.row_pricing import ShadowFeatureMap, ccf_moment_answer
 from qdte.rce.sequential_forest_prior import (
     build_sequential_confidence_forest_prior,
 )
 from qdte.schema import TableSchema
 
 
-CDWF_PROTOCOL_METHOD = "sage_qdte_rce_c3_cdwf_measurement_v1"
+CDWF_PROTOCOL_METHOD = "sage_qdte_rce_c3_cdwf_rhcg_ccmp_v2"
 CDWF_ARMS = ("split_uniform", "dual_water_fill")
 
 
@@ -80,7 +88,9 @@ class CDWFRoundRecord:
 class CDWFMeasurementRun:
     arm: str
     transcript: CDWFSequentialTranscript
-    shadow_dictionary: CDWFShadowDictionary | None
+    public_row_domain: PublicLegalRowDomain
+    rhcg_columns: RHCGColumnSet
+    rhcg_warm_start: dict[str, Any]
     rounds: tuple[CDWFRoundRecord, ...]
     base_ccf_prior: dict[str, Any]
     method: str = CDWF_PROTOCOL_METHOD
@@ -90,8 +100,8 @@ class CDWFMeasurementRun:
             raise ValueError("Unsupported CDWF measurement run")
         if len(self.rounds) != self.transcript.budget.rounds:
             raise ValueError("CDWF measurement run omitted a declared round")
-        if self.arm == "dual_water_fill" and self.shadow_dictionary is None:
-            raise ValueError("Dual CDWF requires its frozen shadow dictionary")
+        if self.public_row_domain.public_n != self.transcript.public_total:
+            raise ValueError("CDWF public row domain and transcript disagree on public n")
 
     @property
     def dual_fallback_count(self) -> int:
@@ -138,11 +148,12 @@ class CDWFMeasurementRun:
             "truth_accessed_by_allocation": False,
             "per_round_full_qdte": False,
             "final_qdte_runs": 1,
-            "shadow_dictionary": (
-                self.shadow_dictionary.to_public_dict()
-                if self.shadow_dictionary is not None
-                else None
-            ),
+            "public_row_domain": {
+                **self.public_row_domain.manifest,
+                "manifest_sha256": self.public_row_domain.manifest_hash,
+            },
+            "rhcg_columns": self.rhcg_columns.to_public_dict(),
+            "rhcg_warm_start": dict(self.rhcg_warm_start),
             "base_ccf_prior": dict(self.base_ccf_prior),
             "rounds": [record.to_public_dict() for record in self.rounds],
             "concentration": self.concentration_diagnostics(),
@@ -203,6 +214,41 @@ def _released_state(
     return combined, measurements, prior
 
 
+def _rhcg_shadow_geometry(
+    *,
+    feature_map: ShadowFeatureMap,
+    combined,
+    rho_by_block: dict[str, float],
+) -> CanonicalConfidenceGeometry:
+    target_parts: list[np.ndarray] = []
+    variance_parts: list[np.ndarray] = []
+    tolerance = 1.0e-10 * max(1.0, math.fsum(rho_by_block.values()))
+    for block in feature_map.strategy.blocks:
+        if block.name not in combined.noisy_components:
+            raise ValueError(f"Combined C3 transcript omitted block {block.name!r}")
+        target_parts.append(
+            np.asarray(combined.noisy_components[block.name], dtype=np.float64).reshape(-1)
+        )
+        variance = float(combined.component_variances[block.name])
+        if not math.isfinite(variance) or variance <= 0.0:
+            raise ValueError("Combined C3 covariance must be finite and positive")
+        variance_parts.append(np.full(block.dimension, variance, dtype=np.float64))
+        if abs(float(combined.rho_by_block[block.name]) - rho_by_block[block.name]) > tolerance:
+            raise ValueError("Combined C3 precision disagrees with the privacy ledger")
+    target = np.concatenate(target_parts)
+    variances = np.concatenate(variance_parts)
+    return CanonicalConfidenceGeometry(
+        feature_map=feature_map,
+        target=target,
+        confidence=RCEConfidenceSet.from_diagonal_variances(
+            variances,
+            alpha_l2=0.025,
+            alpha_linf=0.025,
+        ),
+        rho_by_block=rho_by_block,
+    )
+
+
 def run_cdwf_adaptive_measurement(
     rows: np.ndarray,
     schema: TableSchema,
@@ -228,6 +274,11 @@ def run_cdwf_adaptive_measurement(
     mode = str(arm)
     if mode not in CDWF_ARMS:
         raise ValueError(f"CDWF arm must be one of {CDWF_ARMS}")
+    public_domain = PublicLegalRowDomain.from_schema(
+        schema,
+        public_n=int(public_total),
+    )
+    feature_map = ShadowFeatureMap(strategy, public_domain)
     private_rows = np.asarray(rows, dtype=np.int32)
     if private_rows.shape != (int(public_total), schema.d):
         raise ValueError("CDWF private rows do not match the public schema and row count")
@@ -254,43 +305,84 @@ def run_cdwf_adaptive_measurement(
         selected_forest_edges=len(prior.edges),
     )
     base_ccf_diagnostics = prior.diagnostics()
-    dictionary: CDWFShadowDictionary | None = None
-    if mode == "dual_water_fill":
-        initial_rows = initialize_independent_oneway(
-            qcat,
-            measurements.target_projected,
-            schema,
-            int(public_total),
-            np.random.default_rng(int(generation_seed)),
-        )
-        dictionary = CDWFShadowDictionary.create(
-            initial_rows=initial_rows,
-            product_prior=prior.product_prior,
-            ccf_prior=prior,
-            public_seed=int(generation_seed),
-        )
-        progress("shadow_anchor_dictionary_complete", num_tables=len(dictionary.tables))
-        dictionary = build_released_directed_shadow_dictionary(
-            dictionary,
-            schema=schema,
-            qcat=qcat,
-            workload_groups=workload_groups,
-            transcript=combined,
-            released_target=measurements.target_projected,
-            max_rounds=int(shadow_dictionary_rounds),
-            candidates_per_round=1_024,
-            accepted_per_round=64,
-        )
-        progress(
-            "shadow_directed_dictionary_complete",
-            num_tables=len(dictionary.tables),
-            entered_confidence_set=bool(
-                (dictionary.path_diagnostics or {}).get(
-                    "entered_confidence_set",
-                    False,
-                )
-            ),
-        )
+    product_prior = ReleasedProductPrior.from_released_oneway(
+        qcat,
+        measurements.target_projected,
+        schema.cardinalities,
+        public_total=int(public_total),
+        smoothing=1.0,
+    )
+    initial_rows = sample_released_forest_prior(
+        prior,
+        int(public_total),
+        np.random.default_rng(
+            np.random.SeedSequence(
+                [int(generation_seed), 0x52484347, 0x5741524D]
+            )
+        ),
+    )
+    warm_dictionary = CDWFShadowDictionary.create(
+        initial_rows=initial_rows,
+        product_prior=product_prior,
+        ccf_prior=prior,
+        public_seed=int(generation_seed),
+    )
+    progress(
+        "rhcg_warm_start_started",
+        anchor_tables=len(warm_dictionary.tables),
+        directed_rounds=int(shadow_dictionary_rounds),
+    )
+    warm_dictionary = build_released_directed_shadow_dictionary(
+        warm_dictionary,
+        schema=schema,
+        qcat=qcat,
+        workload_groups=workload_groups,
+        transcript=combined,
+        released_target=measurements.target_projected,
+        max_rounds=int(shadow_dictionary_rounds),
+        feature_batch_size=int(answer_batch_size),
+    )
+    if warm_dictionary.coefficient_answers is None:
+        raise RuntimeError("Released RHCG warm start omitted coefficient answers")
+    warm_indices = tuple(
+        dict.fromkeys((0, 1, 2, len(warm_dictionary.names) - 1))
+    )
+    warm_names = tuple(warm_dictionary.names[index] for index in warm_indices)
+    warm_answers = np.stack(
+        [warm_dictionary.coefficient_answers[index] for index in warm_indices],
+        axis=0,
+    )
+    if warm_answers.shape[1] != feature_map.feature_dimension:
+        raise RuntimeError("Released RHCG warm start uses a different shadow feature map")
+    columns = RHCGColumnSet.create(
+        feature_map,
+        warm_names=warm_names,
+        warm_answers=warm_answers,
+    )
+    warm_start_diagnostics = {
+        **warm_dictionary.to_public_dict(),
+        "role": "aggregate_warm_start_only",
+        "global_pricing_certificate": False,
+        "retained_column_names": list(warm_names),
+        "retained_column_count": len(warm_names),
+    }
+    progress(
+        "rhcg_warm_start_complete",
+        aggregate_columns=columns.column_count,
+        path_snapshot_columns=len(warm_dictionary.names),
+        path_rounds=int(
+            (warm_dictionary.path_diagnostics or {}).get("rounds_executed", 0)
+        ),
+        dictionary_sha256=columns.dictionary_hash,
+    )
+    progress(
+        "rhcg_public_domain_sealed",
+        schema_sha256=public_domain.schema_hash,
+        manifest_sha256=public_domain.manifest_hash,
+        domain_size=public_domain.domain_size,
+        shadow_affine_rank=feature_map.affine_rank,
+        column_cap=feature_map.atom_cap,
+    )
 
     records: list[CDWFRoundRecord] = []
     for round_index in range(plan.rounds):
@@ -301,62 +393,77 @@ def run_cdwf_adaptive_measurement(
         reasons: tuple[str, ...] = ()
         concentration_9: float | None = None
         concentration_23: float | None = None
-        if mode == "dual_water_fill":
-            if dictionary is None:
-                raise AssertionError("CDWF dual dictionary was not frozen")
-            try:
-                progress("shadow_solve_started", round_index=round_index)
-                shadow = solve_cdwf_shadow_rce(
-                    dictionary,
-                    qcat=qcat,
-                    workload_groups=workload_groups,
-                    transcript=combined,
-                    released_target=measurements.target_projected,
-                    prior=prior,
-                    rho_by_block=rho_before,
-                    answer_batch_size=int(answer_batch_size),
-                    max_iterations=int(shadow_max_iterations),
-                )
-                shadow_payload = shadow.to_public_dict()
-                progress(
-                    "shadow_solve_complete",
+        try:
+            progress("rhcg_ccmp_started", round_index=round_index)
+            geometry = _rhcg_shadow_geometry(
+                feature_map=feature_map,
+                combined=combined,
+                rho_by_block=rho_before,
+            )
+            shadow = solve_rhcg_ccmp(
+                geometry,
+                columns,
+                ccf_moment_answer(feature_map, prior),
+                pricing_solver="auto",
+                global_gap_tolerance=1.0e-8,
+                maximum_columns=feature_map.atom_cap,
+                max_iterations=int(shadow_max_iterations),
+                progress_callback=lambda stage, values: progress(
+                    f"rhcg_{stage}",
                     round_index=round_index,
-                    certified=not shadow.fallback_required,
-                    fallback_reasons=list(shadow.failure_reasons),
+                    **values,
+                ),
+            )
+            shadow_payload = shadow.to_public_dict()
+            fallback = not shadow.certified
+            reasons = shadow.fallback_reasons
+            if shadow.certified:
+                columns = shadow.phase_two.columns
+            progress(
+                "rhcg_ccmp_complete",
+                round_index=round_index,
+                certified=shadow.certified,
+                fallback_reasons=list(reasons),
+                phase_one_inflation=shadow.phase_one.inflation,
+                column_count=shadow.phase_two.columns.column_count,
+            )
+            if mode == "dual_water_fill" and not fallback:
+                pressures = {
+                    name: shadow.pressure_by_block[name]
+                    for name in plan.eligible_interaction_blocks
+                }
+                allocation_result = solve_cdwf_water_filling(
+                    plan,
+                    rho_before,
+                    pressures,
                 )
-                fallback = shadow.fallback_required
-                reasons = shadow.failure_reasons
-                if not fallback and shadow.pressure is not None:
-                    pressures = {
-                        name: shadow.pressure.pressure_by_block[name]
+                concentration_9 = pressure_concentration(
+                    pressures,
+                    {
+                        name: plan.control_rho_by_block[name]
                         for name in plan.eligible_interaction_blocks
-                    }
-                    allocation_result = solve_cdwf_water_filling(
-                        plan,
-                        rho_before,
-                        pressures,
-                    )
-                    concentration_9 = pressure_concentration(
-                        pressures,
-                        {
-                            name: plan.control_rho_by_block[name]
-                            for name in plan.eligible_interaction_blocks
-                        },
-                        mass_fraction=11.0 / 119.0,
-                    )
-                    concentration_23 = pressure_concentration(
-                        pressures,
-                        {
-                            name: plan.control_rho_by_block[name]
-                            for name in plan.eligible_interaction_blocks
-                        },
-                        mass_fraction=11.0 / 47.0,
-                    )
-            except (RuntimeError, ValueError) as error:
-                fallback = True
-                reasons = (
-                    f"{error.__class__.__name__}:{str(error)}",
+                    },
+                    mass_fraction=11.0 / 119.0,
                 )
+                concentration_23 = pressure_concentration(
+                    pressures,
+                    {
+                        name: plan.control_rho_by_block[name]
+                        for name in plan.eligible_interaction_blocks
+                    },
+                    mass_fraction=11.0 / 47.0,
+                )
+        except (RuntimeError, ValueError) as error:
+            fallback = True
+            reasons = (
+                f"{error.__class__.__name__}:{str(error)}",
+            )
+            progress(
+                "rhcg_ccmp_failed_closed",
+                round_index=round_index,
+                fallback_reasons=list(reasons),
+                column_count=columns.column_count,
+            )
         allocation = (
             allocation_result.allocation
             if allocation_result is not None
@@ -391,7 +498,7 @@ def run_cdwf_adaptive_measurement(
                 rho_before=rho_before,
                 allocation=allocation,
                 rho_after=rho_after,
-                dual_fallback=bool(mode == "dual_water_fill" and fallback),
+                dual_fallback=bool(fallback),
                 fallback_reasons=reasons,
                 shadow=shadow_payload,
                 allocation_solver=(
@@ -428,7 +535,9 @@ def run_cdwf_adaptive_measurement(
     return CDWFMeasurementRun(
         arm=mode,
         transcript=transcript,
-        shadow_dictionary=dictionary,
+        public_row_domain=public_domain,
+        rhcg_columns=columns,
+        rhcg_warm_start=warm_start_diagnostics,
         rounds=tuple(records),
         base_ccf_prior=base_ccf_diagnostics,
     )

@@ -8,19 +8,19 @@ generation 的组织。
 
 ## 2026-07-18 C3 专家审查快照
 
-当前公开分支已同步 `SAGE-QDTE-RCE-C3-CDWF-v1` 的实现、单元测试和开发状态。
-该方法在相同总 zCDP 预算内，只对 eligible pure-interaction blocks 做
-confidence-dual water-filling refinement；选择只读取已发布 DP transcript，
-不额外消耗 selection privacy budget。
+当前公开分支已同步 `SAGE-QDTE-RCE-C3-CDWF-v1 + RHCG-CCMP-v1` 的实现、
+单元测试和机制状态。RHCG 已经解决旧 31-table restricted hull 的 coverage
+问题：Adult 首个 full-row Phase-I master 得到 `s*=-6.8405e-6`、零 inflation
+和 certified dual。
 
-当前状态不是正式实验胜利：Adult、epsilon=0.1 的 no-truth 开发格中，前两轮
-restricted dual 通过证书并执行了非均匀 water-filling；第三轮开始，冻结的
-31-table restricted convex hull 与收紧后的 confidence set 不再相交，因此按
-协议回退到 public-uniform allocation，失去 promotion eligibility。正式 seeds、
-最终 5000-step QDTE 和 AIM 对比均尚未运行。
+当前 gate 仍未通过。完整 105-pair shadow 的 legal-row pricing 是一般离散
+pairwise MAP；HiGHS、SCIP、公开 domain branching 和 triangle cuts 均未在
+paper-scale 时间内给出首个 `1e-8` global certificate。因此正式 seeds、最终
+5000-step QDTE、true evaluator 和 AIM 对比仍未运行。
 
-代码入口、证据边界和待决策问题见：
-[`docs/C3_REVIEW_STATUS_20260718.md`](docs/C3_REVIEW_STATUS_20260718.md)。
+代码入口、实测边界和下一项唯一专家问题见：
+[`docs/C3_REVIEW_STATUS_20260718.md`](docs/C3_REVIEW_STATUS_20260718.md) 和
+[`docs/SAGE_QDTE_RCE_C3_RHCG_CCMP_V1_专家决断与实施计划_20260718.md`](docs/SAGE_QDTE_RCE_C3_RHCG_CCMP_V1_专家决断与实施计划_20260718.md)。
 
 当前 paper-facing 方法明确区分：
 

@@ -40,6 +40,7 @@ from qdte.measurement.public_artifact import (
     write_public_transcript_manifest,
 )
 from qdte.queries.partitions import build_selected_pair_partition_workload
+from qdte.rce.public_domain import PublicLegalRowDomain
 from qdte.schema import TableSchema
 from scripts.path_defaults import external_inputs
 from scripts.run_static_ice_measurement_pilot import (
@@ -49,8 +50,8 @@ from scripts.run_static_ice_measurement_pilot import (
 from scripts.run_static_ice_qdte_pilot import _write_measurement_artifact
 
 
-PROTOCOL_ID = "SAGE-QDTE-RCE-C3-CDWF-20260718-v1"
-METHOD_ID = "SAGE-QDTE-RCE-C3-CDWF-v1"
+PROTOCOL_ID = "SAGE-QDTE-RCE-C3-CDWF-RHCG-CCMP-20260718-v1"
+METHOD_ID = "SAGE-QDTE-RCE-C3-CDWF-RHCG-CCMP-v1"
 DATASETS = ("adult", "br2000")
 EPSILONS = (0.1, 0.3)
 FORMAL_SEEDS = (100, 101, 102, 103, 104)
@@ -104,11 +105,19 @@ def run_measurement_cell(args: argparse.Namespace) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     schema = TableSchema.load_json(input_dir / "schema.json")
+    metadata = _read_metadata(input_dir / "metadata.json")
+    public_total = int(metadata["n_rows"])
+    public_domain = PublicLegalRowDomain.from_schema(
+        schema,
+        public_n=public_total,
+    )
+    public_manifests = public_domain.write_manifests(
+        output_dir / "public_domain",
+        schema,
+    )
     rows = np.load(input_dir / "real_encoded.npy", allow_pickle=False).astype(
         np.int32
     )
-    metadata = _read_metadata(input_dir / "metadata.json")
-    public_total = int(metadata["n_rows"])
     if rows.shape != (public_total, schema.d):
         raise ValueError("Private C3 input does not match the public schema/row count")
     pairs = public_pair_scopes(schema.cardinalities, MAX_PAIR_CELLS)
@@ -195,6 +204,7 @@ def run_measurement_cell(args: argparse.Namespace) -> dict[str, Any]:
         "max_rss_gib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         / (1024.0 * 1024.0),
         "public_transcript_manifest": verified.manifest,
+        "public_domain_manifests": public_manifests,
         "measurement_run": run.to_public_dict(),
     }
     write_json(runtime, output_dir / "measurement_run.json")

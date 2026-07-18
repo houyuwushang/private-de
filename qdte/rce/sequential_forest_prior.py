@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import warnings
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -244,14 +245,17 @@ def _supporting_transport_dual(
     )
     inequalities[:, :num_constraints] = -gradients.T
     inequalities[:, num_constraints:] = equality.T.toarray()
-    result = linprog(
-        objective_coefficients,
-        A_ub=inequalities,
-        b_ub=gradient_f,
-        bounds=[(0.0, None)] * num_constraints
-        + [(None, None)] * num_potentials,
-        method="highs",
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Unrecognized options detected:.*")
+        result = linprog(
+            objective_coefficients,
+            A_ub=inequalities,
+            b_ub=gradient_f,
+            bounds=[(0.0, None)] * num_constraints
+            + [(None, None)] * num_potentials,
+            method="highs",
+            options={"threads": 1, "random_seed": 0},
+        )
     if not result.success or result.x is None:
         raise SequentialCCFCertificationError(
             f"Sequential CCF supporting dual failed: {result.status} {result.message}"

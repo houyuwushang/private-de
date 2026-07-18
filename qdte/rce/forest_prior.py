@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 from typing import Any
+import warnings
 
 import numpy as np
 from scipy.linalg import qr
@@ -114,17 +115,21 @@ def _certified_transport_linear_minimum(
 ) -> TransportLinearCertificate:
     vector = np.asarray(cost, dtype=np.float64).reshape(-1)
     equality, rhs = _transport_equalities(left, right)
-    result = linprog(
-        vector,
-        A_eq=equality,
-        b_eq=rhs,
-        bounds=(0.0, None),
-        method="highs",
-        options={
-            "dual_feasibility_tolerance": CCF_TRANSPORT_SOLVER_TOLERANCE,
-            "primal_feasibility_tolerance": CCF_TRANSPORT_SOLVER_TOLERANCE,
-        },
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Unrecognized options detected:.*")
+        result = linprog(
+            vector,
+            A_eq=equality,
+            b_eq=rhs,
+            bounds=(0.0, None),
+            method="highs",
+            options={
+                "dual_feasibility_tolerance": CCF_TRANSPORT_SOLVER_TOLERANCE,
+                "primal_feasibility_tolerance": CCF_TRANSPORT_SOLVER_TOLERANCE,
+                "threads": 1,
+                "random_seed": 0,
+            },
+        )
     if not result.success or result.x is None:
         raise CCFCertificationError(
             f"Transportation certificate LP failed: {result.status} {result.message}"
