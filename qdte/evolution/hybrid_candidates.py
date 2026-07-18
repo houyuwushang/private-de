@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from qdte.evolution.candidates import compute_edit_cost, generate_candidates
+from qdte.evolution.precision import OrthogonalInteractionPrecision
 from qdte.queries.delta_index import QueryDeltaIndex
 from qdte.queries.eval_jax import eval_records_queries, eval_records_queries_arrays
 from qdte.queries.types import QueryCatalogue
@@ -22,6 +23,7 @@ OPERATOR_CROSSOVER = 3
 OPERATOR_DIRECTED_SWAP = 4
 OPERATOR_DIRECTED_CROSSOVER = 5
 OPERATOR_GLOBAL_DIRECTED_SWAP = 6
+OPERATOR_INTERACTION_CYCLE = 7
 
 OPERATOR_NAMES = {
     OPERATOR_DIRECTED: "directed",
@@ -31,6 +33,7 @@ OPERATOR_NAMES = {
     OPERATOR_DIRECTED_SWAP: "directed_swap",
     OPERATOR_DIRECTED_CROSSOVER: "directed_crossover",
     OPERATOR_GLOBAL_DIRECTED_SWAP: "global_directed_swap",
+    OPERATOR_INTERACTION_CYCLE: "interaction_cycle",
 }
 
 
@@ -1435,6 +1438,57 @@ def candidate_unit_deltas(
         context.linear_num_terms,
     )
     return np.asarray(deltas, dtype=np.int8)
+
+
+def candidate_unit_feature_deltas(
+    candidates: HybridCandidateUnitBatch,
+    precision: OrthogonalInteractionPrecision,
+) -> np.ndarray:
+    """Return aggregate raw orthogonal feature deltas for candidate units."""
+    candidates.validate()
+    if candidates.width != len(precision.cardinalities):
+        raise ValueError("Candidate width must match orthogonal precision cardinalities")
+    if candidates.count == 0:
+        return np.empty((0, precision.coefficient_dimension), dtype=np.float64)
+    row_deltas = precision.row_feature_deltas(
+        candidates.old_rows.reshape(-1, candidates.width),
+        candidates.new_rows.reshape(-1, candidates.width),
+    ).reshape(candidates.count, 2, precision.coefficient_dimension)
+    return np.sum(
+        row_deltas * candidates.row_mask[:, :, None].astype(np.float64),
+        axis=1,
+        dtype=np.float64,
+    )
+
+
+def score_candidate_units_precision(
+    candidates: HybridCandidateUnitBatch,
+    residual: np.ndarray,
+    precision: OrthogonalInteractionPrecision,
+    *,
+    lambda_cost: float = 0.0,
+    chunk_size: int = 256,
+) -> np.ndarray:
+    """Score multi-row units by the exact raw orthogonal finite difference."""
+    candidates.validate()
+    if candidates.count == 0:
+        return np.empty(0, dtype=np.float32)
+    size = max(1, int(chunk_size))
+    outputs: list[np.ndarray] = []
+    for start in range(0, candidates.count, size):
+        end = min(start + size, candidates.count)
+        indices = np.arange(start, end, dtype=np.int64)
+        chunk = candidates.take(indices)
+        feature_deltas = candidate_unit_feature_deltas(chunk, precision)
+        outputs.append(
+            precision.feature_advantages(
+                residual,
+                feature_deltas,
+                chunk.edit_cost,
+                float(lambda_cost),
+            ).astype(np.float32)
+        )
+    return np.concatenate(outputs, axis=0)
 
 
 def score_candidate_units_l1(

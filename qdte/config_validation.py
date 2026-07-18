@@ -58,6 +58,16 @@ def validate_config(config: dict[str, Any]) -> None:
 
     _validate_choice(privacy, "mode", {"dp", "oracle"}, "dp", "privacy.mode")
     privacy_mode = str(privacy.get("mode", "dp")).lower()
+    _validate_choice(
+        privacy,
+        "adjacency",
+        {"add_remove"},
+        "add_remove",
+        "privacy.adjacency",
+    )
+    dp_release_mode = bool(privacy.get("dp_release_mode", False))
+    if dp_release_mode and privacy_mode != "dp":
+        raise ValueError("privacy.dp_release_mode=true requires privacy.mode='dp'")
     rho_total = _finite_float(privacy, "rho_total", 1.0, "privacy.rho_total")
     if privacy_mode == "dp" and rho_total <= 0.0:
         raise ValueError("privacy.rho_total must be positive in DP mode")
@@ -73,6 +83,26 @@ def validate_config(config: dict[str, Any]) -> None:
     allocation = privacy.get("measurement_allocation", {})
     if allocation is not None and not isinstance(allocation, dict):
         raise ValueError("privacy.measurement_allocation must be a mapping")
+    public_schema_json = preprocess.get("public_schema_json")
+    if public_schema_json is not None and not str(public_schema_json).strip():
+        raise ValueError("preprocess.public_schema_json must be a non-empty path")
+    if dp_release_mode:
+        if public_schema_json is None:
+            raise ValueError("privacy.dp_release_mode=true requires preprocess.public_schema_json")
+        if privacy.get("public_row_count") is not True:
+            raise ValueError("privacy.dp_release_mode=true requires privacy.public_row_count=true")
+        public_n_rows = privacy.get("public_n_rows")
+        if (
+            not isinstance(public_n_rows, int)
+            or isinstance(public_n_rows, bool)
+            or public_n_rows <= 0
+        ):
+            raise ValueError(
+                "privacy.dp_release_mode=true requires a positive integer "
+                "privacy.public_n_rows"
+            )
+        if str(privacy.get("adjacency", "")) != "add_remove":
+            raise ValueError("privacy.dp_release_mode=true requires privacy.adjacency='add_remove'")
 
     _positive_int(workload, "max_queries", 10_000, "workload.max_queries")
     _positive_int(workload, "max_terms", 4, "workload.max_terms")
@@ -106,6 +136,30 @@ def validate_config(config: dict[str, Any]) -> None:
     reuse_from = measurement.get("reuse_from", measurement.get("artifact_dir"))
     if reuse_from is not None and str(reuse_from) == "":
         raise ValueError("measurement.reuse_from must be a non-empty path when provided")
+    transcript_only_generation = bool(run.get("transcript_only_generation", False))
+    if transcript_only_generation:
+        if not dp_release_mode:
+            raise ValueError(
+                "run.transcript_only_generation=true requires privacy.dp_release_mode=true"
+            )
+        if run.get("input_csv") not in {None, ""}:
+            raise ValueError(
+                "run.transcript_only_generation=true forbids run.input_csv"
+            )
+        if reuse_from is None:
+            raise ValueError(
+                "run.transcript_only_generation=true requires measurement.reuse_from"
+            )
+        if not bool(workload.get("reuse_from_measurement", False)):
+            raise ValueError(
+                "run.transcript_only_generation=true requires "
+                "workload.reuse_from_measurement=true"
+            )
+        if init.get("encoded_npy") not in {None, ""}:
+            raise ValueError(
+                "run.transcript_only_generation=true forbids init.encoded_npy; "
+                "initialization must use only the released transcript"
+            )
     fission = measurement.get("fission", {})
     if fission is None:
         fission = {}
@@ -181,6 +235,24 @@ def validate_config(config: dict[str, Any]) -> None:
         if bool(oracle_bias.get("enabled", False)):
             if int(oracle_bias.get("num_samples", 32)) <= 1:
                 raise ValueError("evaluation.oracle_projection_bias.num_samples must be greater than 1")
+
+    if dp_release_mode:
+        forbidden_evaluation = [
+            name
+            for name, default in (
+                ("compute_true_query_error", True),
+                ("compute_heldout_query_error", False),
+                ("downstream_ml", False),
+            )
+            if bool(evaluation.get(name, default))
+        ]
+        if isinstance(oracle_bias, dict) and bool(oracle_bias.get("enabled", False)):
+            forbidden_evaluation.append("oracle_projection_bias.enabled")
+        if forbidden_evaluation:
+            raise ValueError(
+                "privacy.dp_release_mode=true forbids in-process private evaluation: "
+                + ", ".join(forbidden_evaluation)
+            )
 
     if bool(evaluation.get("downstream_ml", False)):
         raise NotImplementedError("evaluation.downstream_ml=true is not implemented")
@@ -410,7 +482,7 @@ def validate_config(config: dict[str, Any]) -> None:
     _validate_choice(
         qdte,
         "score_backend",
-        {"dense_gpu", "target_only", "sparse_delta", "sparse_delta_gpu"},
+        {"dense_gpu", "target_only", "sparse_delta", "sparse_delta_gpu", "precision_operator"},
         "dense_gpu",
         "qdte.score_backend",
     )
@@ -471,8 +543,208 @@ def validate_config(config: dict[str, Any]) -> None:
         "quadratic",
         "qdte.objective_loss",
     )
+    _validate_choice(
+        qdte,
+        "precision_operator",
+        {
+            "diagonal",
+            "coarsened_interaction_full_covariance",
+            "orthogonal_interaction",
+            "orthogonal_interaction_shrink_raw",
+            "orthogonal_interaction_shrink_analytic",
+            "orthogonal_interaction_p3_raw",
+            "orthogonal_interaction_p3_bootdiag",
+            "orthogonal_interaction_p3_active_set",
+        },
+        "diagonal",
+        "qdte.precision_operator",
+    )
     objective_loss = str(qdte.get("objective_loss", "quadratic"))
     objective_weighting = str(qdte.get("objective_weighting", "variance"))
+    objective_weight_profile = str(qdte.get("objective_weight_profile", "none"))
+    precision_operator = str(qdte.get("precision_operator", "diagonal"))
+    structured_swap_enabled = bool(qdte.get("structured_swap_enabled", False))
+    _validate_choice(
+        qdte,
+        "structured_swap_compiler",
+        {"global_random_v1", "interaction_rectangle_v1"},
+        "global_random_v1",
+        "qdte.structured_swap_compiler",
+    )
+    structured_swap_compiler = str(
+        qdte.get("structured_swap_compiler", "global_random_v1")
+    )
+    confidence_stop = qdte.get("confidence_stop", {})
+    if confidence_stop is None:
+        confidence_stop = {}
+    if not isinstance(confidence_stop, dict):
+        raise ValueError("qdte.confidence_stop must be a mapping")
+    if "enabled" in confidence_stop and not isinstance(confidence_stop["enabled"], bool):
+        raise ValueError("qdte.confidence_stop.enabled must be boolean")
+    confidence_stop_enabled = bool(confidence_stop.get("enabled", False))
+    _validate_choice(
+        confidence_stop,
+        "method",
+        {"chi_square"},
+        "chi_square",
+        "qdte.confidence_stop.method",
+    )
+    confidence_stop_alpha = _finite_float(
+        confidence_stop,
+        "alpha",
+        0.05,
+        "qdte.confidence_stop.alpha",
+    )
+    if not 0.0 < confidence_stop_alpha < 1.0:
+        raise ValueError("qdte.confidence_stop.alpha must be in (0, 1)")
+    entropy = qdte.get("entropy", {})
+    if entropy is None:
+        entropy = {}
+    if not isinstance(entropy, dict):
+        raise ValueError("qdte.entropy must be a mapping")
+    if "enabled" in entropy and not isinstance(entropy["enabled"], bool):
+        raise ValueError("qdte.entropy.enabled must be boolean")
+    entropy_enabled = bool(entropy.get("enabled", False))
+    _validate_choice(
+        entropy,
+        "method",
+        {"confidence_constrained_product_kl_primal_dual_v1"},
+        "confidence_constrained_product_kl_primal_dual_v1",
+        "qdte.entropy.method",
+    )
+    entropy_alpha = _finite_float(entropy, "alpha", 0.05, "qdte.entropy.alpha")
+    entropy_smoothing = _finite_float(
+        entropy,
+        "product_prior_smoothing",
+        1.0,
+        "qdte.entropy.product_prior_smoothing",
+    )
+    entropy_dual_initial = _finite_float(
+        entropy,
+        "dual_initial",
+        1.0,
+        "qdte.entropy.dual_initial",
+    )
+    if entropy_enabled:
+        if entropy_alpha != 0.05:
+            raise ValueError("The frozen first entropy profile requires qdte.entropy.alpha=0.05")
+        if entropy_smoothing != 1.0:
+            raise ValueError(
+                "The frozen first entropy profile requires qdte.entropy.product_prior_smoothing=1.0"
+            )
+        if entropy_dual_initial != 1.0:
+            raise ValueError(
+                "The frozen first entropy profile requires qdte.entropy.dual_initial=1.0"
+            )
+    rce = qdte.get("rce", {})
+    if rce is None:
+        rce = {}
+    if not isinstance(rce, dict):
+        raise ValueError("qdte.rce must be a mapping")
+    if "enabled" in rce and not isinstance(rce["enabled"], bool):
+        raise ValueError("qdte.rce.enabled must be boolean")
+    rce_enabled = bool(rce.get("enabled", False))
+    _validate_choice(
+        rce,
+        "method",
+        {"row_realizable_confidence_set_entropic_primal_dual_v1"},
+        "row_realizable_confidence_set_entropic_primal_dual_v1",
+        "qdte.rce.method",
+    )
+    _validate_choice(
+        rce,
+        "reference_prior",
+        {"released_product", "released_confidence_forest_v1"},
+        "released_product",
+        "qdte.rce.reference_prior",
+    )
+    _validate_choice(
+        rce,
+        "prefix_backend",
+        {"feature_cpu_exact", "feature_gpu"},
+        "feature_cpu_exact",
+        "qdte.rce.prefix_backend",
+    )
+    rce_reference_prior = str(rce.get("reference_prior", "released_product"))
+    streamwise_cdwf = rce.get("streamwise_cdwf", {})
+    if streamwise_cdwf is None:
+        streamwise_cdwf = {}
+    if not isinstance(streamwise_cdwf, dict):
+        raise ValueError("qdte.rce.streamwise_cdwf must be a mapping")
+    if "enabled" in streamwise_cdwf and not isinstance(
+        streamwise_cdwf["enabled"], bool
+    ):
+        raise ValueError("qdte.rce.streamwise_cdwf.enabled must be boolean")
+    streamwise_cdwf_enabled = bool(streamwise_cdwf.get("enabled", False))
+    c0_diagnostic = rce.get("c0_diagnostic", {})
+    if c0_diagnostic is None:
+        c0_diagnostic = {}
+    if not isinstance(c0_diagnostic, dict):
+        raise ValueError("qdte.rce.c0_diagnostic must be a mapping")
+    if "enabled" in c0_diagnostic and not isinstance(
+        c0_diagnostic["enabled"], bool
+    ):
+        raise ValueError("qdte.rce.c0_diagnostic.enabled must be boolean")
+    c0_enabled = bool(c0_diagnostic.get("enabled", False))
+    _validate_choice(
+        c0_diagnostic,
+        "support_mode",
+        {"released", "oracle"},
+        "released",
+        "qdte.rce.c0_diagnostic.support_mode",
+    )
+    _validate_choice(
+        c0_diagnostic,
+        "interaction_center",
+        {"dp", "clean"},
+        "dp",
+        "qdte.rce.c0_diagnostic.interaction_center",
+    )
+    precision_homotopy = rce.get("precision_homotopy_diagnostic", {})
+    if precision_homotopy is None:
+        precision_homotopy = {}
+    if not isinstance(precision_homotopy, dict):
+        raise ValueError("qdte.rce.precision_homotopy_diagnostic must be a mapping")
+    if "enabled" in precision_homotopy and not isinstance(
+        precision_homotopy["enabled"], bool
+    ):
+        raise ValueError(
+            "qdte.rce.precision_homotopy_diagnostic.enabled must be boolean"
+        )
+    precision_homotopy_enabled = bool(precision_homotopy.get("enabled", False))
+    homotopy_gamma = precision_homotopy.get("gamma", 1.0)
+    if isinstance(homotopy_gamma, str):
+        if homotopy_gamma.strip().lower() != "infinity":
+            raise ValueError(
+                "precision homotopy gamma must be one of 1, 2, 4, 8, infinity"
+            )
+    elif float(homotopy_gamma) not in {1.0, 2.0, 4.0, 8.0}:
+        raise ValueError(
+            "precision homotopy gamma must be one of 1, 2, 4, 8, infinity"
+        )
+    if c0_enabled and precision_homotopy_enabled:
+        raise ValueError("C0 and precision homotopy diagnostics are mutually exclusive")
+    if streamwise_cdwf_enabled and (c0_enabled or precision_homotopy_enabled):
+        raise ValueError(
+            "C3 streamwise CDWF cannot compose C0 or precision-homotopy diagnostics"
+        )
+    rce_alpha_l2 = _finite_float(rce, "alpha_l2", 0.025, "qdte.rce.alpha_l2")
+    rce_alpha_linf = _finite_float(rce, "alpha_linf", 0.025, "qdte.rce.alpha_linf")
+    rce_smoothing = _finite_float(
+        rce,
+        "product_prior_smoothing",
+        1.0,
+        "qdte.rce.product_prior_smoothing",
+    )
+    if rce_enabled:
+        if rce_alpha_l2 != 0.025 or rce_alpha_linf != 0.025:
+            raise ValueError(
+                "The frozen RCE-v1 profile requires alpha_l2=alpha_linf=0.025"
+            )
+        if rce_smoothing != 1.0:
+            raise ValueError(
+                "The frozen RCE-v1 profile requires qdte.rce.product_prior_smoothing=1.0"
+            )
     if bool(fission.get("enabled", False)):
         supported_fission_objective = (
             objective_loss == "quadratic" and objective_weighting == "variance"
@@ -486,6 +758,177 @@ def validate_config(config: dict[str, Any]) -> None:
             )
     transport_mode = str(qdte.get("transport_mode", "microbatch_greedy"))
     atom_flow_update_mode = str(qdte.get("atom_flow_update_mode", "batch"))
+    if score_backend == "precision_operator":
+        if candidate_backend != "cpu_repair":
+            raise ValueError("qdte.score_backend='precision_operator' requires qdte.candidate_backend='cpu_repair'")
+        if objective_loss != "quadratic":
+            raise ValueError("qdte.score_backend='precision_operator' requires qdte.objective_loss='quadratic'")
+        if transport_mode != "atom_flow" or atom_flow_update_mode != "batch":
+            raise ValueError(
+                "qdte.score_backend='precision_operator' requires batch atom_flow transport"
+            )
+        if structured_swap_enabled and not (
+            precision_operator == "orthogonal_interaction"
+            and structured_swap_compiler == "interaction_rectangle_v1"
+        ):
+            raise ValueError(
+                "precision-operator structured_swap requires the exact raw "
+                "orthogonal_interaction precision and interaction_rectangle_v1 compiler"
+            )
+        if bool(qdte.get("candidate_diagnostics", False)):
+            raise ValueError("precision-operator scoring does not yet support candidate_diagnostics")
+        if bool(fission.get("enabled", False)):
+            raise ValueError("precision-operator scoring does not yet support measurement fission")
+    elif precision_operator != "diagonal":
+        raise ValueError(
+            "non-diagonal qdte.precision_operator requires "
+            "qdte.score_backend='precision_operator'"
+        )
+    if precision_operator in {
+        "coarsened_interaction_full_covariance",
+        "orthogonal_interaction",
+        "orthogonal_interaction_shrink_raw",
+        "orthogonal_interaction_shrink_analytic",
+        "orthogonal_interaction_p3_raw",
+        "orthogonal_interaction_p3_bootdiag",
+        "orthogonal_interaction_p3_active_set",
+    }:
+        if objective_weighting != "variance" or objective_weight_profile != "none":
+            raise ValueError(
+                "orthogonal interaction precision requires variance weighting and no query weight profile"
+            )
+    if confidence_stop_enabled and precision_operator != "orthogonal_interaction":
+        raise ValueError(
+            "qdte.confidence_stop.enabled=true currently requires "
+            "qdte.precision_operator='orthogonal_interaction'"
+        )
+    if entropy_enabled:
+        if precision_operator != "orthogonal_interaction":
+            raise ValueError(
+                "qdte.entropy.enabled=true requires qdte.precision_operator='orthogonal_interaction'"
+            )
+        if score_backend != "precision_operator" or candidate_backend != "cpu_repair":
+            raise ValueError(
+                "qdte.entropy.enabled=true requires precision_operator scoring and cpu_repair candidates"
+            )
+        if objective_loss != "quadratic" or objective_weighting != "variance":
+            raise ValueError(
+                "qdte.entropy.enabled=true requires the variance-weighted quadratic objective"
+            )
+        if transport_mode != "atom_flow" or atom_flow_update_mode != "batch":
+            raise ValueError("qdte.entropy.enabled=true requires batch atom_flow transport")
+        if structured_swap_enabled:
+            raise ValueError("The first entropy profile does not support structured swaps")
+        if confidence_stop_enabled:
+            raise ValueError("Disable qdte.confidence_stop when qdte.entropy is enabled")
+        if bool(fission.get("enabled", False)):
+            raise ValueError("The first entropy profile does not support measurement fission")
+        if not bool(qdte.get("allow_below_noise_fallback", False)):
+            raise ValueError(
+                "qdte.entropy.enabled=true requires qdte.allow_below_noise_fallback=true"
+            )
+    if rce_enabled:
+        if precision_operator not in {
+            "orthogonal_interaction",
+            "coarsened_interaction_full_covariance",
+        }:
+            raise ValueError(
+                "qdte.rce.enabled=true requires precision_operator="
+                "'orthogonal_interaction' or "
+                "'coarsened_interaction_full_covariance'"
+            )
+        if (
+            precision_operator == "coarsened_interaction_full_covariance"
+            and rce_reference_prior != "released_confidence_forest_v1"
+        ):
+            raise ValueError(
+                "coarsened interaction RCE requires the released confidence forest prior"
+            )
+        if (
+            precision_operator == "coarsened_interaction_full_covariance"
+            and str(rce.get("prefix_backend", "feature_cpu_exact"))
+            != "feature_cpu_exact"
+        ):
+            raise ValueError(
+                "coarsened interaction RCE requires exact CPU full-covariance prefix scoring"
+            )
+        if score_backend != "precision_operator" or candidate_backend != "cpu_repair":
+            raise ValueError(
+                "qdte.rce.enabled=true requires precision_operator scoring and cpu_repair candidates"
+            )
+        if objective_loss != "quadratic" or objective_weighting != "variance":
+            raise ValueError(
+                "qdte.rce.enabled=true requires the variance-weighted quadratic base objective"
+            )
+        if transport_mode != "atom_flow" or atom_flow_update_mode != "batch":
+            raise ValueError("qdte.rce.enabled=true requires batch atom_flow transport")
+        if structured_swap_enabled:
+            raise ValueError("The frozen RCE-v1 profile does not support structured swaps")
+        if confidence_stop_enabled:
+            raise ValueError("RCE uses its own mixed confidence set; disable confidence_stop")
+        if entropy_enabled:
+            raise ValueError("RCE-v1 and the legacy entropy controller are mutually exclusive")
+        if bool(fission.get("enabled", False)):
+            raise ValueError("The frozen RCE-v1 profile does not compose Gaussian fission")
+    if streamwise_cdwf_enabled:
+        if not rce_enabled:
+            raise ValueError("C3 streamwise CDWF requires qdte.rce.enabled=true")
+        if precision_operator != "orthogonal_interaction":
+            raise ValueError(
+                "C3 streamwise CDWF requires the exact orthogonal_interaction precision"
+            )
+        if rce_reference_prior != "released_confidence_forest_v1":
+            raise ValueError(
+                "C3 streamwise CDWF requires the released confidence forest prior"
+            )
+        if not transcript_only_generation:
+            raise ValueError(
+                "C3 final generation must run transcript-only from a sealed public artifact"
+            )
+        if reuse_from is None or not bool(workload.get("reuse_from_measurement", False)):
+            raise ValueError(
+                "C3 streamwise CDWF requires a reused measurement artifact and workload"
+            )
+    if c0_enabled:
+        if not rce_enabled or rce_reference_prior != "released_confidence_forest_v1":
+            raise ValueError(
+                "C0 diagnostic requires enabled RCE with the released confidence forest prior"
+            )
+        if privacy_mode != "oracle" or dp_release_mode:
+            raise ValueError(
+                "C0 diagnostic is offline-only and requires privacy.mode='oracle' with "
+                "privacy.dp_release_mode=false"
+            )
+        if transcript_only_generation:
+            raise ValueError(
+                "C0 diagnostic must load the private table explicitly; transcript-only "
+                "generation is reserved for DP post-processing"
+            )
+        if run.get("input_csv") in {None, ""}:
+            raise ValueError("C0 diagnostic requires run.input_csv")
+        if reuse_from is None or not bool(workload.get("reuse_from_measurement", False)):
+            raise ValueError(
+                "C0 diagnostic requires a frozen measurement artifact and workload"
+            )
+    if precision_homotopy_enabled:
+        if not rce_enabled or rce_reference_prior != "released_confidence_forest_v1":
+            raise ValueError(
+                "Precision homotopy requires enabled RCE with the CCF prior"
+            )
+        if privacy_mode != "oracle" or dp_release_mode:
+            raise ValueError(
+                "Precision homotopy is offline-only and requires oracle mode"
+            )
+        if transcript_only_generation:
+            raise ValueError(
+                "Precision homotopy must explicitly load its private diagnostic table"
+            )
+        if run.get("input_csv") in {None, ""}:
+            raise ValueError("Precision homotopy requires run.input_csv")
+        if reuse_from is None or not bool(workload.get("reuse_from_measurement", False)):
+            raise ValueError(
+                "Precision homotopy requires a frozen measurement artifact and workload"
+            )
     if objective_loss == "tvd_l1":
         if candidate_backend != "cpu_repair":
             raise ValueError("qdte.objective_loss='tvd_l1' currently requires qdte.candidate_backend='cpu_repair'")
@@ -515,6 +958,38 @@ def validate_config(config: dict[str, Any]) -> None:
         "sparse_cpu",
         "qdte.structured_swap_delta_backend",
     )
+    structured_swap_delta_backend = str(
+        qdte.get("structured_swap_delta_backend", "sparse_cpu")
+    )
+    if structured_swap_enabled and structured_swap_compiler == "interaction_rectangle_v1":
+        if (
+            precision_operator != "orthogonal_interaction"
+            or score_backend != "precision_operator"
+            or candidate_backend != "cpu_repair"
+            or objective_loss != "quadratic"
+            or objective_weighting != "variance"
+            or objective_weight_profile != "none"
+            or transport_mode != "atom_flow"
+            or atom_flow_update_mode != "batch"
+        ):
+            raise ValueError(
+                "interaction_rectangle_v1 requires the unshrunk raw orthogonal-interaction "
+                "quadratic objective with precision-operator scoring and batch atom-flow transport"
+            )
+        if structured_swap_delta_backend != "sparse_cpu":
+            raise ValueError(
+                "interaction_rectangle_v1 requires qdte.structured_swap_delta_backend='sparse_cpu'"
+            )
+        if confidence_stop_enabled:
+            raise ValueError(
+                "The first interaction-cycle profile does not support confidence stopping"
+            )
+        if entropy_enabled:
+            raise ValueError("The first interaction-cycle profile does not support entropy")
+        if bool(fission.get("enabled", False)):
+            raise ValueError(
+                "The first interaction-cycle profile does not support measurement fission"
+            )
     _validate_choice(
         qdte,
         "structured_swap_noise_guard_mode",

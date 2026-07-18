@@ -3,12 +3,20 @@ from __future__ import annotations
 import heapq
 from dataclasses import dataclass, field
 from functools import partial
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from qdte.evolution.candidates import CandidateBatch
+from qdte.evolution.precision import (
+    ActiveSetOrthogonalInteractionPrecision,
+    BootstrapDiagonalOrthogonalInteractionPrecision,
+    OrthogonalInteractionPrecision,
+    PrecisionOperator,
+    ShrinkageAnalyticOrthogonalInteractionPrecision,
+)
 from qdte.queries.delta_index import QueryDeltaIndex
 from qdte.queries.eval_jax import eval_records_queries_arrays
 from qdte.queries.types import QueryCatalogue
@@ -104,6 +112,21 @@ def batch_advantage(
     linear = float(d @ w)
     quad = float((d * d) @ inv)
     return linear - 0.5 * quad - float(lambda_cost) * float(cost_sum)
+
+
+def batch_advantage_precision(
+    residual: np.ndarray,
+    precision: PrecisionOperator,
+    delta_sum: np.ndarray,
+    cost_sum: float,
+    lambda_cost: float,
+) -> float:
+    return precision.advantage(
+        residual,
+        delta_sum,
+        edit_cost=float(cost_sum),
+        lambda_cost=float(lambda_cost),
+    )
 
 
 def batch_advantage_l1(
@@ -1005,6 +1028,125 @@ def _choose_delta_prefix_fixed_l1_jit(
     return accepted_count.astype(jnp.int32), chosen_delta.astype(jnp.float32), chosen_adv.astype(jnp.float32)
 
 
+def _choose_delta_prefix_precision(
+    deltas: np.ndarray,
+    edit_cost: np.ndarray,
+    residual: np.ndarray,
+    precision: PrecisionOperator,
+    lambda_cost: float,
+    prefix_strategy: str,
+) -> tuple[int, np.ndarray, float]:
+    d = np.asarray(deltas, dtype=np.float64)
+    costs = np.asarray(edit_cost, dtype=np.float64)
+    if d.ndim != 2 or d.shape[1] != precision.dimension:
+        raise ValueError("Precision prefix deltas have an invalid shape")
+    if costs.shape != (d.shape[0],):
+        raise ValueError("Precision prefix edit costs have an invalid shape")
+    if d.shape[0] == 0:
+        return 0, np.zeros(precision.dimension, dtype=np.float32), 0.0
+    delta_prefix = np.cumsum(d, axis=0)
+    cost_prefix = np.cumsum(costs)
+    advantages = precision.advantages(
+        residual,
+        delta_prefix,
+        cost_prefix,
+        lambda_cost,
+    )
+    positive = np.flatnonzero(advantages > 0.0)
+    if len(positive) == 0:
+        best = float(np.max(advantages))
+        return 0, np.zeros(precision.dimension, dtype=np.float32), best
+    if prefix_strategy == "best_advantage":
+        chosen = int(np.argmax(advantages))
+    elif prefix_strategy == "largest_positive":
+        chosen = int(positive[-1])
+    else:
+        raise ValueError("prefix_strategy must be 'best_advantage' or 'largest_positive'")
+    return (
+        chosen + 1,
+        delta_prefix[chosen].astype(np.float32),
+        float(advantages[chosen]),
+    )
+
+
+def _choose_delta_prefix_custom(
+    selected_indices: np.ndarray,
+    deltas: np.ndarray,
+    edit_cost: np.ndarray,
+    evaluator: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray],
+    prefix_strategy: str,
+) -> tuple[int, np.ndarray, float]:
+    indices = np.asarray(selected_indices, dtype=np.int32)
+    d = np.asarray(deltas, dtype=np.float64)
+    costs = np.asarray(edit_cost, dtype=np.float64)
+    if d.ndim != 2 or d.shape[0] != len(indices):
+        raise ValueError("Custom prefix deltas must match selected_indices")
+    if costs.shape != (len(indices),):
+        raise ValueError("Custom prefix edit costs must match selected_indices")
+    if len(indices) == 0:
+        width = int(d.shape[1]) if d.ndim == 2 else 0
+        return 0, np.zeros(width, dtype=np.float32), 0.0
+    delta_prefix = np.cumsum(d, axis=0)
+    cost_prefix = np.cumsum(costs)
+    advantages = np.asarray(
+        evaluator(indices, delta_prefix, cost_prefix),
+        dtype=np.float64,
+    )
+    if advantages.shape != (len(indices),):
+        raise ValueError("Custom prefix evaluator must return one advantage per prefix")
+    if np.any(np.isnan(advantages)) or np.any(np.isposinf(advantages)):
+        raise ValueError("Custom prefix evaluator returned invalid advantages")
+    positive = np.flatnonzero(advantages > 0.0)
+    if len(positive) == 0:
+        finite = advantages[np.isfinite(advantages)]
+        best = float(np.max(finite)) if len(finite) else float("-inf")
+        return 0, np.zeros(d.shape[1], dtype=np.float32), best
+    if prefix_strategy == "best_advantage":
+        chosen = int(np.argmax(advantages))
+    elif prefix_strategy == "largest_positive":
+        chosen = int(positive[-1])
+    else:
+        raise ValueError("prefix_strategy must be 'best_advantage' or 'largest_positive'")
+    return (
+        chosen + 1,
+        delta_prefix[chosen].astype(np.float32),
+        float(advantages[chosen]),
+    )
+
+
+def _choose_index_prefix_custom(
+    selected_indices: np.ndarray,
+    edit_cost: np.ndarray,
+    evaluator: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    prefix_strategy: str,
+) -> tuple[int, float]:
+    """Choose a prefix without materializing query-space deltas."""
+
+    indices = np.asarray(selected_indices, dtype=np.int32)
+    costs = np.asarray(edit_cost, dtype=np.float64)
+    if costs.shape != (len(indices),):
+        raise ValueError("Index prefix edit costs must match selected_indices")
+    if len(indices) == 0:
+        return 0, 0.0
+    cost_prefix = np.cumsum(costs)
+    advantages = np.asarray(evaluator(indices, cost_prefix), dtype=np.float64)
+    if advantages.shape != (len(indices),):
+        raise ValueError("Index prefix evaluator must return one advantage per prefix")
+    if np.any(np.isnan(advantages)) or np.any(np.isposinf(advantages)):
+        raise ValueError("Index prefix evaluator returned invalid advantages")
+    positive = np.flatnonzero(advantages > 0.0)
+    if len(positive) == 0:
+        finite = advantages[np.isfinite(advantages)]
+        return 0, float(np.max(finite)) if len(finite) else float("-inf")
+    if prefix_strategy == "best_advantage":
+        chosen = int(np.argmax(advantages))
+    elif prefix_strategy == "largest_positive":
+        chosen = int(positive[-1])
+    else:
+        raise ValueError("prefix_strategy must be 'best_advantage' or 'largest_positive'")
+    return chosen + 1, float(advantages[chosen])
+
+
 def _fixed_atom_flow_pool_size(max_accept: int, pool_multiplier: int, max_pool: int, observed_size: int) -> int:
     if max_pool > 0:
         return max(int(observed_size), int(max_pool))
@@ -1032,6 +1174,7 @@ def _select_batch_atom_flow_units(
     pool_quad: np.ndarray,
     max_accept: int,
     min_advantage: float,
+    allow_zero_quadratic: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, int, int, int]:
     if max_accept <= 0 or len(pool_indices) == 0:
         return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32), 0, 0, 0
@@ -1097,7 +1240,8 @@ def _select_batch_atom_flow_units(
     base_marginal = sorted_adv[group_start_idx]
     edge_quad = sorted_quad[group_start_idx]
     marginal = base_marginal - flow_rank.astype(np.float32) * edge_quad
-    unit_mask = np.isfinite(edge_quad) & (edge_quad > 0.0) & (marginal > float(min_advantage))
+    curvature_valid = edge_quad >= 0.0 if allow_zero_quadratic else edge_quad > 0.0
+    unit_mask = np.isfinite(edge_quad) & curvature_valid & (marginal > float(min_advantage))
     if not np.any(unit_mask):
         return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32), grouped_edges, source_count, target_count
 
@@ -1145,6 +1289,16 @@ def choose_atom_flow_batch_transport(
     delta_index: QueryDeltaIndex | None = None,
     objective: str = "quadratic",
     objective_weights: np.ndarray | None = None,
+    precision_operator: PrecisionOperator | None = None,
+    candidate_quadratic: np.ndarray | None = None,
+    prefix_advantage_evaluator: Callable[
+        [np.ndarray, np.ndarray, np.ndarray], np.ndarray
+    ]
+    | None = None,
+    prefix_index_advantage_evaluator: Callable[
+        [np.ndarray, np.ndarray], np.ndarray
+    ]
+    | None = None,
 ) -> TransportResult:
     """Choose an atom-flow batch with one residual update per accepted prefix.
 
@@ -1154,6 +1308,15 @@ def choose_atom_flow_batch_transport(
     the accepted prefix is checked with the exact QDTE batch objective before
     the caller updates residuals.
     """
+    if (
+        prefix_advantage_evaluator is not None
+        and prefix_index_advantage_evaluator is not None
+    ):
+        raise ValueError("Specify only one custom atom-flow prefix evaluator")
+    custom_prefix = bool(
+        prefix_advantage_evaluator is not None
+        or prefix_index_advantage_evaluator is not None
+    )
     empty_diagnostics: dict[str, float | int] = {
         "atom_flow_pool_candidates": 0,
         "atom_flow_edges": 0,
@@ -1165,6 +1328,8 @@ def choose_atom_flow_batch_transport(
         "atom_flow_selected_candidates": 0,
         "atom_flow_prefix_candidates": 0,
         "atom_flow_sparse_delta": int(delta_index is not None),
+        "atom_flow_custom_prefix": int(custom_prefix),
+        "atom_flow_index_prefix": int(prefix_index_advantage_evaluator is not None),
     }
     empty = TransportResult(
         accepted_indices=np.empty(0, dtype=np.int32),
@@ -1175,6 +1340,19 @@ def choose_atom_flow_batch_transport(
     )
     if max_accept <= 0 or candidates.size == 0:
         return empty
+    if precision_operator is not None:
+        if objective != "quadratic":
+            raise ValueError("A precision operator is supported only for the quadratic objective")
+        if precision_operator.dimension != qcat.m:
+            raise ValueError("Precision dimension must match the query catalogue")
+    if candidate_quadratic is not None:
+        candidate_quadratic = np.asarray(candidate_quadratic, dtype=np.float32)
+        if candidate_quadratic.shape != (candidates.size,) or not np.all(
+            np.isfinite(candidate_quadratic)
+        ):
+            raise ValueError("candidate_quadratic must be a finite vector for every candidate")
+        if np.any(candidate_quadratic < -1.0e-6):
+            raise ValueError("candidate_quadratic must be nonnegative")
 
     pool_indices = _candidate_pool(advantages, max_accept, min_advantage, pool_multiplier, max_pool)
     if len(pool_indices) == 0:
@@ -1199,9 +1377,24 @@ def choose_atom_flow_batch_transport(
         "atom_flow_selected_candidates": 0,
         "atom_flow_prefix_candidates": 0,
         "atom_flow_sparse_delta": int(delta_index is not None),
+        "atom_flow_custom_prefix": int(custom_prefix),
+        "atom_flow_index_prefix": int(prefix_index_advantage_evaluator is not None),
     }
 
-    if delta_index is None:
+    orthogonal_feature_mode = isinstance(
+        precision_operator,
+        (
+            OrthogonalInteractionPrecision,
+            ActiveSetOrthogonalInteractionPrecision,
+            BootstrapDiagonalOrthogonalInteractionPrecision,
+            ShrinkageAnalyticOrthogonalInteractionPrecision,
+        ),
+    )
+    deltas_jax: jax.Array | None
+    if orthogonal_feature_mode:
+        deltas_jax = None
+        delta_backend = 2
+    elif delta_index is None:
         deltas_jax = _candidate_deltas_jax(candidates, padded_pool_indices, qcat)
         delta_backend = 0
     else:
@@ -1215,6 +1408,38 @@ def choose_atom_flow_batch_transport(
         delta_backend = 1
     if objective == "l1":
         pool_quad = np.ones(len(pool_indices), dtype=np.float32)
+    elif candidate_quadratic is not None:
+        pool_quad = np.maximum(candidate_quadratic[pool_indices], 0.0)
+    elif orthogonal_feature_mode:
+        if not isinstance(
+            precision_operator,
+            (
+                OrthogonalInteractionPrecision,
+                ActiveSetOrthogonalInteractionPrecision,
+                BootstrapDiagonalOrthogonalInteractionPrecision,
+                ShrinkageAnalyticOrthogonalInteractionPrecision,
+            ),
+        ):
+            raise RuntimeError("Orthogonal feature transport lost its precision operator")
+        feature_deltas = precision_operator.row_feature_deltas(
+            candidates.old_rows[pool_indices],
+            candidates.new_rows[pool_indices],
+        )
+        if isinstance(precision_operator, OrthogonalInteractionPrecision):
+            pool_quad = (
+                (feature_deltas * feature_deltas)
+                @ (1.0 / precision_operator.coefficient_variances)
+            ).astype(np.float32)
+        else:
+            pool_quad = precision_operator.feature_quadratic_many(feature_deltas).astype(
+                np.float32
+            )
+    elif precision_operator is not None:
+        if deltas_jax is None:
+            raise RuntimeError("Precision transport is missing query deltas")
+        pool_quad = precision_operator.quad_many(
+            np.asarray(deltas_jax, dtype=np.float64)[: len(pool_indices)]
+        ).astype(np.float32)
     else:
         pool_quad_jax = _delta_quad_jit(
             deltas_jax,
@@ -1229,12 +1454,15 @@ def choose_atom_flow_batch_transport(
         pool_quad,
         max_accept=max_accept,
         min_advantage=min_advantage,
+        allow_zero_quadratic=custom_prefix,
     )
     diagnostics["atom_flow_edges"] = int(grouped_edges)
     diagnostics["atom_flow_source_atoms"] = int(source_count)
     diagnostics["atom_flow_target_atoms"] = int(target_count)
     diagnostics["atom_flow_selected_candidates"] = int(len(selected_indices))
     diagnostics["atom_flow_sparse_delta"] = int(delta_backend)
+    diagnostics["atom_flow_precision_operator"] = int(precision_operator is not None)
+    diagnostics["atom_flow_cached_candidate_quadratic"] = int(candidate_quadratic is not None)
     if len(selected_indices) == 0:
         return TransportResult(
             accepted_indices=np.empty(0, dtype=np.int32),
@@ -1250,7 +1478,68 @@ def choose_atom_flow_batch_transport(
     padded_edit_cost = np.zeros(prefix_capacity, dtype=np.float32)
     if len(selected_indices) > 0:
         padded_edit_cost[: len(selected_indices)] = candidates.edit_cost[selected_indices].astype(np.float32, copy=False)
-    if objective == "l1":
+    if prefix_index_advantage_evaluator is not None:
+        if precision_operator is None:
+            raise ValueError("Index atom-flow prefix evaluation requires a precision operator")
+        count, batch_adv_float = _choose_index_prefix_custom(
+            selected_indices,
+            candidates.edit_cost[selected_indices],
+            prefix_index_advantage_evaluator,
+            prefix_strategy,
+        )
+        if count > 0:
+            accepted_prefix = selected_indices[:count]
+            if delta_index is not None:
+                delta_sum = np.asarray(
+                    delta_index.delta_sum(
+                        candidates.old_rows[accepted_prefix],
+                        candidates.new_rows[accepted_prefix],
+                    ),
+                    dtype=np.float32,
+                )
+            else:
+                delta_sum = np.asarray(
+                    _candidate_deltas_jax(candidates, accepted_prefix, qcat),
+                    dtype=np.float32,
+                ).sum(axis=0, dtype=np.float32)
+        else:
+            delta_sum = np.zeros_like(residual, dtype=np.float32)
+    elif prefix_advantage_evaluator is not None:
+        if precision_operator is None:
+            raise ValueError("Custom atom-flow prefix evaluation requires a precision operator")
+        if deltas_jax is None:
+            selected_deltas = np.asarray(
+                _candidate_deltas_jax(candidates, selected_indices, qcat),
+                dtype=np.float64,
+            )
+        else:
+            selected_deltas = np.asarray(deltas_jax, dtype=np.float64)[selected_local]
+        count, delta_sum, batch_adv_float = _choose_delta_prefix_custom(
+            selected_indices,
+            selected_deltas,
+            candidates.edit_cost[selected_indices],
+            prefix_advantage_evaluator,
+            prefix_strategy,
+        )
+    elif precision_operator is not None:
+        if deltas_jax is None:
+            selected_deltas = np.asarray(
+                _candidate_deltas_jax(candidates, selected_indices, qcat),
+                dtype=np.float64,
+            )
+        else:
+            selected_deltas = np.asarray(deltas_jax, dtype=np.float64)[selected_local]
+        count, delta_sum, batch_adv_float = _choose_delta_prefix_precision(
+            selected_deltas,
+            candidates.edit_cost[selected_indices],
+            residual,
+            precision_operator,
+            lambda_cost,
+            prefix_strategy,
+        )
+    elif objective == "l1":
+        if deltas_jax is None:
+            raise RuntimeError("L1 transport is missing query deltas")
         weights = objective_weights if objective_weights is not None else np.ones_like(residual, dtype=np.float32)
         accepted_count, delta_sum, batch_adv = _choose_delta_prefix_fixed_l1_jit(
             deltas_jax[jnp.asarray(padded_selected_local, dtype=jnp.int32)],
@@ -1262,6 +1551,8 @@ def choose_atom_flow_batch_transport(
             jnp.asarray(strategy_code, dtype=jnp.int32),
         )
     else:
+        if deltas_jax is None:
+            raise RuntimeError("Quadratic transport is missing query deltas")
         accepted_count, delta_sum, batch_adv = _choose_delta_prefix_fixed_jit(
             deltas_jax[jnp.asarray(padded_selected_local, dtype=jnp.int32)],
             jnp.asarray(padded_edit_cost, dtype=jnp.float32),
@@ -1271,8 +1562,9 @@ def choose_atom_flow_batch_transport(
             jnp.asarray(lambda_cost, dtype=jnp.float32),
             jnp.asarray(strategy_code, dtype=jnp.int32),
         )
-    count = int(np.asarray(accepted_count))
-    batch_adv_float = float(np.asarray(batch_adv))
+    if precision_operator is None:
+        count = int(np.asarray(accepted_count))
+        batch_adv_float = float(np.asarray(batch_adv))
     diagnostics["atom_flow_batch_advantage_check"] = batch_adv_float
     diagnostics["atom_flow_prefix_capacity"] = int(prefix_capacity)
     diagnostics["atom_flow_prefix_candidates"] = int(count)
